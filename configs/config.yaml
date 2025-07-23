@@ -1,0 +1,7 @@
+defaults:
+  - experiment: oa2022
+  - _self_
+
+
+paths:
+  checkpoints_dir: ${hydra:run.dir}/checkpoints

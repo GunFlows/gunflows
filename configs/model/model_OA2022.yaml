@@ -1,0 +1,8 @@
+total_dim: 711
+dim_spline: ${len:${experiment.dataset.phase_space_dim}}
+nflows: 10
+hidden: 160
+nlayers: 1
+nbins: 11
+tail_bound: 5.0
+context_transform: true
