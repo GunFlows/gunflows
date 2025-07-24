@@ -24,7 +24,7 @@ class SystematicFlow(NormalizingFlow):
         d_ctx = len(target.list_dim_conditionnal)
         self.log_norm = nn.Parameter(torch.tensor(0.0))
         self.CovFlow = CovFlow(target, self.device)
-        self.CovFlow.freeze_params()
+        # self.CovFlow.freeze_params()
         if self.context_transform:
             self.ContextFlow = ContextFlow(n_context_flows, n_hidden_layers, hidden_dim, d_ctx)
 
