@@ -1,0 +1,17 @@
+defaults:
+  - dataset: systematic_dataset_oa2022
+  - model: model_OA2022
+  - override hydra/job_logging: disabled
+  - _self_
+dataset:
+  load_data: True
+seed: 42
+device: cuda
+
+ckpt: /workspace/work/GuNFlows/outputs/2025-07-25/14-57-26/checkpoints/last_model.pth
+save_dir: null 
+
+num_samples: 100000
+batch_size: 100
+return_probs: false
+grid: 5

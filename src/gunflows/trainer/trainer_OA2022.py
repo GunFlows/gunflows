@@ -120,7 +120,7 @@ class OA2022Trainer(BaseTrainer):
         self._checkpoint(best=False)
 
         print(
-            f"Epoch={epoch:05d} val_loss={loss_val.item():.3e} ess={ess_f:.3f}"
+            f"Epoch={epoch:05d} val_loss={loss_val.item():.3e} ess={ess_r:.3f}"
         )
         self._plot_curves()
 
@@ -140,10 +140,10 @@ class OA2022Trainer(BaseTrainer):
         ax1.set_ylabel("loss")
         ax1.legend(loc="upper left")
 
-        ax2 = ax1.twinx()
-        ax2.plot(self.epochs_val, self.ess_f, "s-", label="ESS", color="tab:green")
-        ax2.set_ylabel("ESS")
-        ax2.legend(loc="upper right")
+        # ax2 = ax1.twinx()
+        # ax2.plot(self.epochs_val, self.ess_f, "s-", label="ESS", color="tab:green")
+        # ax2.set_ylabel("ESS")
+        # ax2.legend(loc="upper right")
 
         fig.tight_layout()
         fig.savefig(self.img_dir / "training_curves.png")

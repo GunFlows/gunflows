@@ -121,6 +121,8 @@ def _diag_plot(
     plt.close(fig)
 
 
+
+
 def exp_forward(
     model,
     dataset,
@@ -188,17 +190,18 @@ def exp_symmetric(
     diff_f = log_p - model.log_norm - log_q
 
     log_w_r = log_q - log_g_all
-    w_r = _cap_logw(log_w_r, cap)
-    diff_r = log_q - log_p + model.log_norm
+    w_r = _cap_logw(log_w_r, cap).detach()
+    diff_r = -diff_f
 
     loss = torch.mean(a * w_f * diff_f**2 + b * w_r * diff_r**2)
 
     if validation:
         _diag_plot(log_p, log_q, log_g_all, save_dir, "exp_sym")
+        print(f"Forward exp loss: {torch.mean(w_f * diff_f**2).item()}")
+        print(f"Reverse exp loss: {torch.mean(w_r * diff_r**2).item()}")
 
     if not return_extra:
         return loss
-    print(f"ess_f: {_ess(torch.exp(log_w_f))}, ess_r: {_ess(torch.exp(log_w_r))}")
     return loss, {
         "ess_forward": _ess(torch.exp(log_w_f)),
         "ess_reverse": _ess(torch.exp(log_w_r)),
@@ -281,6 +284,8 @@ def kl_symmetric(
 
     if validation:
         _diag_plot(log_p, log_q, log_g_all, save_dir, "kl_sym")
+        print(f"Forward KL loss: {torch.mean(w_f * diff_f).item()}")
+        print(f"Reverse KL loss: {torch.mean(w_r * diff_r).item()}")
 
     if not return_extra:
         return loss

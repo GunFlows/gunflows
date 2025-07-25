@@ -22,7 +22,13 @@ __all__ = ["SystematicDataset"]
 
 
 class SystematicDataset(Dataset):
-    def __init__(self, data_dir: str, phase_space_dim: list[int], batch_index: int | None = None):
+    def __init__(
+        self,
+        data_dir: str,
+        phase_space_dim: list[int],
+        batch_index: int | None = None,
+        load_data: bool = True,                
+    ):
         super().__init__()
         self.phase_space_dim = phase_space_dim
 
@@ -36,25 +42,32 @@ class SystematicDataset(Dataset):
                 raise FileNotFoundError(f"File {p} does not exist.")
             file_list = [p]
 
-        data_list, log_p_list = [], []
-        cov_ref = mean_ref = titles_ref = None
+        ld0 = np.load(file_list[0])
+        self.cov = torch.tensor(ld0["cov"], dtype=torch.float32)
+        self.true_cov = self.cov.clone()
+        self.mean = torch.tensor(ld0["mean"], dtype=torch.float32)
+        self.titles = ld0["par_names"]
+        self.std_per_dim = torch.sqrt(torch.diag(self.cov))
+        self.list_dim_conditionnal = [i for i in range(self.cov.shape[0]) if i not in self.phase_space_dim]
 
-        for i, path in enumerate(file_list):
+        if not load_data:                       # fast path (sampling)
+            self.nsample = 0
+            self.ndim = self.cov.shape[0]
+            self.data = self.log_p = None
+            return
+
+        data_list, log_p_list = [], []
+        for path in file_list:
             ld = np.load(path)
-            d = torch.tensor(ld["data"], dtype=torch.float32)
-            if i == 0:
-                cov_ref = torch.tensor(ld["cov"], dtype=torch.float32)
-                mean_ref = torch.tensor(ld["mean"], dtype=torch.float32)
-                titles_ref = ld["par_names"]
+            data_list.append(torch.tensor(ld["data"], dtype=torch.float32))
             log_p_list.append(torch.tensor(ld["log_p"], dtype=torch.float32))
-            data_list.append(d)
 
         data = torch.cat(data_list, dim=0)
         log_p = torch.cat(log_p_list, dim=0)
 
         std_eig = torch.median(data.std(dim=0))
         data = data / std_eig
-        cov = cov_ref * std_eig**2
+        cov = self.cov * std_eig**2
 
         chol = torch.linalg.cholesky(cov)
         data = (chol @ data.T).T
@@ -67,9 +80,6 @@ class SystematicDataset(Dataset):
         self.data = data
         self.log_p = log_p
         self.cov = cov
-        self.true_cov = cov
-        self.mean = mean_ref
-        self.titles = titles_ref
         self.cholesky = chol
         self.std_per_dim = std_per_dim
 
