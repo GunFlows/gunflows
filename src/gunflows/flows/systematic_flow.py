@@ -17,15 +17,18 @@ from .context_flow import ContextFlow
 
 class SystematicFlow(NormalizingFlow):
     def __init__(self, base, flows, target, context_transform=True, n_context_flows=12,
-                 n_hidden_layers=2, hidden_dim=64):
+                 n_hidden_layers=2, hidden_dim=64, freeze_covflow=False):
         super().__init__(base, flows, target)
         self.context_transform = context_transform
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         d_ctx = len(target.list_dim_conditionnal)
         self.log_norm = nn.Parameter(torch.tensor(0.0))
         self.CovFlow = CovFlow(target, self.device)
-        self.CovFlow.freeze_params()
+        if freeze_covflow:
+            print("Freezing CovFlow parameters")
+            self.CovFlow.freeze_params()
         if self.context_transform:
+            print(f"Using ContextFlow with {n_context_flows} flows, {n_hidden_layers} hidden layers, and hidden dim {hidden_dim}")
             self.ContextFlow = ContextFlow(n_context_flows, n_hidden_layers, hidden_dim, d_ctx)
 
     def forward(self, u, context=None):

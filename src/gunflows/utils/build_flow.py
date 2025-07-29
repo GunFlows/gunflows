@@ -46,6 +46,10 @@ def build_model(
     flows,
     target,
     context_transform: bool = True,
+    freeze_covflow: bool = False,
+    n_context_flows: int = 12,
+    n_hidden_layers: int = 2,
+    hidden_dim: int = 64,
 ) -> SystematicFlow:
-    model = SystematicFlow(base, flows, target, context_transform=context_transform)
+    model = SystematicFlow(base, flows, target, context_transform=context_transform, freeze_covflow=freeze_covflow, n_context_flows=n_context_flows, n_hidden_layers=n_hidden_layers, hidden_dim=hidden_dim)
     return model

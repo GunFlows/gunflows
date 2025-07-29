@@ -2,8 +2,8 @@
 _target_: gunflows.trainer.OA2022Trainer
 
 epochs: 20000
-batch_size: 30000
-num_val: 30000
+batch_size: 40000
+num_val: 40000
 val_every: 100
 device: cuda
 seed: 42            

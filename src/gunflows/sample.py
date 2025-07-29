@@ -39,11 +39,9 @@ def _plot_least_gaussian(samples, mean, cov, names, out_dir, phase_dims):
     ]
     worst = np.argsort(ks_stats)[-10:]
     fig, axes = plt.subplots(2, 5, figsize=(20, 8))
-    phase_dims= np.array(phase_dims)
     for ax, idx in zip(axes.ravel(), worst):
-        i= idx
-        print(f"Least Gaussian dim {i}")
-        data = samples[:, i]
+        print(f"Least Gaussian dim {idx}")
+        data = samples[:, idx]
         ax.hist(data, bins=60, density=True, alpha=0.6)
         xs = np.linspace(data.min(), data.max(), 200)
         mean_i = np.mean(data)
@@ -58,7 +56,10 @@ def _plot_least_gaussian(samples, mean, cov, names, out_dir, phase_dims):
     plt.close(fig)
 
 
-def _plot_grid(samples, mean, cov, names, n, out_dir):
+def _plot_grid(samples, mean, cov, names, n, out_dir, phase_dims):
+    samples = samples[:, phase_dims]
+    mean = mean[phase_dims]
+    cov = cov[np.ix_(phase_dims, phase_dims)]
     fig, axes = plt.subplots(n, n, figsize=(3 * n, 3 * n))
     for i in range(n):
         for j in range(n):
@@ -102,7 +103,7 @@ def main(cfg: DictConfig) -> None:
     dataset = instantiate(cfg.dataset)
     phase_dims = dataset.phase_space_dim
     dim_spline = len(phase_dims)
-    names = [dataset.titles[i].split("/")[-1] for i in phase_dims]
+    names = [dataset.titles[i].split("/")[-1] for i in range(cfg.model.total_dim)]
 
     base = build_base(cfg.model.total_dim)
     tail_bounds = torch.ones(dim_spline) * cfg.model.tail_bound
@@ -133,15 +134,14 @@ def main(cfg: DictConfig) -> None:
         logqs = np.concatenate(logqs, 0)[: cfg.num_samples]
 
     samples = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples)).numpy()
-    samples_spline = samples[:, phase_dims]
-    mean_spline = dataset.mean.numpy()[phase_dims]
-    cov_spline = dataset.get_true_cov().numpy()[np.ix_(phase_dims, phase_dims)]
+    mean_sample = dataset.mean.numpy()
+    cov_sample = dataset.get_true_cov().numpy()
 
     dur = time.time() - start
     print(f"Done: {cfg.num_samples} samples in {dur:.1f}s")
 
-    _plot_least_gaussian(samples_spline, mean_spline, cov_spline, names, img_dir, phase_dims)
-    _plot_grid(samples_spline, mean_spline, cov_spline, names, cfg.grid, img_dir, phase_dims)
+    _plot_least_gaussian(samples, mean_sample, cov_sample, names, img_dir, phase_dims)
+    _plot_grid(samples, mean_sample, cov_sample, names, cfg.grid, img_dir, phase_dims)
 
     np.save(out_dir / "samples.npy", samples)
     if cfg.return_probs:

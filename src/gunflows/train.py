@@ -48,7 +48,7 @@ def main(cfg: DictConfig) -> None:
         tail_bounds,
         n_context=cfg.model.total_dim - cfg.model.dim_spline,
     )
-    model = build_model(base, flows, dataset, cfg.model.context_transform).to(cfg.trainer.device)
+    model = build_model(base, flows, dataset, cfg.model.context_transform, cfg.model.freeze_covflow, cfg.model.n_context_flows, cfg.model.n_hidden_layers, cfg.model.hidden_dim).to(cfg.trainer.device)
     print(f"Model built with {len(flows)} flow layers.")
 
     optimizer = instantiate(cfg.optim, params=model.parameters())

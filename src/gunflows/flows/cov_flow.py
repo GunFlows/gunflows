@@ -22,7 +22,9 @@ class CovFlow(nn.Module):
         self.param_tril = nn.Parameter(lower_init)
         self.mu = nn.Parameter(torch.zeros(D, device=device))
         self.list_dim_conditionnal = target.list_dim_conditionnal
+        print(f"CovFlow initialized with conditional dimensions ranging from {self.list_dim_conditionnal[0]} to {self.list_dim_conditionnal[-1]}")
         self.phase_space_dim = target.phase_space_dim
+        print(f"CovFlow initialized with phase space dimensions ranging from {self.phase_space_dim[0]} to {self.phase_space_dim[-1]}")
 
     def freeze_params(self):
         self.param_tril.requires_grad_(False)
