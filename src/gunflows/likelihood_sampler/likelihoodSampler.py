@@ -28,7 +28,7 @@ class LikelihoodSampler:
         self.postfit_parameter_values = None
         self.postfit_covariance_matrix = None
 
-        # GUNDAM.setNumberOfThreads(threads)
+        GUNDAM.setNumberOfThreads(threads)
         # GUNDAM.setLightOutputMode(True)
 
         self.app = GUNDAM.GundamApp("GUNDAM: likelihood sampler")
