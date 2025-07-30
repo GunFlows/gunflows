@@ -37,7 +37,7 @@ prior_parameter_values = likelihood_sampler.prior_parameter_values
 postfit_covariance = likelihood_sampler.postfit_covariance_matrix
 
 start_time = time.time()
-n = 100000
+n = 10000
 params_list, weights_list, NLL_list = likelihood_sampler.throw_n_from_covariance(n,printout=False)
 gNLL_list = [sum(weights) for weights in weights_list]
 end_time = time.time()
@@ -45,6 +45,25 @@ end_time = time.time()
 duration = end_time - start_time
 
 print(f"Time for 1 LH evaluation: {duration/n*1000} ms")
+
+# get the dictionary and save it
+params_dict = likelihood_sampler.generate_dataset_dictionary(params_list, weights_list, NLL_list)
+output_file = "test.npz"
+# save the dictionary to npz file
+np.savez(output_file, **params_dict)
+print(f"Saved dataset to {output_file}")
+
+
+
+
+
+
+
+
+
+
+
+
 
 # draw all the parameter distributions, overlaying the prior and postfit values
 os.makedirs('img', exist_ok=True)
@@ -76,6 +95,8 @@ plt.savefig('img/NLL_gNLL_histogram.png', dpi=100, bbox_inches='tight')
 plt.close()
 
 for i, param_name in enumerate(parameter_names):
+    if 10 < i < 690:
+        continue
     print(f"Drawing parameter distribution for {param_name}...")
     plt.figure(figsize=(8, 6))
     # Draw histogram of parameter values

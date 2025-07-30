@@ -357,3 +357,43 @@ class LikelihoodSampler:
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
         return params_list, weights_list, NLL_tot_list
+
+    def generate_dataset_dictionary(self, params_list, weights_list, NLL_tot_list):
+        """
+        Generate a dataset dictionary from the lists of parameters, weights, and NLL values, plus the covariance matrix and the best fit parameter values.
+        Dictionary structure:
+        {
+            "data": parameter values in the real space (params_list) [N,711]
+            "log_p": negative-log likelihood (NLL_tot_list) [N,1]
+            "log_q": negative-log sampling probability (sum_weights_list) [N,1]
+            "cov": post-fit covariance matrix (self.postfit_covariance_matrix) [711,711]
+            "mean": parameter values at best-fit (self.postfit_parameter_values)  [1,711]
+            "par_names": names of the parameters (self.get_parameter_names) [1,711]
+        }
+        """
+        if self.postfit_covariance_matrix is None:
+            raise RuntimeError("Postfit covariance matrix is not set. Please load it first.")
+        if self.postfit_parameter_values is None:
+            raise RuntimeError("Postfit parameter values are not set. Please load them first.")
+        if len(params_list) != len(weights_list) or len(params_list) != len(NLL_tot_list):
+            raise ValueError("The lengths of params_list, weights_list, and NLL_tot_list must be the same.")
+
+        # printout shape of all lists
+        print(f"data shape: {len(params_list)} x {len(params_list[0])} ")
+        log_q = [sum(weights) for weights in weights_list]
+        print(f"log_q shape: {len(log_q)} ")
+        print(f"log_p shape: {len(NLL_tot_list)} ")
+        print(f"cov shape: {len(self.postfit_covariance_matrix)} x {len(self.postfit_covariance_matrix[0])} ")
+        print(f"mean shape: {len(self.postfit_parameter_values)} ")
+        print(f"par_names shape: {len(self.get_parameter_names())} ")
+
+        dataset_dict = {
+            "data": params_list,
+            "log_p": NLL_tot_list,
+            "log_q": log_q,
+            "cov": self.postfit_covariance_matrix,
+            "mean": self.postfit_parameter_values,
+            "par_names": self.get_parameter_names(),
+        }
+        return dataset_dict
+
