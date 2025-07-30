@@ -1,8 +1,8 @@
 # GUNDAM software directory structure
-# export WORK_DIR="/home/shares/sanchezf/gundam_n_flow/GuNFlows/software"
-# export INSTALL_DIR="$WORK_DIR/install/"
-# export BUILD_DIR="$WORK_DIR/build/"
-# export REPO_DIR="$WORK_DIR/repo/"
+export WORK_DIR="/workspace/work/GuNFlows/software"
+export INSTALL_DIR="$WORK_DIR/install/"
+export BUILD_DIR="$WORK_DIR/build/"
+export REPO_DIR="$WORK_DIR/repo/"
 
 # Path to datasets
 export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
