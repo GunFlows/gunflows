@@ -9,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("ROOT module not found. Please ensure ROOT/PyROOT is properly installed and in your Python path.")
 import argparse
-from pygundam_utils import *
+from .pygundam_utils import *
 from tqdm import tqdm
 
 
