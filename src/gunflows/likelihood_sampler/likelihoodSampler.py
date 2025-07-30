@@ -1,9 +1,16 @@
 
 
-import GUNDAM
-import ROOT
+try:
+    import GUNDAM
+except ImportError:
+    raise ImportError("GUNDAM module not found. Please ensure GUNDAM is properly installed and in your Python path.")
+try:
+    import ROOT
+except ImportError:
+    raise ImportError("ROOT module not found. Please ensure ROOT/PyROOT is properly installed and in your Python path.")
 import argparse
 from pygundam_utils import *
+from tqdm import tqdm
 
 
 class LikelihoodSampler:
@@ -14,9 +21,12 @@ class LikelihoodSampler:
         self.fitter = None
         self.propagator = None
         self.fitter_root_file = None
-        self.data_is_asimov = False  # Set to True if using asimov
+        self.data_is_asimov = data_is_asimov  # Set to True if using asimov
         self.config_file = config_file
         self.override_files = override_files if override_files else []
+        self.prior_parameter_values = None
+        self.postfit_parameter_values = None
+        self.postfit_covariance_matrix = None
 
         # GUNDAM.setNumberOfThreads(threads)
         # GUNDAM.setLightOutputMode(True)
@@ -66,8 +76,24 @@ class LikelihoodSampler:
         ######################################
 
         # Print out parameters at prior
-        print(f"Parameters at prior:{big_vector_summary(self.get_current_parameter_values())}")
-        # Print ut parameters at best fit point
+        self.prior_parameter_values = self.get_current_parameter_values()
+        print(f"Parameters at prior:{big_vector_summary(self.prior_parameter_values)}")
+        print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
+        NLL_syst = self.compute_syst_likelihood()
+        NLL_stat = self.compute_stat_likelihood()
+        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        # Print out parameters at best fit point
+        self._load_bestfit_parameter_values_()
+        print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
+        print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
+        NLL_syst = self.compute_syst_likelihood()
+        NLL_stat = self.compute_stat_likelihood()
+        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+
+        # Reset the prior values to the postfit values
+        self.reset_prior_values(self.postfit_parameter_values)
+        print("WARNING: Prior values reset to postfit values!")
+        print("LikelihoodSampler initialized successfully.")
 
 
     def configure_using_yaml(self):
@@ -87,6 +113,47 @@ class LikelihoodSampler:
         self.fitter = GUNDAM.FitterEngine()
         self.fitter.setConfig(fitter_engine_config)
         self.fitter.configure()
+
+    def reset_prior_values(self, values):
+        """
+        Reset the prior parameter values to the given values.
+        This is useful if you want to change the prior values after initialization.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        n = 0
+        previous_priors = []
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        previous_priors.append(par.getPriorValue())
+                        par.setPriorValue(values[n])
+                        n += 1
+        if n != len(values):
+            # If the number of values does not match, reset to previous priors
+            self.reset_prior_values(self.prior_parameter_values)
+            raise ValueError(f"reset_prior_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
+
+    def inject_parameter_values(self, values):
+        """
+        Inject the given parameter values into the propagator.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        n = 0
+        current = self.get_current_parameter_values()
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        par.setParameterValue(values[n])
+                        n += 1
+        if n != len(values):
+            # If the number of values does not match, reset to previous values
+            self.inject_parameter_values(current)
+            raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
+
 
     def configure_using_root(self):
         print("Extracting config from root file:", self.config_file)
@@ -130,6 +197,16 @@ class LikelihoodSampler:
             raise RuntimeError("Postfit covariance matrix not found in the root file [searched in \"FitterEngine/postFit/Hesse/hessian/postfitCovarianceOriginal_TH2D\"].")
         tmatrix = convert_TH2D_to_TMatrix(postfit_covariance_matrix)
         self.propagator.getParametersManager().setGlobalCovarianceMatrix(tmatrix)
+        # convert the covariance matrix to a list of lists
+        postfit_covariance_matrix = []
+        n_rows = tmatrix.GetNrows()
+        n_cols = tmatrix.GetNcols()
+        for i in range(n_rows):
+            row = []
+            for j in range(n_cols):
+                row.append(tmatrix[i,j])
+            postfit_covariance_matrix.append(row)
+        self.postfit_covariance_matrix = postfit_covariance_matrix
         print("Post-Fit covariance matrix loaded into the propagator.")
 
     def get_number_of_parameters(self):
@@ -144,6 +221,35 @@ class LikelihoodSampler:
                     continue
                 n += 1
         return n
+
+    def get_parameter_names(self):
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        parameter_names = []
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if not par_set.isEnabled():
+                continue
+            for par in par_set.getParameterList():
+                if not par.isEnabled():
+                    continue
+                parameter_names.append(par.getFullTitle())
+        return parameter_names
+
+    def _load_bestfit_parameter_values_(self):
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        if self.fitter_root_file is None:
+            print("WARNING: No root file provided. Returning prior as best fit parameter values.")
+        self.postfit_parameter_values = self.prior_parameter_values
+        par_list_tnamed = self.fitter_root_file.Get("FitterEngine/postFit/parState_TNamed")
+        if not par_list_tnamed:
+            raise RuntimeError("Post-fit parameter values not found in the root file [searched in \"FitterEngine/postFit/parState_TNamed\"].")
+        par_list_json = GUNDAM.GenericToolbox.Json.readConfigJsonStr(par_list_tnamed.GetTitle())
+        self.propagator.getParametersManager().injectParameterValues(par_list_json, quietVerbose_=True)
+        print("WARNING: Post-Fit parameter values injected as current parameter values!")
+        # Now the current parameter values should be updated to the best fit values
+        self.postfit_parameter_values = self.get_current_parameter_values()
+
 
     def get_current_parameter_values(self):
         if self.propagator is None:
@@ -170,7 +276,7 @@ class LikelihoodSampler:
             samples.append(sample)
         return sample_names, samples
 
-    def load_data_histograms(self, data_is_asimov=False):
+    def load_data_histograms(self, data_is_asimov):
         # Set the data as asimov (prior)
         self.fitter.getLikelihoodInterface().setForceAsimovData(True)
         if data_is_asimov:
@@ -197,12 +303,13 @@ class LikelihoodSampler:
                 raise RuntimeError(f"Data histogram for sample '{sample_name}' has {n_bins_data} bins, but model histogram has {n_bins_model} bins.\nPossible mismatch in fitter and LH sampelr configs!")
             bin_content_list = sample.getHistogram().getBinContentList()
             # loop and replace contents
+            print(f"DEBUG| sample {sample_name}")
             for i in range(n_bins_data):
                 bin_content = data_histogram.GetBinContent(i+1)
                 bin_error = data_histogram.GetBinError(i+1)
                 current_bin_content = bin_content_list[i].sumWeights
                 current_bin_error = bin_content_list[i].sqrtSumSqWeights
-                print(f"DEBUG:bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
+                print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
                 bin_content_list[i].sumWeights = bin_content  # this replaces the bin content in the sample histogram
                 bin_content_list[i].sqrtSumSqWeights = bin_error  # I THINK this should be the bin error...
 
@@ -223,6 +330,14 @@ class LikelihoodSampler:
 
         return parameter_values, weights, NLL_tot
 
+    def compute_stat_likelihood(self):
+        self.likelihood_interface.propagateAndEvalLikelihood()
+        return self.fitter.getLikelihoodInterface().getBuffer().statLikelihood
+    def compute_syst_likelihood(self):
+        self.likelihood_interface.propagateAndEvalLikelihood()
+        return self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood
+
+
     def throw_n_from_covariance(self, n, printout=False):
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
@@ -230,6 +345,15 @@ class LikelihoodSampler:
             raise RuntimeError("The likelihood interface is not initialized.")
         # Set custom thrower!
         self.propagator.getParametersManager().setThrowerAsCustom()
+        # Add a simple progress bar
 
-        for i in range(n):
+
+        params_list = []
+        weights_list = []
+        NLL_tot_list = []
+        for i in tqdm(range(n)):
             params, weights, NLL_tot = self.throw_one_from_covariance(printout)
+            params_list.append(params)
+            weights_list.append(weights)
+            NLL_tot_list.append(NLL_tot)
+        return params_list, weights_list, NLL_tot_list
