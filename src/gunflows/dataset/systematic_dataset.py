@@ -9,7 +9,7 @@ Description:
   files containing:
     - Nsample x Ndim data in the eigenspace of the covariance
     - True probability (not assuming Gaussianity)
-    - Covariance matrix & mean of the data (before standardization)
+    - Covariance matrix & mean of the data 
 """
 
 import glob
