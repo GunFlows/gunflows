@@ -27,6 +27,7 @@ class LikelihoodSampler:
         self.prior_parameter_values = None
         self.postfit_parameter_values = None
         self.postfit_covariance_matrix = None
+        self.likelihood_at_bestfit = None
 
         # GUNDAM.setNumberOfThreads(threads)
         # GUNDAM.setLightOutputMode(True)
@@ -89,6 +90,7 @@ class LikelihoodSampler:
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
         print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        self.likelihood_at_bestfit = NLL_stat + NLL_syst
 
         # Reset the prior values to the postfit values
         self.reset_prior_values(self.postfit_parameter_values)
@@ -369,6 +371,7 @@ class LikelihoodSampler:
             "cov": post-fit covariance matrix (self.postfit_covariance_matrix) [711,711]
             "mean": parameter values at best-fit (self.postfit_parameter_values)  [1,711]
             "par_names": names of the parameters (self.get_parameter_names) [1,711]
+            "bestfit_nll": negative-log likelihood at best fit (self.likelihood_at_bestfit) [1,1]
         }
         """
         if self.postfit_covariance_matrix is None:
@@ -394,6 +397,7 @@ class LikelihoodSampler:
             "cov": self.postfit_covariance_matrix,
             "mean": self.postfit_parameter_values,
             "par_names": self.get_parameter_names(),
+            "bestfit_nll": self.likelihood_at_bestfit
         }
         return dataset_dict
 
