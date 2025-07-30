@@ -4,11 +4,6 @@ export INSTALL_DIR="$WORK_DIR/install/"
 export BUILD_DIR="$WORK_DIR/build/"
 export REPO_DIR="$WORK_DIR/repo/"
 
-# Path to datasets
-export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
-# path to config folder
-export CONFIG_FOLDER="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021/"
-
 # Load venv (Python3.10)
 # check python version
 PYTHON_VERSION=$(python3 --version | cut -d ' ' -f 2 | cut -d '.' -f 1-2)
@@ -40,3 +35,8 @@ export PYTHONPATH="$INSTALL_DIR/gundam/lib:$PYTHONPATH"
 # test
 python3 -c "import GUNDAM"
 python3 -c "import ROOT"
+
+# Path to datasets
+export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
+# path to config folder
+export CONFIG_FOLDER="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021/"

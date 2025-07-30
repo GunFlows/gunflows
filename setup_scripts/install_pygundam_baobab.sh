@@ -4,10 +4,7 @@ export INSTALL_DIR="$WORK_DIR/install/"
 export BUILD_DIR="$WORK_DIR/build/"
 export REPO_DIR="$WORK_DIR/repo/"
 
-# Path to datasets
-export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
-# path to config folder
-export CONFIG_FOLDER="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021/"
+
 
 # Load venv (Python3.10)
 # check python version
@@ -28,8 +25,10 @@ fi
 # Build Gundam with Python bindings
 HERE=$(pwd)
 cd $BUILD_DIR/gundam
-cmake \
+source /opt/root/bin/thisroot.sh
+cmake  -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++\
   -DCMAKE_INSTALL_PREFIX:PATH=$INSTALL_DIR/gundam \
+  -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
   -D CMAKE_BUILD_TYPE=Release \
   -D WITH_PYTHON_INTERFACE=ON \
   $REPO_DIR/gundam/.
