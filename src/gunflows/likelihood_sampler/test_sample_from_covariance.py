@@ -57,14 +57,14 @@ plt.hist(NLL_list, alpha=0.7, density=True,
 plt.xlabel('NLL')
 plt.ylabel('Density')
 plt.title('NLL Distribution')
-plt.savefig('img/NLL_distribution.png', dpi=300, bbox_inches='tight')
+plt.savefig('img/NLL_distribution.png', dpi=100, bbox_inches='tight')
 plt.close()
 plt.hist(gNLL_list, alpha=0.7, density=True,
          color='orange', bins=100, edgecolor='black', label='gNLL Samples')
 plt.xlabel('NLL')
 plt.ylabel('Density')
 plt.title('gNLL Distribution')
-plt.savefig('img/gNLL_distribution.png', dpi=300, bbox_inches='tight')
+plt.savefig('img/gNLL_distribution.png', dpi=100, bbox_inches='tight')
 plt.figure(figsize=(8, 6))
 # 2d histogram of NLL vs gNLL
 plt.hist2d(NLL_list, gNLL_list, bins=100, cmap='viridis', density=True)
@@ -72,7 +72,7 @@ plt.colorbar(label='Density')
 plt.xlabel('NLL')
 plt.ylabel('gNLL')
 # save pics
-plt.savefig('img/NLL_gNLL_histogram.png', dpi=300, bbox_inches='tight')
+plt.savefig('img/NLL_gNLL_histogram.png', dpi=100, bbox_inches='tight')
 plt.close()
 
 for i, param_name in enumerate(parameter_names):
@@ -99,7 +99,7 @@ for i, param_name in enumerate(parameter_names):
 
     # Save the plot
     plt.savefig(f'img/param_{i}_{param_name.replace("/", "_").replace(" ", "_")}.png',
-                dpi=300, bbox_inches='tight')
+                dpi=100, bbox_inches='tight')
     plt.close()
 
 print(f"Generated {len(parameter_names)} parameter distribution plots in img/ directory")
