@@ -9,7 +9,7 @@ Description:
   files containing:
     - Nsample x Ndim data in the eigenspace of the covariance
     - True probability (not assuming Gaussianity)
-    - Covariance matrix & mean of the data (before standardization)
+    - Covariance matrix & mean of the data 
 """
 
 import glob
@@ -22,7 +22,13 @@ __all__ = ["SystematicDataset"]
 
 
 class SystematicDataset(Dataset):
-    def __init__(self, data_dir: str, phase_space_dim: list[int], batch_index: int | None = None):
+    def __init__(
+        self,
+        data_dir: str,
+        phase_space_dim: list[int],
+        batch_index: int | None = None,
+        load_data: bool = True,
+    ):
         super().__init__()
         self.phase_space_dim = phase_space_dim
 
@@ -37,31 +43,38 @@ class SystematicDataset(Dataset):
             file_list = [p]
 
         data_list, log_p_list = [], []
-        cov_ref = mean_ref = titles_ref = None
-
-        for i, path in enumerate(file_list):
+        for path in file_list:
             ld = np.load(path)
             d = torch.tensor(ld["data"], dtype=torch.float32)
-            if i == 0:
-                cov_ref = torch.tensor(ld["cov"], dtype=torch.float32)
-                mean_ref = torch.tensor(ld["mean"], dtype=torch.float32)
-                titles_ref = ld["par_names"]
-            log_p_list.append(torch.tensor(ld["log_p"], dtype=torch.float32))
+            std_eig = torch.median(d.std(dim=0))         
+            d = d / std_eig
             data_list.append(d)
+            log_p_list.append(torch.tensor(ld["log_p"], dtype=torch.float32))
+            cov_ref = torch.tensor(ld["cov"], dtype=torch.float32)  
+            mean_ref = torch.tensor(ld["mean"], dtype=torch.float32)
+            titles_ref = ld["par_names"]
+
+        if not load_data:
+            self.cov = cov_ref
+            self.true_cov = cov_ref
+            self.mean = mean_ref
+            self.titles = titles_ref
+            self.std_per_dim = torch.sqrt(torch.diag(cov_ref))
+            self.list_dim_conditionnal = [i for i in range(cov_ref.shape[0]) if i not in self.phase_space_dim]
+            self.nsample = 0
+            self.ndim = cov_ref.shape[0]
+            self.data = self.log_p = None
+            return
 
         data = torch.cat(data_list, dim=0)
         log_p = torch.cat(log_p_list, dim=0)
 
-        std_eig = torch.median(data.std(dim=0))
-        data = data / std_eig
-        cov = cov_ref * std_eig**2
-
-        chol = torch.linalg.cholesky(cov)
+        chol = torch.linalg.cholesky(cov_ref)
         data = (chol @ data.T).T
         std_per_dim = data.std(dim=0)
         data = data / std_per_dim
         d_inv = torch.diag(1.0 / std_per_dim)
-        cov = d_inv @ cov @ d_inv
+        cov = d_inv @ cov_ref @ d_inv
         chol = torch.linalg.cholesky(cov)
 
         self.data = data

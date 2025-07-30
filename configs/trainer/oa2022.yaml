@@ -2,8 +2,8 @@
 _target_: gunflows.trainer.OA2022Trainer
 
 epochs: 20000
-batch_size: 1000
-num_val: 3000
+batch_size: 40000
+num_val: 40000
 val_every: 100
 device: cuda
 seed: 42            
@@ -16,7 +16,7 @@ early_stop:
 loss:
   name_train: exp_symmetric
   name_val:   exp_symmetric
-  cap: 1e250
+  cap: inf
   kwargs:
     a: 1.0
     b: 1.0

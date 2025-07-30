@@ -1,0 +1,18 @@
+defaults:
+  - dataset: systematic_dataset_oa2022
+  - model: model_OA2022
+  - override hydra/job_logging: disabled
+  - _self_
+dataset:
+  load_data: True
+  batch_index: 0
+seed: 42
+device: cpu
+
+ckpt: /workspace/work/GuNFlows/outputs/2025-07-26/16-53-32
+save_dir: null 
+
+num_samples: 1000
+batch_size: 100
+return_probs: false
+grid: 5
