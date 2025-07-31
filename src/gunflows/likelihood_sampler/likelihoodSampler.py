@@ -9,8 +9,9 @@ try:
 except ImportError:
     raise ImportError("ROOT module not found. Please ensure ROOT/PyROOT is properly installed and in your Python path.")
 import argparse
-from pygundam_utils import *
+from .pygundam_utils import *
 from tqdm import tqdm
+import sys
 
 
 class LikelihoodSampler:
@@ -353,7 +354,7 @@ class LikelihoodSampler:
         params_list = []
         weights_list = []
         NLL_tot_list = []
-        for i in tqdm(range(n)):
+        for i in tqdm(range(n), ascii=not sys.stdout.isatty(), ncols=80, dynamic_ncols=sys.stdout.isatty(), file=sys.stdout, mininterval=1.0):
             params, weights, NLL_tot = self.throw_one_from_covariance(printout)
             params_list.append(params)
             weights_list.append(weights)

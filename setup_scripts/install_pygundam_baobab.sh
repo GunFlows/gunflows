@@ -1,13 +1,17 @@
+########################################
+#  This is meant to work in a container
+########################################
+
 # GUNDAM software directory structure
-# export WORK_DIR="/home/shares/sanchezf/gundam_n_flow/GuNFlows/software"
-# export INSTALL_DIR="$WORK_DIR/install/"
-# export BUILD_DIR="$WORK_DIR/build/"
-# export REPO_DIR="$WORK_DIR/repo/"
+export WORK_DIR="/workspace/work/GuNFlows/software"
+export INSTALL_DIR="$WORK_DIR/install/"
+export BUILD_DIR="$WORK_DIR/build/"
+export REPO_DIR="$WORK_DIR/repo/"
 
 # Path to datasets
-export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
+#export OA_INPUT_FOLDER="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud/"
 # path to config folder
-export CONFIG_FOLDER="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021/"
+#export CONFIG_FOLDER="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021/"
 
 # Load venv (Python3.10)
 # check python version
@@ -35,10 +39,11 @@ cmake  -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++\
   -D CMAKE_BUILD_TYPE=Release \
   -D WITH_PYTHON_INTERFACE=ON \
   $REPO_DIR/gundam/.
-  make install
+  make install -j12
 cd $HERE
 
-export PYTHONPATH="$INSTALL_DIR/gundam/lib:$PYTHONPATH"
+source "/workspace/work/GuNFlows/setup.sh"
+
 
 # test
 python3 -c "import GUNDAM"

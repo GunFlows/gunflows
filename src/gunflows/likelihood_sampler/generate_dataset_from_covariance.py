@@ -16,6 +16,7 @@ parser.add_argument('-c', required=True, help='Config file path')
 parser.add_argument('-n', required=True, help='Number of throws')
 parser.add_argument('-o', required=True, help='Name of the output file')
 parser.add_argument('-of', nargs='+', help='Override config file paths')
+parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
 args = parser.parse_args()
 
@@ -25,12 +26,21 @@ print("Using base config file:", args.c)
 # Output file
 output_file = args.o
 
+# Number of threads
+if args.t:
+    try:
+        threads = int(args.t)
+    except ValueError:
+        raise ValueError(f"Invalid number of threads: {args.t}. Please provide an integer value.")
+else:
+    threads = 1
+
 # input is an Asimov fit?
 if args.a:
     data_is_asimov = True
 else:
     data_is_asimov = False
-likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.of, data_is_asimov=data_is_asimov)
+likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.of, data_is_asimov=data_is_asimov, threads=threads)
 
 # Number of throws
 try:
