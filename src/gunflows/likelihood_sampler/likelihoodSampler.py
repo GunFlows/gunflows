@@ -12,10 +12,11 @@ import argparse
 from .pygundam_utils import *
 from tqdm import tqdm
 import sys
+import time
 
 
 class LikelihoodSampler:
-    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False):
+    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None):
         self.likelihood_interface = None
         self.cb = None
         self.cr = None
@@ -43,6 +44,17 @@ class LikelihoodSampler:
         else:
             raise ValueError("Unsupported config file format. Use .yaml or .root")
 
+        # Set the seed for reproducibility
+        if seed is not None:
+            try:
+                seed = int(seed)
+            except ValueError:
+                raise ValueError(f"Invalid seed value: {seed}. Please provide an integer value.")
+        else:
+            seed = int(time.time() * 1000)  # Use current time in milliseconds
+        GUNDAM.gRandom.SetSeed(seed)
+        print(f"Random seed set to: {seed}")
+
         # If the input is a config file, with no Fitter output ROOT file, data HAS to be Asimov
         if not self.data_is_asimov and self.fitter_root_file is None:
             raise ValueError("Data is not set to Asimov, but no root file provided. Please provide a root file with data histograms.")
@@ -63,7 +75,7 @@ class LikelihoodSampler:
         # The following needs the propagator to be initialized
         self.load_data_histograms(self.data_is_asimov)
 
-        # Load the postfit covaraince matrix into the propagator
+        # Load the postfit covariance matrix into the propagator
         self.load_postfit_covariance_in_propagator()
 
         print(f"Number of parameters in the likelihood interface: {self.get_number_of_parameters()}")
