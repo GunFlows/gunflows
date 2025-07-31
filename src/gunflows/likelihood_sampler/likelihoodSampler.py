@@ -51,7 +51,7 @@ class LikelihoodSampler:
                 raise ValueError(f"Invalid seed value: {seed}. Please provide an integer value.")
         else:
             seed = int(time.time() * 1000)  # Use current time in milliseconds
-        GUNDAM.gRandom.SetSeed(seed)
+        ROOT.gRandom.SetSeed(seed)
         print(f"Random seed set to: {seed}")
 
         # If the input is a config file, with no Fitter output ROOT file, data HAS to be Asimov
