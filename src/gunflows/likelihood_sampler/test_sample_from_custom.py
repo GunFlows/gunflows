@@ -47,11 +47,12 @@ NLL_list = []
 params_list = []
 logq_list = []
 for i in range(n):
-    random_parameter_values = np.random.multivariate_normal(
-        mean=bestfit_parameter_values,
-        cov=postfit_covariance,
-        size=1
-    )[0]
+    print(f"------------------------------Throwing sample {i+1}/{n}...")
+    random_parameter_values = np.random.uniform(low=bestfit_parameter_values - 1.3*np.sqrt(np.diag(postfit_covariance)),
+                                                 high=bestfit_parameter_values + 1.3*np.sqrt(np.diag(postfit_covariance)),
+                                                 size=len(bestfit_parameter_values)
+                                                )
+
     params_list.append(random_parameter_values)
     negative_log_q = 1 # dummy placeholder
     logq_list.append(negative_log_q)

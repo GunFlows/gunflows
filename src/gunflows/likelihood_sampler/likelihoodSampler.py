@@ -197,7 +197,7 @@ class LikelihoodSampler:
                             elif values[n] > max:
                                 out_of_domain_penalty += math.exp((values[n] - max)**2)
                                 par.setParameterValue(max, False)
-                            print(f"Parameter {par.getFullTitle()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
+                            print(f"Parameter {par.getName()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
                         # print(f"DEBUG| Parameter {par.getFullTitle()} set to {par.getParameterValue()} (injected value: {values[n]}, domain limits:[{min},{max}]).")
                         n += 1
         if n != len(values):
@@ -209,6 +209,7 @@ class LikelihoodSampler:
         NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
         # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
+        print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
         return NLL_tot
 
     def configure_using_root(self):
