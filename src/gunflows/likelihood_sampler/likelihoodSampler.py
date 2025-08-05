@@ -151,7 +151,7 @@ class LikelihoodSampler:
 
     def inject_parameter_values(self, values):
         """
-        Inject the given parameter values into the propagator.
+        Inject the given vector of parameter values into the propagator.
         """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
@@ -365,11 +365,15 @@ class LikelihoodSampler:
         params_list = []
         weights_list = []
         NLL_tot_list = []
-        for i in tqdm(range(n), ascii=not sys.stdout.isatty(), ncols=80, dynamic_ncols=sys.stdout.isatty(), file=sys.stdout, mininterval=1.0):
+        disable_tqdm = False if sys.stdout.isatty() else True  # Use tqdm only if stdout is a terminal
+        for i in tqdm(range(n), disable=disable_tqdm):
             params, weights, NLL_tot = self.throw_one_from_covariance(printout)
             params_list.append(params)
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
+            if disable_tqdm:
+                if(i + 1) % n/1000 == 0:  # Print 1000 samples at regular intervals
+                    print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, Params = {big_vector_summary(params)}, Weights = {big_vector_summary(weights)}")
         return params_list, weights_list, NLL_tot_list
 
     def generate_dataset_dictionary(self, params_list, weights_list, NLL_tot_list):
