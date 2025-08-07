@@ -95,19 +95,19 @@ class LikelihoodSampler:
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
-        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
-        # Print out parameters at best fit point
+        print(f"At Prior: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        # Set the current parameter values to the best fit point
         self._load_bestfit_parameter_values_()
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
-        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
         self.likelihood_at_bestfit = NLL_stat + NLL_syst
 
         # Reset the prior values to the postfit values
         self.reset_prior_values(self.postfit_parameter_values)
-        print("WARNING: Prior values reset to postfit values!")
+        print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
 
 
@@ -293,6 +293,9 @@ class LikelihoodSampler:
         return parameter_names
 
     def _load_bestfit_parameter_values_(self):
+        """
+        Load the post-fit parameter values from the root file and set them as the current parameter values.
+        """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
         if self.fitter_root_file is None:
@@ -415,8 +418,8 @@ class LikelihoodSampler:
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
             if disable_tqdm:
-                if(i + 1) % n/1000 == 0:  # Print 1000 samples at regular intervals
-                    print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, Params = {big_vector_summary(params)}, Weights = {big_vector_summary(weights)}")
+                if(i + 1) % max(1, n//1000) == 0:  # Print 1000 samples at regular intervals
+                    print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, gNLL = {sum(weight for weight in weights)}, Params = {big_vector_summary(params)}")
         return params_list, weights_list, NLL_tot_list
 
     def generate_dataset_dictionary(self, params_list, baseline_NLL_list, NLL_tot_list):
