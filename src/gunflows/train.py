@@ -15,10 +15,12 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import instantiate
 import os, sys
+
 NF_LOCAL = os.path.join(os.path.dirname(__file__), "..", "normalizing-flows")
 sys.path.append(os.path.abspath(NF_LOCAL))
 
 from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
+
 
 if not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
@@ -35,6 +37,8 @@ def main(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.seed if "seed" in cfg else 42)
 
     dataset = instantiate(cfg.dataset)
+    mode = "files" if (hasattr(cfg, "data") and cfg.data.get("starting_folder", None)) else "sampler"
+    print(f"Dataset mode: {mode}.")
     print(f"Dataset loaded with {len(dataset)} samples.")
 
     base = build_base(cfg.model.total_dim)
@@ -48,12 +52,20 @@ def main(cfg: DictConfig) -> None:
         tail_bounds,
         n_context=cfg.model.total_dim - cfg.model.dim_spline,
     )
-    model = build_model(base, flows, dataset, cfg.model.context_transform, cfg.model.freeze_covflow, cfg.model.n_context_flows, cfg.model.n_hidden_layers, cfg.model.hidden_dim).to(cfg.trainer.device)
+    model = build_model(
+        base,
+        flows,
+        dataset,
+        cfg.model.context_transform,
+        cfg.model.freeze_covflow,
+        cfg.model.n_context_flows,
+        cfg.model.n_hidden_layers,
+        cfg.model.hidden_dim,
+    ).to(cfg.trainer.device)
     print(f"Model built with {len(flows)} flow layers.")
 
     optimizer = instantiate(cfg.optim, params=model.parameters())
     scheduler = instantiate(cfg.scheduler, optimizer=optimizer) if "scheduler" in cfg else None
-
 
     trainer = instantiate(
         cfg.trainer,
@@ -62,7 +74,7 @@ def main(cfg: DictConfig) -> None:
         dataset=dataset,
         optimizer=optimizer,
         scheduler=scheduler,
-        _recursive_=False,  
+        _recursive_=False,
     )
     print("Trainer instantiated.")
     trainer.train()

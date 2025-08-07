@@ -25,20 +25,18 @@ def _ess(w: torch.Tensor) -> float:
 
 def _common(model, dataset, idx):
     device = next(model.parameters()).device
-    zb, ctx, log_g_all, log_g_cond, log_p = dataset.log_prob(idx)
+    zb, ctx, log_g, log_p = dataset.log_prob(idx)
 
     zb = zb.to(device)
     ctx = ctx.to(device)
-    log_g_all = log_g_all.to(device)
-    log_g_cond = log_g_cond.to(device)
+    log_g = log_g.to(device)
     log_p = log_p.to(device)
 
     log_q = model.log_prob(zb, ctx).unsqueeze(1)
     return (
         zb,
         ctx,
-        log_g_all.unsqueeze(1),
-        log_g_cond.unsqueeze(1),
+        log_g.unsqueeze(1),
         log_p.unsqueeze(1),
         log_q,
     )
@@ -61,6 +59,10 @@ def _diag_plot(
 
     x_lower = np.quantile(x1, 0.0)
     x_upper = np.quantile(x1, 0.9999)
+    y_lower = np.quantile(y1, 0.0)
+    y_upper = np.quantile(y1, 0.9999)
+    y2_lower = np.quantile(y2, 0.0)
+    y2_upper = np.quantile(y2, 0.9999)
 
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -70,10 +72,10 @@ def _diag_plot(
         bins=50,
         norm=LogNorm(),
         cmap="viridis",
-        range=[[x_lower, x_upper], [x_lower, x_upper]],
+        range=[[x_lower, x_upper], [y_lower, y_upper]],
     )
     plt.colorbar(h1[3], ax=axs[0])
-    axs[0].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
+    axs[0].plot([x_lower, x_upper], [y_lower, y_upper], "r--", linewidth=1)
     axs[0].set_title("-log(p) vs -log(NF)")
     axs[0].set_xlabel("-log(p)")
     axs[0].set_ylabel("-log(NF)")
@@ -84,10 +86,10 @@ def _diag_plot(
         bins=50,
         norm=LogNorm(),
         cmap="viridis",
-        range=[[x_lower, x_upper], [x_lower, x_upper]],
+        range=[[x_lower, x_upper], [y2_lower, y2_upper]],
     )
     plt.colorbar(h2[3], ax=axs[1])
-    axs[1].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
+    axs[1].plot([x_lower, x_upper], [y2_lower, y2_upper], "r--", linewidth=1)
     axs[1].set_title("-log(p) vs -log(g)")
     axs[1].set_xlabel("-log(p)")
     axs[1].set_ylabel("-log(g)")
@@ -184,22 +186,21 @@ def exp_symmetric(
     validation=False,
     save_dir=".",
 ):
-    _, _, log_g_all, log_g_cond, log_p, log_q = _common(model, dataset, idx)
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
 
     log_pq = log_p - model.log_norm - log_q
 
-    log_w_f = log_p - model.log_norm - log_g_all
+    log_w_f = log_p - model.log_norm - log_g
     w_f = _cap_logw(log_w_f, cap_f)
 
-    log_w_r = log_q - log_g_all
+    log_w_r = log_q - log_g
     w_r = _cap_logw(log_w_r, cap_r).detach()
 
     loss = torch.mean(a * w_f * log_pq**2 + b * w_r * log_pq**2)
 
     if validation:
-        _diag_plot(log_p, log_q, log_g_all, save_dir, "exp_sym")
-        print(f"Forward exp loss: {torch.mean(w_f * log_pq**2).item()}")
-        print(f"Reverse exp loss: {torch.mean(w_r * log_pq**2).item()}")
+        _diag_plot(log_p, log_q, log_g, save_dir, "exp_sym")
+
 
     if not return_extra:
         return loss
