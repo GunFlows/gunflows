@@ -85,10 +85,6 @@ class LikelihoodSampler:
         # self.app.openOutputFile(self.output_file)
         # self.app.writeAppInfo()
 
-        ######################################
-        #        INITIALIZATION DONE         #
-        ######################################
-
         # Print out parameters at prior
         self.prior_parameter_values = self.get_current_parameter_values()
         print(f"Parameters at prior:{big_vector_summary(self.prior_parameter_values)}")
@@ -110,6 +106,9 @@ class LikelihoodSampler:
         print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
 
+        ######################################
+        #        INITIALIZATION DONE         #
+        ######################################
 
     def configure_using_yaml(self):
         print("Using base config file:", self.config_file)
