@@ -97,7 +97,7 @@ class LikelihoodSampler:
         NLL_stat = self.compute_stat_likelihood()
         print(f"At Prior: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
         # Set the current parameter values to the best fit point
-        self._load_bestfit_parameter_values_()
+        self._load_bestfit_parameter_values_() # this writes self.postfit_parameter_values and sets the current parameter values to the post-fit values
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         NLL_syst = self.compute_syst_likelihood()
