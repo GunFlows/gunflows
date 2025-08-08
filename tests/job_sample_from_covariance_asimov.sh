@@ -11,7 +11,7 @@
 index=${SLURM_ARRAY_TASK_ID}
 time=$(date +%s%N)
 seed=$(($index + $time))
-CONFIG_FILE="output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root"
+CONFIG_FILE="output/Fitter/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root"
 OUTPUT_FILE="oa2022_asimov_${seed}.npz"
 N=100000
 
@@ -30,6 +30,6 @@ IMAGE_PATH="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image
 
 echo "Starting job: " `date`
 
-srun apptainer exec ${APPTAINER_OPTIONS} ${IMAGE_PATH} bash -c "source /workspace/work/GuNFlows/setup_nosubshell.sh; python ${SCRIPTARGS}" 
+apptainer exec ${APPTAINER_OPTIONS} ${IMAGE_PATH} bash -c "source /workspace/work/GuNFlows/setup_nosubshell.sh; python ${SCRIPTARGS}" 
 
 echo "Job done: " `date`

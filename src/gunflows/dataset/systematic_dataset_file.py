@@ -106,21 +106,24 @@ class SystematicDatasetFile(Dataset):
 
         chol = torch.linalg.cholesky(cov_ref)
         std_per_dim = torch.sqrt(torch.diag(cov_ref))
-        print(f"Standard deviation per dimension: {std_per_dim}")
         data = (data - mean_ref) / std_per_dim
         d_inv = torch.diag(1.0 / std_per_dim)
         cov = d_inv @ cov_ref @ d_inv
-        log_det_D = torch.logdet(d_inv)
-        print(f"Log det D: {log_det_D.item()}")  
+        log_det_D = torch.logdet(cov)
         chol = torch.linalg.cholesky(cov)
 
         self.data = data
         self.log_p = log_p - bestfit_nll 
-        print(f"Mean log_p: {self.log_p.mean().item()}")
-        print(f"Std log_p: {self.log_p.std().item()}")
-        self.log_q = self.log_q - bestfit_nll 
-        print(f"Mean log_q: {self.log_q.mean().item()}")
-        print(f"Std log_q: {self.log_q.std().item()}")
+        print(f" Mean log_p : {self.log_p.mean().item()}")  # Debugging information
+        self.log_q = self.log_q + 0.5* log_det_D
+        print(f" Mean log_q : {self.log_q.mean().item()}")
+        self.log_p = self.log_p + torch.median(self.log_q - self.log_p)
+        print(f" Mean log_p after shift: {self.log_p.mean().item()}")  # Debugging information
+        logshift = torch.log((d := torch.exp(self.log_q - self.log_p))[d <= torch.quantile(d, 0.999)].clamp_min(1e-40).mean())
+        print(f"Log shift applied: {(d := torch.exp(self.log_q - self.log_p))[d <= torch.quantile(d, 0.999)].clamp_min(1e-40).mean()}")  # Debugging information
+        print(f"Log shift applied: {logshift.item()}")  # Debugging information
+        self.log_p += logshift
+        print(f" Mean log_p after final shift: {self.log_p.mean().item()}")  # Debugging information
         self.cov = cov
         self.true_cov = cov
         self.mean = mean_ref

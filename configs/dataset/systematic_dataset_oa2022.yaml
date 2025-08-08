@@ -1,5 +1,5 @@
 _target_: gunflows.dataset.systematic_dataset_file.SystematicDatasetFile
 data_dir: ${oc.env:DATA_DIR}
 phase_space_dim: [652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710]
-batch_index: null
+batch_index: 0
 

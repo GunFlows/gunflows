@@ -1,7 +1,7 @@
 # configs/trainer/oa2022.yaml
 _target_: gunflows.trainer.OA2022Trainer
 
-epochs: 20
+epochs: 20000
 batch_size: 40000
 num_val: 40000
 val_every: 100
@@ -16,7 +16,8 @@ early_stop:
 loss:
   name_train: exp_symmetric
   name_val:   exp_symmetric
-  cap: 10
+  cap_f: 100000
+  cap_r: 100000
   kwargs:
     a: 1.0
     b: 1.0
