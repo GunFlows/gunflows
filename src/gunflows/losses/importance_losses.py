@@ -25,20 +25,18 @@ def _ess(w: torch.Tensor) -> float:
 
 def _common(model, dataset, idx):
     device = next(model.parameters()).device
-    zb, ctx, log_g_all, log_g_cond, log_p = dataset.log_prob(idx)
+    zb, ctx, log_g, log_p = dataset.log_prob(idx)
 
     zb = zb.to(device)
     ctx = ctx.to(device)
-    log_g_all = log_g_all.to(device)
-    log_g_cond = log_g_cond.to(device)
+    log_g = log_g.to(device)
     log_p = log_p.to(device)
 
     log_q = model.log_prob(zb, ctx).unsqueeze(1)
     return (
         zb,
         ctx,
-        log_g_all.unsqueeze(1),
-        log_g_cond.unsqueeze(1),
+        log_g.unsqueeze(1),
         log_p.unsqueeze(1),
         log_q,
     )
@@ -133,18 +131,19 @@ def exp_forward(
     validation=False,
     save_dir=".",
 ):
-    _, _, log_g_all, log_g_cond, log_p, log_q = _common(model, dataset, idx)
-    log_w = log_p - model.log_norm - log_g_all
-    w = _cap_logw(log_w, cap)
-    diff = log_p - model.log_norm - log_q - log_g_cond
-    loss = torch.mean(w * diff**2)
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
+
+    log_pq = log_p - model.log_norm - log_q
+
+    log_w_f = log_p - model.log_norm - log_g
+    w_f = _cap_logw(log_w_f, cap).detach()
+
+    loss = torch.mean(w_f * log_pq**2)
 
     if validation:
-        _diag_plot(log_p, log_q + log_g_cond, log_g_all, save_dir, "exp_fwd")
+        _diag_plot(log_p, log_q, log_g, save_dir, "exp_for")
 
-    if not return_extra:
-        return loss
-    return loss, {"ess": _ess(torch.exp(log_w)), "mean_w": w.mean().item()}
+    return loss 
 
 
 def exp_reverse(
@@ -157,18 +156,19 @@ def exp_reverse(
     validation=False,
     save_dir=".",
 ):
-    _, _, log_g_all, log_g_cond, log_p, log_q = _common(model, dataset, idx)
-    log_w = log_q + log_g_cond - log_g_all
-    w = _cap_logw(log_w, cap)
-    diff = log_q + log_g_cond - log_p
-    loss = torch.mean(w * diff**2)
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
+
+    log_pq = log_p - model.log_norm - log_q
+
+    log_w_r = log_q - log_g
+    w_r = _cap_logw(log_w_r, cap).detach()
+
+    loss = torch.mean(w_r * log_pq**2)
 
     if validation:
-        _diag_plot(log_p, log_q + log_g_cond, log_g_all, save_dir, "exp_rev")
+        _diag_plot(log_p, log_q, log_g, save_dir, "exp_rev")
 
-    if not return_extra:
-        return loss
-    return loss, {"ess": _ess(torch.exp(log_w)), "mean_w": w.mean().item()}
+    return loss 
 
 
 def exp_symmetric(
@@ -184,22 +184,25 @@ def exp_symmetric(
     validation=False,
     save_dir=".",
 ):
-    _, _, log_g_all, log_g_cond, log_p, log_q = _common(model, dataset, idx)
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
 
     log_pq = log_p - model.log_norm - log_q
 
-    log_w_f = log_p - model.log_norm - log_g_all
+    log_w_f = log_p - model.log_norm - log_g
     w_f = _cap_logw(log_w_f, cap_f)
 
-    log_w_r = log_q - log_g_all
+    log_w_r = log_q - log_g
     w_r = _cap_logw(log_w_r, cap_r).detach()
 
     loss = torch.mean(a * w_f * log_pq**2 + b * w_r * log_pq**2)
 
     if validation:
-        _diag_plot(log_p, log_q, log_g_all, save_dir, "exp_sym")
-        print(f"Forward exp loss: {torch.mean(w_f * log_pq**2).item()}")
-        print(f"Reverse exp loss: {torch.mean(w_r * log_pq**2).item()}")
+        _diag_plot(log_p, log_q, log_g, save_dir, "exp_sym")
+        print(f"Forward Exp loss: {torch.mean(w_f * log_pq**2).item()}")
+        print(f"Reverse Exp loss: {torch.mean(w_r * log_pq**2).item()}")
+        print(f"Mean log_pq: {log_pq.mean().item()}")
+        print(f"Mean w_forward: {w_f.mean().item()}")
+        print(f"Mean w_reverse: {w_r.mean().item()}")
 
     if not return_extra:
         return loss
@@ -276,32 +279,35 @@ def kl_symmetric(
     validation=False,
     save_dir=".",
 ):
-    _, _, log_g_all, _, log_p, log_q = _common(model, dataset, idx)
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
 
     log_pq = log_p - model.log_norm - log_q
 
-    log_w_f = log_p - log_g_all
+    log_w_f = log_p - model.log_norm - log_g
     w_f = _cap_logw(log_w_f, cap_f)
 
-    log_w_r = log_q - log_g_all
-    w_r = _cap_logw(log_w_r, cap_r).detach()
+    log_w_r = log_q - log_g
+    w_r = _cap_logw(log_w_r, cap_r)
 
     loss = torch.mean(a * w_f * log_pq - b * w_r * log_pq)
 
     if validation:
-        _diag_plot(log_p, log_q, log_g_all, save_dir, "kl_sym")
+        _diag_plot(log_p, log_q, log_g, save_dir, "kl_sym")
         print(f"Forward KL loss: {torch.mean(w_f * log_pq).item()}")
         print(f"Reverse KL loss: {-torch.mean(w_r * log_pq).item()}")
+        print(f"Mean log_pq: {log_pq.mean().item()}")
+        print(f"Mean w_forward: {w_f.mean().item()}")
+        print(f"Mean w_reverse: {w_r.mean().item()}")
 
     if not return_extra:
         return loss
+    
     q_pq = torch.quantile(log_pq, 0.999)
     mask_pq = log_pq <= q_pq
     w_f = w_f[mask_pq]
     w_r = w_r[mask_pq]
-    log_pq = log_pq[mask_pq]
     return loss, {
-        "ess": _ess(torch.exp(log_pq)),
+        "ess": _ess(torch.exp(log_pq[mask_pq])),
         "mean_w_forward": w_f.mean().item(),
         "mean_w_reverse": w_r.mean().item(),
     }

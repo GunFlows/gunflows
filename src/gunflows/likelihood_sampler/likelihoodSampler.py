@@ -11,10 +11,12 @@ except ImportError:
 import argparse
 from .pygundam_utils import *
 from tqdm import tqdm
+import sys
+import time
 
 
 class LikelihoodSampler:
-    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False):
+    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None):
         self.likelihood_interface = None
         self.cb = None
         self.cr = None
@@ -31,7 +33,6 @@ class LikelihoodSampler:
 
         GUNDAM.setNumberOfThreads(threads)
         GUNDAM.setLightOutputMode(True)
-
         self.app = GUNDAM.GundamApp("GUNDAM: likelihood sampler")
 
         # read config from config file (.yaml) or Fitter output file (.root)
@@ -41,6 +42,17 @@ class LikelihoodSampler:
             self.configure_using_root()
         else:
             raise ValueError("Unsupported config file format. Use .yaml or .root")
+
+        # Set the seed for reproducibility
+        if seed is not None:
+            try:
+                seed = int(seed)
+            except ValueError:
+                raise ValueError(f"Invalid seed value: {seed}. Please provide an integer value.")
+        else:
+            seed = int(time.time() * 1000)  # Use current time in milliseconds
+        ROOT.gRandom.SetSeed(seed)
+        print(f"Random seed set to: {seed}")
 
         # If the input is a config file, with no Fitter output ROOT file, data HAS to be Asimov
         if not self.data_is_asimov and self.fitter_root_file is None:
@@ -62,7 +74,7 @@ class LikelihoodSampler:
         # The following needs the propagator to be initialized
         self.load_data_histograms(self.data_is_asimov)
 
-        # Load the postfit covaraince matrix into the propagator
+        # Load the postfit covariance matrix into the propagator
         self.load_postfit_covariance_in_propagator()
 
         print(f"Number of parameters in the likelihood interface: {self.get_number_of_parameters()}")
@@ -139,7 +151,7 @@ class LikelihoodSampler:
 
     def inject_parameter_values(self, values):
         """
-        Inject the given parameter values into the propagator.
+        Inject the given vector of parameter values into the propagator.
         """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
@@ -353,11 +365,15 @@ class LikelihoodSampler:
         params_list = []
         weights_list = []
         NLL_tot_list = []
-        for i in tqdm(range(n)):
+        disable_tqdm = False if sys.stdout.isatty() else True  # Use tqdm only if stdout is a terminal
+        for i in tqdm(range(n), disable=disable_tqdm):
             params, weights, NLL_tot = self.throw_one_from_covariance(printout)
             params_list.append(params)
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
+            if disable_tqdm:
+                if(i + 1) % n/1000 == 0:  # Print 1000 samples at regular intervals
+                    print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, Params = {big_vector_summary(params)}, Weights = {big_vector_summary(weights)}")
         return params_list, weights_list, NLL_tot_list
 
     def generate_dataset_dictionary(self, params_list, weights_list, NLL_tot_list):

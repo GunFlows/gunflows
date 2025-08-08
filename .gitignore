@@ -4,3 +4,5 @@ __pycache__/
 outputs/
 software/
 src/normalizing-flows/
+plots/
+tests/img
