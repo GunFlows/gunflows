@@ -33,6 +33,7 @@ class LikelihoodSampler:
 
         GUNDAM.setNumberOfThreads(threads)
         GUNDAM.setLightOutputMode(True)
+        
         self.app = GUNDAM.GundamApp("GUNDAM: likelihood sampler")
 
         # read config from config file (.yaml) or Fitter output file (.root)
