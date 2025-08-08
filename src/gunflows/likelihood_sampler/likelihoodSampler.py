@@ -417,7 +417,7 @@ class LikelihoodSampler:
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
             if disable_tqdm:
-                if(i + 1) % max(1, n//1000) == 0:  # Print 1000 samples at regular intervals
+                if(i + 1) % max(1, n//100) == 0:  # Print 1000 samples at regular intervals
                     print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, gNLL = {sum(weight for weight in weights)}, Params = {big_vector_summary(params)}")
         return params_list, weights_list, NLL_tot_list
 
