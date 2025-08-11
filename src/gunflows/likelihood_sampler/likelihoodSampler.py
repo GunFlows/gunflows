@@ -9,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("ROOT module not found. Please ensure ROOT/PyROOT is properly installed and in your Python path.")
 import argparse
-from .pygundam_utils import *
+from gunflows.likelihood_sampler.pygundam_utils import big_vector_summary, convert_TH2D_to_TMatrix
 from tqdm import tqdm
 import sys
 import time
@@ -191,24 +191,39 @@ class LikelihoodSampler:
                                 print(f"WARNING| Parameter value out of domain:{values[n]} for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
                                 return -1  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
                             if values[n] < min:
-                                out_of_domain_penalty += math.exp((min - values[n])**2)
+                                out_of_domain_penalty += math.exp((min - values[n])**2) - 1
                                 par.setParameterValue(min, False)
                             elif values[n] > max:
-                                out_of_domain_penalty += math.exp((values[n] - max)**2)
+                                out_of_domain_penalty += math.exp((values[n] - max)**2) - 1
                                 par.setParameterValue(max, False)
                             print(f"Parameter {par.getName()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
                         # print(f"DEBUG| Parameter {par.getFullTitle()} set to {par.getParameterValue()} (injected value: {values[n]}, domain limits:[{min},{max}]).")
                         n += 1
+            else:
+                print(f"Parameter set {par_set.getName()} is disabled. Skipping.")
+        # Making sure eigendecomposed parameters get the conversion done
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled() and par_set.isEnableEigenDecomp():
+                par_set.propagateOriginalToEigen()
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        if not par.isValueWithinBounds():
+                            print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
+                            par.setParameterValue(par.getPriorValue(), False)
+
         if n != len(values):
             # If the number of values does not match, reset to previous values
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
+        # print(f"DEBUG| Injected: {big_vector_summary(values)}")
+        # print(f"DEBUG| Current : {big_vector_summary(self.get_current_parameter_values())}")
+
         # Now compute the likelihood
         self.likelihood_interface.propagateAndEvalLikelihood()
         NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood
         NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
         # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
-        print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
+        # print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
         return NLL_tot
 
     def configure_using_root(self):

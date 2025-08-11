@@ -6,7 +6,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from likelihoodSampler import LikelihoodSampler
+from gunflows.likelihood_sampler import LikelihoodSampler
 
 
 #instantiate a likelihood sampler
