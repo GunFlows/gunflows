@@ -417,7 +417,7 @@ class LikelihoodSampler:
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
             if disable_tqdm:
-                print(f"Sample {i}/{n}: NLL = {NLL_tot:.2f}, gNLL = {sum(weight for weight in weights)}, Params = {big_vector_summary(params)}")
+                print(f"Sample {i}/{n}: NLL = {NLL_tot:.2f}, gNLL = {sum(weight for weight in weights):.2f}, Params = {big_vector_summary(params)}")
         return params_list, weights_list, NLL_tot_list
 
     def generate_dataset_dictionary(self, params_list, baseline_NLL_list, NLL_tot_list):
