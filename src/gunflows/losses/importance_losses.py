@@ -287,7 +287,7 @@ def kl_symmetric(
     w_f = _cap_logw(log_w_f, cap_f)
 
     log_w_r = log_q - log_g
-    w_r = _cap_logw(log_w_r, cap_r)
+    w_r = _cap_logw(log_w_r, cap_r).detach()
 
     loss = torch.mean(a * w_f * log_pq - b * w_r * log_pq)
 

@@ -162,7 +162,7 @@ class LikelihoodSampler:
             if par_set.isEnabled():
                 for par in par_set.getParameterList():
                     if par.isEnabled():
-                        par.setParameterValue(values[n])
+                        par.setParameterValue(values[n], False)
                         n += 1
         if n != len(values):
             # If the number of values does not match, reset to previous values
