@@ -6,9 +6,10 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from .likelihoodSampler import LikelihoodSampler
+from gunflows.likelihood_sampler import LikelihoodSampler
 
 
+os.chdir( os.environ.get("CONFIG_FOLDER") )
 #instantiate a likelihood sampler
 
 parser = argparse.ArgumentParser()
