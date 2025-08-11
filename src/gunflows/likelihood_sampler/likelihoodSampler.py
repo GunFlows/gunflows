@@ -13,6 +13,7 @@ from .pygundam_utils import *
 from tqdm import tqdm
 import sys
 import time
+import math
 
 
 class LikelihoodSampler:
@@ -84,31 +85,30 @@ class LikelihoodSampler:
         # self.app.openOutputFile(self.output_file)
         # self.app.writeAppInfo()
 
-        ######################################
-        #        INITIALIZATION DONE         #
-        ######################################
-
         # Print out parameters at prior
         self.prior_parameter_values = self.get_current_parameter_values()
         print(f"Parameters at prior:{big_vector_summary(self.prior_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
-        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
-        # Print out parameters at best fit point
-        self._load_bestfit_parameter_values_()
+        print(f"At Prior: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        # Set the current parameter values to the best fit point
+        self._load_bestfit_parameter_values_() # this writes self.postfit_parameter_values and sets the current parameter values to the post-fit values
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
-        print(f"NLL: {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
         self.likelihood_at_bestfit = NLL_stat + NLL_syst
 
         # Reset the prior values to the postfit values
         self.reset_prior_values(self.postfit_parameter_values)
-        print("WARNING: Prior values reset to postfit values!")
+        print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
 
+        ######################################
+        #        INITIALIZATION DONE         #
+        ######################################
 
     def configure_using_yaml(self):
         print("Using base config file:", self.config_file)
@@ -152,6 +152,7 @@ class LikelihoodSampler:
     def inject_parameter_values(self, values):
         """
         Inject the given vector of parameter values into the propagator.
+        Doesn't check if the value is within bounds.
         """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
@@ -168,6 +169,47 @@ class LikelihoodSampler:
             self.inject_parameter_values(current)
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
 
+    def inject_params_and_compute_likelihood(self, values, extend_continue=True):
+        """
+        Inject the given vector of parameter values into the propagator and compute the likelihood.
+        Returns the negative log likelihood.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        n = 0
+        out_of_domain_penalty = 0
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        max = par.getParameterLimits().max
+                        min = par.getParameterLimits().min
+                        if par.isInDomain(values[n], False):
+                            par.setParameterValue(float(values[n]), False)
+                        else:
+                            if not extend_continue:
+                                print(f"WARNING| Parameter value out of domain:{values[n]} for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
+                                return -1  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
+                            if values[n] < min:
+                                out_of_domain_penalty += math.exp((min - values[n])**2)
+                                par.setParameterValue(min, False)
+                            elif values[n] > max:
+                                out_of_domain_penalty += math.exp((values[n] - max)**2)
+                                par.setParameterValue(max, False)
+                            print(f"Parameter {par.getName()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
+                        # print(f"DEBUG| Parameter {par.getFullTitle()} set to {par.getParameterValue()} (injected value: {values[n]}, domain limits:[{min},{max}]).")
+                        n += 1
+        if n != len(values):
+            # If the number of values does not match, reset to previous values
+            raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
+        # Now compute the likelihood
+        self.likelihood_interface.propagateAndEvalLikelihood()
+        NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood
+        NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood
+        NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
+        # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
+        print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
+        return NLL_tot
 
     def configure_using_root(self):
         print("Extracting config from root file:", self.config_file)
@@ -250,6 +292,9 @@ class LikelihoodSampler:
         return parameter_names
 
     def _load_bestfit_parameter_values_(self):
+        """
+        Load the post-fit parameter values from the root file and set them as the current parameter values.
+        """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
         if self.fitter_root_file is None:
@@ -372,18 +417,17 @@ class LikelihoodSampler:
             weights_list.append(weights)
             NLL_tot_list.append(NLL_tot)
             if disable_tqdm:
-                if(i + 1) % n/1000 == 0:  # Print 1000 samples at regular intervals
-                    print(f"Sample {i+1}/{n}: NLL = {NLL_tot:.2f}, Params = {big_vector_summary(params)}, Weights = {big_vector_summary(weights)}")
+                print(f"Sample {i}/{n}: NLL = {NLL_tot:.2f}, gNLL = {sum(weight for weight in weights):.2f}, Params = {big_vector_summary(params)}")
         return params_list, weights_list, NLL_tot_list
 
-    def generate_dataset_dictionary(self, params_list, weights_list, NLL_tot_list):
+    def generate_dataset_dictionary(self, params_list, baseline_NLL_list, NLL_tot_list):
         """
         Generate a dataset dictionary from the lists of parameters, weights, and NLL values, plus the covariance matrix and the best fit parameter values.
         Dictionary structure:
         {
             "data": parameter values in the real space (params_list) [N,711]
             "log_p": negative-log likelihood (NLL_tot_list) [N,1]
-            "log_q": negative-log sampling probability (sum_weights_list) [N,1]
+            "log_q": negative-log sampling probability (baseline_NLL_list) [N,1]
             "cov": post-fit covariance matrix (self.postfit_covariance_matrix) [711,711]
             "mean": parameter values at best-fit (self.postfit_parameter_values)  [1,711]
             "par_names": names of the parameters (self.get_parameter_names) [1,711]
@@ -394,13 +438,12 @@ class LikelihoodSampler:
             raise RuntimeError("Postfit covariance matrix is not set. Please load it first.")
         if self.postfit_parameter_values is None:
             raise RuntimeError("Postfit parameter values are not set. Please load them first.")
-        if len(params_list) != len(weights_list) or len(params_list) != len(NLL_tot_list):
-            raise ValueError("The lengths of params_list, weights_list, and NLL_tot_list must be the same.")
+        if len(params_list) != len(baseline_NLL_list) or len(params_list) != len(NLL_tot_list):
+            raise ValueError("The lengths of params_list, baseline_NLL_list, and NLL_tot_list must be the same.")
 
         # printout shape of all lists
         print(f"data shape: {len(params_list)} x {len(params_list[0])} ")
-        log_q = [sum(weights) for weights in weights_list]
-        print(f"log_q shape: {len(log_q)} ")
+        print(f"log_q shape: {len(baseline_NLL_list)} ")
         print(f"log_p shape: {len(NLL_tot_list)} ")
         print(f"cov shape: {len(self.postfit_covariance_matrix)} x {len(self.postfit_covariance_matrix[0])} ")
         print(f"mean shape: {len(self.postfit_parameter_values)} ")
@@ -409,7 +452,7 @@ class LikelihoodSampler:
         dataset_dict = {
             "data": params_list,
             "log_p": NLL_tot_list,
-            "log_q": log_q,
+            "log_q": baseline_NLL_list,
             "cov": self.postfit_covariance_matrix,
             "mean": self.postfit_parameter_values,
             "par_names": self.get_parameter_names(),

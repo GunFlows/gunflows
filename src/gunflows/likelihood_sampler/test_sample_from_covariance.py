@@ -47,22 +47,11 @@ duration = end_time - start_time
 print(f"Time for 1 LH evaluation: {duration/n*1000} ms")
 
 # get the dictionary and save it
-params_dict = likelihood_sampler.generate_dataset_dictionary(params_list, weights_list, NLL_list)
+params_dict = likelihood_sampler.generate_dataset_dictionary(params_list, gNLL_list, NLL_list)
 output_file = "test.npz"
 # save the dictionary to npz file
 np.savez(output_file, **params_dict)
 print(f"Saved dataset to {output_file}")
-
-
-
-
-
-
-
-
-
-
-
 
 
 # draw all the parameter distributions, overlaying the prior and postfit values
