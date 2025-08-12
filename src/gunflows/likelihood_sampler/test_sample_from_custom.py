@@ -49,6 +49,10 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     plt.colorbar(h[3], label='Log Density')
     # diagonal line
     plt.plot([min(log_p - bestfit_nll), max(log_p - bestfit_nll)], [min(log_p - bestfit_nll), max(log_p - bestfit_nll)], color='red', linestyle='--')
+    # adjust axes to be equal
+    plt.axis('equal')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
     plt.xlabel('NLL')
     plt.ylabel('gNLL')
     # print number of entries
@@ -200,7 +204,7 @@ for i in range(n):
     NLL_list.append(NLL)
 
     # update plots every N_n samples
-    if (i+1) % N_n == 0:
+    if (i+1) % N_n == 0 or i == n-1:
         params_dict = likelihood_sampler.generate_dataset_dictionary(params_list, logq_list, NLL_list)
         output_file = args.o
         np.savez(output_file, **params_dict)
@@ -263,14 +267,14 @@ for i in range(start_dim,start_dim+ndim):
     for j in range(start_dim,start_dim+ndim):
         a = ax[i-start_dim, j-start_dim]
         if i == j:
-            a.hist(params_array[:, i], bins=50, density=True, color='viridis', edgecolor='black')
+            a.hist(params_array[:, i], bins=50, density=True, color='lightblue', edgecolor='black')
             a.axvline(bestfit_parameter_values[i], color='red', linestyle='--', label='Best Fit')
             a.axvline(prior_parameter_values[i], color='green', linestyle='--', label='Prior')
             a.set_xlabel(parameter_names[i])
             a.set_ylabel('Density')
             a.legend()
         else:
-            a.scatter(params_array[:, i], params_array[:, j], alpha=0.1, color='viridis')
+            a.hist2d(params_array[:, i], params_array[:, j], alpha=0.1, cmap='viridis', edgecolor='none')
             a.axvline(bestfit_parameter_values[i], color='red', linestyle='--', label='Best Fit')
             a.axhline(bestfit_parameter_values[j], color='red', linestyle='--')
             a.set_xlabel(parameter_names[i])
