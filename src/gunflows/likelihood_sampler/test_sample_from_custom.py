@@ -28,7 +28,6 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
 
     plt.hist(log_q, alpha=0.7, density=True,
              color='orange', bins=100,  label='-log q')
-    # gaussian fit
     mu, std = np.mean(log_q), np.std(log_q)
     if std == 0:
         std = 1e-6  # avoid division by zero in case of constant values
@@ -51,6 +50,9 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     plt.plot([min(log_p - bestfit_nll), max(log_p - bestfit_nll)], [min(log_p - bestfit_nll), max(log_p - bestfit_nll)], color='red', linestyle='--')
     plt.xlabel('NLL')
     plt.ylabel('gNLL')
+    # print number of entries
+    n_entries = len(log_p)
+    plt.title(f'NLL vs gNLL Histogram ({n_entries} entries)')
     # save pics
     plt.savefig(out_dir+'/NLL_gNLL_histogram.png', dpi=100, bbox_inches='tight')
     plt.close()
@@ -116,11 +118,22 @@ if args.a:
     data_is_asimov = True
 else:
     data_is_asimov = False
-likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.of, data_is_asimov=data_is_asimov)
 
+# number of threads
+if args.t:
+    try:
+        threads = int(args.t)
+    except ValueError:
+        raise ValueError(f"Invalid number of threads: {args.t}. Please provide an integer value.")
+else:
+    threads = 1
+
+likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.of, data_is_asimov=data_is_asimov, threads=threads) # random seed not used in this mode (throwing outside gundam)
 if likelihood_sampler.likelihood_interface is None:
     raise RuntimeError("Likelihood interface is not configured properly.")
 
+
+# just for debugging
 sample_names, samples = likelihood_sampler.get_list_of_samples()
 print(f"Number of samples: {len(samples)}. Sample names:")
 for name in sample_names:
