@@ -172,7 +172,7 @@ for i in range(n):
         # print(f"Bestf parameter values: {pygundam_utils.big_vector_summary(bestfit_parameter_values,8)}")
         NLL = likelihood_sampler.inject_params_and_compute_likelihood(random_parameter_values, extend_continue=False)
     print(f"-log q: {log_q}")
-    print(f"-log p: {NLL}")
+    print(f"-log p: {NLL}", flush=True)
     current_params = likelihood_sampler.get_current_parameter_values()
     # print(f"Current parameter values: {pygundam_utils.big_vector_summary(current_params,8)}")
     # for i in range (len(current_params)):
