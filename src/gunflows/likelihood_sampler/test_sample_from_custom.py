@@ -98,11 +98,11 @@ def convert_to_eigenspace(x, mean, cov):
     return eigen
 
 
+# Start of the script
 
+os.chdir(os.environ.get("CONFIG_FOLDER") )
 
-os.chdir( os.environ.get("CONFIG_FOLDER") )
-#instantiate a likelihood sampler
-
+# Instantiate a likelihood sampler
 parser = argparse.ArgumentParser()
 parser.add_argument('-c', required=True, help='Config file path')
 parser.add_argument('-n', required=True, help='Number of throws')
