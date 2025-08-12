@@ -227,9 +227,9 @@ plt.close()
 start_dim = 652
 ndim = 8
 fig, ax = plt.subplots(ndim, ndim, figsize=(3 * ndim, 3 * ndim))
-for i in range(start_dim,ndim):
-    for j in range(start_dim,ndim):
-        a = ax[i, j]
+for i in range(start_dim,start_dim+ndim):
+    for j in range(start_dim,start_dim+ndim):
+        a = ax[i-start_dim, j-start_dim]
         if i == j:
             a.hist(params_array[:, i], bins=50, density=True, color='lightblue', edgecolor='black')
             a.axvline(bestfit_parameter_values[i], color='red', linestyle='--', label='Best Fit')

@@ -188,7 +188,7 @@ class LikelihoodSampler:
                             par.setParameterValue(float(values[n]), False)
                         else:
                             if not extend_continue:
-                                print(f"WARNING| Parameter value out of domain:{values[n]} for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
+                                print(f"WARNING| Parameter value out of domain: {values[n]} out of [{min},{max}] for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
                                 return -1  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
                             if values[n] < min:
                                 out_of_domain_penalty += math.exp((min - values[n])**2) - 1
