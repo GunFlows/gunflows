@@ -32,15 +32,16 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     if std == 0:
         std = 1e-6  # avoid division by zero in case of constant values
     # write mu and std on the canvas
-    # x = np.linspace(mu - 4*std, mu + 4*std, 1000)
-    # p = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / std) ** 2)
-    # plt.plot(x, p, color='red', linewidth=2, label='Gaussian Fit')
-    # plt.plot([], [], ' ', label='$\mu$ = {:.2f}, $\sigma$ = {:.2f}'.format(mu, std))
+    x = np.linspace(mu - 4*std, mu + 4*std, 1000)
+    p = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / std) ** 2)
+    plt.plot(x, p, color='red', linewidth=2, label='Gaussian Fit')
+    plt.plot([], [], ' ', label='$\mu$ = {:.2f}, $\sigma$ = {:.2f}'.format(mu, std))
     plt.legend()
     plt.xlabel('NLL')
     plt.ylabel('Density')
     plt.title('gNLL Distribution')
     plt.savefig(out_dir+'/gNLL_distribution.png', dpi=100, bbox_inches='tight')
+    plt.close()
 
     plt.figure(figsize=(8, 6))
     # 2d histogram of NLL vs gNLL
