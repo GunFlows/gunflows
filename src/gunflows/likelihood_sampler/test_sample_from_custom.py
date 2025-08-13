@@ -82,9 +82,18 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
 
 
 
-def log_multivariate_normal_pdf(x, mean, cov):
+def log_multivariate_normal_pdf(x, mean, cov, with_log_det = False, precomputed_log_det=-1):
     eigen_parameter_values = convert_to_eigenspace(random_parameter_values, mean=bestfit_parameter_values, cov=postfit_covariance)
-    log_prob = len(eigen_parameter_values)*0.5*np.log(2*np.pi) + sum(eigen_parameter_values**2)
+    log_det = 0
+    if with_log_det:
+        if precomputed_log_det == -1:
+            log_det = np.linalg.slogdet(cov)[1]  # log determinant
+        else:
+            log_det = precomputed_log_det
+        print(f" {np.linalg.slogdet(cov)[0]}, {np.linalg.slogdet(cov)[1]}")
+        print(f"Debug. log_det_cov= {log_det}")
+
+    log_prob = len(eigen_parameter_values)*0.5*(np.log(2*np.pi))+ 0.5*log_det + sum(eigen_parameter_values**2) # this is actually -log prob
     return log_prob
 
 def convert_to_eigenspace(x, mean, cov):
@@ -171,14 +180,14 @@ for i in range(n):
         # random_parameter_values[:100] += 2.6 # Test: this should blow up the likelihood
         # get vector in the eigenspace of the covariance matrix
         log_q = log_multivariate_normal_pdf(random_parameter_values, mean=bestfit_parameter_values, cov=postfit_covariance)
-        eigen_parameter_values = convert_to_eigenspace(random_parameter_values, mean=bestfit_parameter_values, cov=postfit_covariance)
+        # eigen_parameter_values = convert_to_eigenspace(random_parameter_values, mean=bestfit_parameter_values, cov=postfit_covariance)
         # print(f"Eigen parameter values: {pygundam_utils.big_vector_summary(eigen_parameter_values.tolist(),8)}")
         # print(f"Physi parameter values: {pygundam_utils.big_vector_summary(random_parameter_values.tolist(),8)}")
         # print(f"Bestf parameter values: {pygundam_utils.big_vector_summary(bestfit_parameter_values,8)}")
         NLL = likelihood_sampler.inject_params_and_compute_likelihood(random_parameter_values, extend_continue=False)
     print(f"-log q: {log_q}")
     print(f"-log p: {NLL}", flush=True)
-    current_params = likelihood_sampler.get_current_parameter_values()
+    # current_params = likelihood_sampler.get_current_parameter_values()
     # print(f"Current parameter values: {pygundam_utils.big_vector_summary(current_params,8)}")
     # for i in range (len(current_params)):
     #     if (current_params[i] != random_parameter_values[i]):
@@ -186,8 +195,8 @@ for i in range(n):
     #     if ( abs(current_params[i] - bestfit_parameter_values[i])<1e-10 ):
     #         print(f"Parameter {parameter_names[i]} is at best fit point. ")
 
-    nll_stat = likelihood_sampler.compute_stat_likelihood()
-    nll_syst = likelihood_sampler.compute_syst_likelihood()
+    # nll_stat = likelihood_sampler.compute_stat_likelihood()
+    # nll_syst = likelihood_sampler.compute_syst_likelihood()
     # print(f"Stat NLL: {nll_stat}, Syst NLL: {nll_syst}")
     # print(f"Total NLL: {nll_stat + nll_syst}")
     # # test: what's the nll at best fit point ?
@@ -198,7 +207,7 @@ for i in range(n):
 
 
     # do append at the end of the loop
-    eigen_params_list.append(eigen_parameter_values)
+    # eigen_params_list.append(eigen_parameter_values)
     params_list.append(random_parameter_values)
     logq_list.append(log_q)
     NLL_list.append(NLL)
