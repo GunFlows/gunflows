@@ -9,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("ROOT module not found. Please ensure ROOT/PyROOT is properly installed and in your Python path.")
 import argparse
-from gunflows.likelihood_sampler.pygundam_utils import big_vector_summary, convert_TH2D_to_TMatrix
+from gunflows.likelihood_sampler.pygundam_utils import big_vector_summary, convert_TH2D_to_TMatrix, convert_to_eigenspace, log_multivariate_normal_pdf
 from tqdm import tqdm
 import sys
 import time
