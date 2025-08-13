@@ -2,13 +2,12 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-import time
+import time, copy
 import numpy as np
 import torch
 from pathlib import Path
 from omegaconf import DictConfig
 from hydra.core.hydra_config import HydraConfig
-import matplotlib.pyplot as plt
 
 from gunflows.trainer.base_trainer import BaseTrainer
 import gunflows.losses.importance_losses as IL
@@ -23,7 +22,7 @@ LOSS_MAP = {
 }
 
 
-class OA2022Trainer(BaseTrainer):
+class OA2022PyGundamTrainer(BaseTrainer):
     def __init__(
         self,
         cfg: DictConfig,
@@ -40,9 +39,14 @@ class OA2022Trainer(BaseTrainer):
         self.dataset = dataset
         self.optimizer = optimizer
         self.scheduler = scheduler
+
         self.epochs = tcfg.epochs
         self.batch_size = tcfg.batch_size
         self.val_every = tcfg.val_every
+
+        self.warmup_k = int(tcfg.get("warmup_k", 1000))
+        self.stage_len = int(tcfg.get("stage_len", 1000))
+        self.use_best_for_sampling = bool(tcfg.get("use_best_for_sampling", True))
 
         es = tcfg.early_stop
         self.patience = es.patience
@@ -54,9 +58,8 @@ class OA2022Trainer(BaseTrainer):
         self.loss_kwargs = dict(tcfg.loss.kwargs)
 
         seed_split = tcfg.get("seed", cfg.get("seed", 42))
-        rng = np.random.default_rng(seed_split)
-        self.val_idx = rng.choice(len(dataset), size=tcfg.num_val, replace=False)
-        self.train_idx = np.setdiff1d(np.arange(len(dataset)), self.val_idx)
+        self._split_rng = np.random.default_rng(seed_split)
+        self._reset_split(len(dataset), tcfg.num_val)
 
         self.wait = 0
         self.best_loss = float("inf")
@@ -69,15 +72,21 @@ class OA2022Trainer(BaseTrainer):
         ckpt_root = cfg.get("paths", {}).get("checkpoints_dir", f"{run_dir}/checkpoints")
         self.ckpt_dir = Path(ckpt_root)
         self.ckpt_dir.mkdir(parents=True, exist_ok=True)
-        self.img_dir = self.ckpt_dir / "img"
-        self.img_dir.mkdir(parents=True, exist_ok=True)
+
+        self._next_trigger = self.warmup_k
+        self._stage = 0
 
     def train(self) -> None:
         start = time.time()
         for epoch in range(self.epochs):
             if epoch % self.val_every == 0:
                 self._validate_epoch(epoch)
+
             self._train_batch()
+
+            self._maybe_refresh_dataset()
+            self._maybe_trigger_sampling(epoch)
+
             if self.wait >= self.patience and epoch > self.min_epoch:
                 break
         print(f"Finished in {time.time() - start:.1f}s")
@@ -98,7 +107,7 @@ class OA2022Trainer(BaseTrainer):
     def _validate_epoch(self, epoch: int) -> None:
         self.epochs_val.append(epoch)
         val_kwargs = dict(self.loss_kwargs)
-        val_kwargs.update(return_extra=True, validation=True, save_dir=self.img_dir)
+        val_kwargs.update(return_extra=True, validation=True, save_dir=self.ckpt_dir)
         loss_val, extras = self.loss_val(
             self.model, self.dataset, self.val_idx, **val_kwargs
         )
@@ -116,28 +125,40 @@ class OA2022Trainer(BaseTrainer):
             self.wait += 1
         self._checkpoint(best=False)
 
-        print(
-            f"Epoch={epoch:05d} val_loss={loss_val.item():.3e} ess={ess:.3f}"
-        )
-        # self._plot_curves()
+        print(f"Epoch={epoch:05d} val_loss={loss_val.item():.3e} ess={ess:.3f}")
 
     def _checkpoint(self, best: bool = False) -> None:
         tag = "best" if best else "last"
         torch.save(self.model.state_dict(), self.ckpt_dir / f"{tag}_model.pth")
 
-    def _plot_curves(self) -> None:
-        if not self.epochs_val:
-            return
+    def _save_full_model_for_sampling(self, epoch: int, use_best: bool) -> Path:
+        m = copy.deepcopy(self.model).cpu()
+        if use_best and (self.ckpt_dir / "best_model.pth").is_file():
+            sd = torch.load(self.ckpt_dir / "best_model.pth", map_location="cpu")
+            m.load_state_dict(sd)
+        out = self.ckpt_dir / f"sampler_epoch{epoch:05d}.pt"
+        torch.save(m, out)
+        return out
 
-        fig, ax1 = plt.subplots(figsize=(7, 5))
-        ax1.plot(self.train_losses, label="train loss (iter)", color="tab:blue")
-        ax1.plot(self.epochs_val, self.val_losses, "o-", label="val loss", color="tab:orange")
-        ax1.set_yscale("log")
-        ax1.set_xlabel("iteration / epoch")
-        ax1.set_ylabel("loss")
-        ax1.legend(loc="upper left")
+    def _maybe_trigger_sampling(self, epoch: int) -> None:
+        if epoch + 1 == self._next_trigger:
+            ckpt = self._save_full_model_for_sampling(epoch=epoch + 1, use_best=self.use_best_for_sampling)
+            if hasattr(self.dataset, "request_switch_to_nf"):
+                self.dataset.request_switch_to_nf(str(ckpt))
+                print(f"[stream] requested NF sampling from {ckpt}")
+            self._stage += 1
+            self._next_trigger = self.warmup_k + self._stage * self.stage_len
 
+    def _maybe_refresh_dataset(self) -> None:
+        if hasattr(self.dataset, "refresh_if_ready") and self.dataset.refresh_if_ready(plot_grid=False):
+            n = len(self.dataset)
+            nv = min(getattr(self.cfg.trainer, "num_val"), max(1, n - 1))
+            self._reset_split(n, nv)
+            print(f"[stream] dataset swapped: N={n}, re-split train/val.")
 
-        fig.tight_layout()
-        fig.savefig(self.img_dir / "training_curves.png")
-        plt.close(fig)
+    def _reset_split(self, n_total: int, n_val_req: int) -> None:
+        if n_total < 2:
+            raise ValueError("Dataset too small to split.")
+        n_val = min(n_val_req, n_total - 1)
+        self.val_idx = self._split_rng.choice(n_total, size=n_val, replace=False)
+        self.train_idx = np.setdiff1d(np.arange(n_total), self.val_idx)
