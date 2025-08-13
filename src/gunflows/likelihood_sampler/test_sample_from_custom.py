@@ -160,7 +160,7 @@ parameter_names = likelihood_sampler.get_parameter_names()
 
 start_time = time.time()
 n = int(args.n)
-N_n = 10000  # update plots every N_n samples
+N_n = 20000  # update plots every N_n samples
 out_dir = 'img'
 os.makedirs(out_dir, exist_ok=True)
 # sample parameters from a custom distribution
