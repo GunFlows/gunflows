@@ -6,8 +6,9 @@ import time, copy
 import numpy as np
 import torch
 from pathlib import Path
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
+import json
 
 from gunflows.trainer.base_trainer import BaseTrainer
 import gunflows.losses.importance_losses as IL
@@ -22,7 +23,7 @@ LOSS_MAP = {
 }
 
 
-class OA2022PyGundamTrainer(BaseTrainer):
+class OA2022TrainerPyGundam(BaseTrainer):
     def __init__(
         self,
         cfg: DictConfig,
@@ -94,7 +95,7 @@ class OA2022PyGundamTrainer(BaseTrainer):
     def _train_batch(self) -> None:
         idx = np.random.choice(self.train_idx, self.batch_size, replace=False)
         loss = self.loss_train(
-            self.model, self.dataset, idx, **self.loss_kwargs, return_extra=False
+            self.model, self.dataset, idx, self.dataset.stage, **self.loss_kwargs, return_extra=False
         )
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -109,7 +110,7 @@ class OA2022PyGundamTrainer(BaseTrainer):
         val_kwargs = dict(self.loss_kwargs)
         val_kwargs.update(return_extra=True, validation=True, save_dir=self.ckpt_dir)
         loss_val, extras = self.loss_val(
-            self.model, self.dataset, self.val_idx, **val_kwargs
+            self.model, self.dataset, self.val_idx, self.dataset.stage, **val_kwargs
         )
         ess = extras.get("ess")
 
@@ -132,13 +133,19 @@ class OA2022PyGundamTrainer(BaseTrainer):
         torch.save(self.model.state_dict(), self.ckpt_dir / f"{tag}_model.pth")
 
     def _save_full_model_for_sampling(self, epoch: int, use_best: bool) -> Path:
-        m = copy.deepcopy(self.model).cpu()
+        base = self.ckpt_dir / f"sampler_epoch{epoch:05d}"
+        state = None
         if use_best and (self.ckpt_dir / "best_model.pth").is_file():
-            sd = torch.load(self.ckpt_dir / "best_model.pth", map_location="cpu")
-            m.load_state_dict(sd)
-        out = self.ckpt_dir / f"sampler_epoch{epoch:05d}.pt"
-        torch.save(m, out)
-        return out
+            state = torch.load(self.ckpt_dir / "best_model.pth", map_location="cpu")
+        else:
+            state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
+        torch.save(state, base.with_suffix(".pt"))
+        if "model" in self.cfg:
+            meta = OmegaConf.to_container(self.cfg.model, resolve=True)
+            with open(base.with_suffix(".json"), "w") as f:
+                json.dump(meta, f)
+        return base.with_suffix(".pt")
+
 
     def _maybe_trigger_sampling(self, epoch: int) -> None:
         if epoch + 1 == self._next_trigger:

@@ -1,2 +1,3 @@
-_target_: gunflows.likelihood_sampler.likelihoodSampler.LikelihoodSampler
-config_
+# passed to NFSamplerProcess
+threads: 1
+data_is_asimov: true
