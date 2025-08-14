@@ -37,7 +37,9 @@ def big_vector_summary(vec, n_show=4):
     else:
         return str(vec)
 
-def log_multivariate_normal_pdf(x, mean, cov, with_log_det = False, precomputed_log_det=-1):
+def log_multivariate_normal_pdf(x, mean, cov, with_log_det, precomputed_log_det=-1):
+    if with_log_det and precomputed_log_det == -1:
+        raise ValueError("If with_log_det is True, precomputed_log_det can't be -1. Provide arguments to specify.")
     eigen_parameter_values = convert_to_eigenspace(x, mean=mean, cov=cov)
     log_det = 0
     if with_log_det:
@@ -46,7 +48,7 @@ def log_multivariate_normal_pdf(x, mean, cov, with_log_det = False, precomputed_
         else:
             log_det = precomputed_log_det
 
-    log_prob = len(eigen_parameter_values)*0.5*(np.log(2*np.pi))+ 0.5*log_det + sum(eigen_parameter_values**2) # this is actually -log prob
+    log_prob = len(eigen_parameter_values)*0.5*(np.log(2*np.pi)) + 0.5*log_det + sum(eigen_parameter_values**2) # this is actually -log prob
     return log_prob
 
 def convert_to_eigenspace(x, mean, cov):

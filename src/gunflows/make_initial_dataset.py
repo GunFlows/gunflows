@@ -52,6 +52,7 @@ parameter_names = likelihood_sampler.get_parameter_names()
 
 # compute log_det of the covariance matrix. Gonna use it later for normalization
 log_det_cov = np.linalg.slogdet(postfit_covariance)[1]  # log determinant
+print(f"Log determinant of the covariance matrix: {log_det_cov} (Used for normalization)")
 
 n = int(args.n)
 b = int(args.b) if args.b else n
@@ -83,7 +84,7 @@ while len(throws) < n:
             NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False)
             throw = rethrow
             throws_batch[i] = rethrow
-        logq = pygundam_utils.log_multivariate_normal_pdf(throw, mean=bestfit_parameter_values, cov=postfit_covariance)
+        logq = pygundam_utils.log_multivariate_normal_pdf(throw, mean=bestfit_parameter_values, cov=postfit_covariance, with_log_det=True, precomputed_log_det=log_det_cov)
         log_q_batch.append(logq)
         log_p_batch.append(NLL)
         print(f"log_q = {logq}")
