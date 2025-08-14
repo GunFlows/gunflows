@@ -87,7 +87,7 @@ while len(throws) < n:
         log_q_batch.append(logq)
         log_p_batch.append(NLL)
         print(f"log_q = {logq}")
-        print(f"log_p = {NLL}")
+        print(f"log_p = {NLL}", flush=True)
 
     throws.extend(throws_batch)
     log_q_list.extend(log_q_batch)
