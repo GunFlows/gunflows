@@ -48,7 +48,7 @@ def log_multivariate_normal_pdf(x, mean, cov, with_log_det, precomputed_log_det=
         else:
             log_det = precomputed_log_det
 
-    log_prob = len(eigen_parameter_values)*0.5*(np.log(2*np.pi)) + 0.5*log_det + sum(eigen_parameter_values**2) # this is actually -log prob
+    log_prob = 0.5*log_det + 0.5*len(eigen_parameter_values)*(np.log(2*np.pi)) + 0.5*sum(eigen_parameter_values**2) # this is actually -log prob
     return log_prob
 
 def convert_to_eigenspace(x, mean, cov):
