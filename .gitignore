@@ -7,5 +7,6 @@ src/normalizing-flows/
 plots/
 tests/img
 tests/sample*
+tests/job*
 setup.sh
 setup_nosubshell.sh
