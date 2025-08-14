@@ -1,3 +1,0 @@
-srun: Job step aborted: Waiting up to 92 seconds for job step to finish.
-slurmstepd: error: *** JOB 1922228 ON cpu350 CANCELLED AT 2025-08-08T13:02:51 ***
-slurmstepd: error: *** STEP 1922228.0 ON cpu350 CANCELLED AT 2025-08-08T13:02:51 ***
