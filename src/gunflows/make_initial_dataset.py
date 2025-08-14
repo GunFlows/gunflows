@@ -69,6 +69,7 @@ log_q_list = []
 log_p_list = []
 
 while len(throws) < n:
+    i_global = len(throws)
     start_time = time.time()
     log_q_batch = []
     log_p_batch = []
@@ -77,6 +78,7 @@ while len(throws) < n:
     throws_batch = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=b)
     # Compute the log probabilities
     for i, throw in enumerate(throws_batch):
+        i_global = len(throws) + i
         NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False)
         while NLL == -1:
             # I need to re-throw and replace the throw in the batch
@@ -87,8 +89,8 @@ while len(throws) < n:
         logq = pygundam_utils.log_multivariate_normal_pdf(throw, mean=bestfit_parameter_values, cov=postfit_covariance, with_log_det=True, precomputed_log_det=log_det_cov)
         log_q_batch.append(logq)
         log_p_batch.append(NLL)
-        print(f"log_q = {logq}")
-        print(f"log_p = {NLL}", flush=True)
+        print(f"Throw {i_global}: log_q = {logq}")
+        print(f"                  log_p = {NLL}", flush=True)
     #test
 
     throws.extend(throws_batch)
