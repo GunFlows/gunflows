@@ -11,7 +11,7 @@ import torch
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
 from pathlib import Path
-
+# TODO: To be cleaned after we figure out a working training configuration
 __all__ = [
     "exp_forward", "exp_reverse", "exp_symmetric",
     "kl_forward", "kl_reverse", "kl_symmetric",
@@ -23,7 +23,7 @@ def _cap_logw(log_w: torch.Tensor, cap: float) -> torch.Tensor:
 def _ess(w: torch.Tensor) -> float:
     return (w.sum() ** 2 / w.pow(2).sum()).item()
 
-def _common(model, dataset, idx):
+def _common(model, dataset, idx): # Check with L if it is the NLL or the log(p)
     device = next(model.parameters()).device
     zb, ctx, log_g, log_p = dataset.log_prob(idx)
 
@@ -48,6 +48,7 @@ def _diag_plot(
     log_g: torch.Tensor,
     save_dir: str | Path,
     tag: str,
+    stage: int,
 ):
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -56,11 +57,16 @@ def _diag_plot(
     y1 = -log_nf.squeeze(1).detach().cpu().numpy()
     x2 = -log_p.squeeze(1).detach().cpu().numpy()
     y2 = -log_g.squeeze(1).detach().cpu().numpy()
-
-    x_lower = np.quantile(x1, 0.0)
-    x_upper = np.quantile(x1, 0.9999)
+    x_lower = np.min([x1, y1, x2, y2])
+    x_upper = np.max([np.quantile(x1, 0.995), np.quantile(y1, 0.995), np.quantile(x2, 0.995), np.quantile(y2, 0.995)])
 
     fig, axs = plt.subplots(1, 2, figsize=(16, 6))
+
+    # if y is filled with NAn
+    if np.isnan(y1).all():
+        y1 = x1
+    if np.isnan(y2).all():
+        y2 = x2
 
     h1 = axs[0].hist2d(
         x1,
@@ -70,7 +76,7 @@ def _diag_plot(
         cmap="viridis",
         range=[[x_lower, x_upper], [x_lower, x_upper]],
     )
-    plt.colorbar(h1[3], ax=axs[0])
+    # plt.colorbar(h1[3], ax=axs[0])
     axs[0].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
     axs[0].set_title("-log(p) vs -log(NF)")
     axs[0].set_xlabel("-log(p)")
@@ -84,41 +90,47 @@ def _diag_plot(
         cmap="viridis",
         range=[[x_lower, x_upper], [x_lower, x_upper]],
     )
-    plt.colorbar(h2[3], ax=axs[1])
+    # plt.colorbar(h2[3], ax=axs[1])
     axs[1].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
     axs[1].set_title("-log(p) vs -log(g)")
     axs[1].set_xlabel("-log(p)")
     axs[1].set_ylabel("-log(g)")
 
     fig.tight_layout()
-    fig.savefig(save_dir / f"NLLH_comparison_{tag}.png")
+    fig.savefig(save_dir / f"NLLH_comparison_{tag}_{stage}.png")
     plt.close(fig)
-
-    # Plot subplot histogram of weights log(p) - log(g) and log(p) - log(NF)
+    log_w_f=log_p.squeeze(1).detach().cpu().numpy() - log_g.squeeze(1).detach().cpu().numpy()
+    log_w_f = log_w_f[(log_w_f > np.quantile(log_w_f, 0.001)) & (log_w_f < np.quantile(log_w_f, 0.995))]
+    if np.isnan(log_w_f).any():
+        print(f"Warning: NaN values found in log_w_f at stage {stage}. Replacing with 0.")
+    log_w_f[np.isnan(log_w_f)] = 0
+    log_w_r=log_p.squeeze(1).detach().cpu().numpy() - log_nf.squeeze(1).detach().cpu().numpy()
+    log_w_r = log_w_r[(log_w_r > np.quantile(log_w_r, 0.001)) & (log_w_r < np.quantile(log_w_r, 0.995))]
+    if np.isnan(log_w_r).any():
+        print(f"Warning: NaN values found in log_w_r at stage {stage}. Replacing with 0.")
+    log_w_r[np.isnan(log_w_r)] = 0
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.hist(
-        -log_p.squeeze(1).detach().cpu().numpy() + log_g.squeeze(1).detach().cpu().numpy(),
+        log_w_f,
         bins=50,
         density=True,
         alpha=0.5,
-        label="-log(p) + log(g)",
+        label="log(p) - log(g)",
     )
     ax.hist(
-        -log_p.squeeze(1).detach().cpu().numpy() + log_nf.squeeze(1).detach().cpu().numpy(),
+        log_w_r,
         bins=50,
         density=True,
         alpha=0.5,
-        label="-log(p) + log(NF)",
+        label="log(p) - log(NF)",
     )
     ax.set_title("Histogram of log weights")
     ax.set_xlabel("Log Weight")
     ax.set_ylabel("Density")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(save_dir / f"weights_histogram_{tag}.png")
+    fig.savefig(save_dir / f"weights_histogram_{tag}_{stage}.png")
     plt.close(fig)
-
-
 
 
 def exp_forward(
@@ -175,10 +187,11 @@ def exp_symmetric(
     model,
     dataset,
     idx,
+    stage,
     *,
     a=1.0,
     b=1.0,
-    cap_f=np.exp(500),
+    cap_f=np.exp(10),
     cap_r=np.exp(500),
     return_extra=False,
     validation=False,
@@ -197,7 +210,7 @@ def exp_symmetric(
     loss = torch.mean(a * w_f * log_pq**2 + b * w_r * log_pq**2)
 
     if validation:
-        _diag_plot(log_p, log_q, log_g, save_dir, "exp_sym")
+        _diag_plot(log_p, log_q, log_g, save_dir, "exp_sym", stage)
         print(f"Forward Exp loss: {torch.mean(w_f * log_pq**2).item()}")
         print(f"Reverse Exp loss: {torch.mean(w_r * log_pq**2).item()}")
         print(f"Mean log_pq: {log_pq.mean().item()}")
@@ -270,10 +283,11 @@ def kl_symmetric(
     model,
     dataset,
     idx,
+    stage,
     *,
     a=1.0,
     b=1.0,
-    cap_f=np.exp(500),
+    cap_f=np.exp(50),
     cap_r=np.exp(500),
     return_extra=False,
     validation=False,
@@ -287,12 +301,12 @@ def kl_symmetric(
     w_f = _cap_logw(log_w_f, cap_f)
 
     log_w_r = log_q - log_g
-    w_r = _cap_logw(log_w_r, cap_r).detach()
+    w_r = _cap_logw(log_w_r, cap_r)
 
     loss = torch.mean(a * w_f * log_pq - b * w_r * log_pq)
 
     if validation:
-        _diag_plot(log_p, log_q, log_g, save_dir, "kl_sym")
+        _diag_plot(log_p, log_q, log_g, save_dir, "kl_sym", stage)
         print(f"Forward KL loss: {torch.mean(w_f * log_pq).item()}")
         print(f"Reverse KL loss: {-torch.mean(w_r * log_pq).item()}")
         print(f"Mean log_pq: {log_pq.mean().item()}")

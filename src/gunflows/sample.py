@@ -133,6 +133,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.return_probs:
         logqs = np.concatenate(logqs, 0)[: cfg.num_samples]
 
+
     samples = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples)).numpy()
     mean_sample = dataset.mean.numpy()
     cov_sample = dataset.get_true_cov().numpy()

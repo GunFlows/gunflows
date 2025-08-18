@@ -1,0 +1,30 @@
+_target_: gunflows.trainer.trainer_OA2022_pygundam.OA2022TrainerPyGundam
+
+epochs: 20000
+batch_size: 20000
+num_val: 10000
+val_every: 100
+device: cuda
+seed: 42
+
+early_stop:
+  patience: 10
+  min_delta: 100
+  min_epoch: 20000
+
+loss:
+  name_train: kl_symmetric
+  name_val:   kl_symmetric
+  cap_f: 100000
+  cap_r: 100000
+  kwargs:
+    a: 1.0
+    b: 1.0
+
+warmup_k: 500
+stage_len: 500
+gen_batch_size: ${experiment.dataset.gen_batch_size}
+use_best_for_sampling: false
+sample_chunk_size: 200
+save_full_nf: true
+stage_log_csv: ${hydra:runtime.output_dir}/stage_log.csv

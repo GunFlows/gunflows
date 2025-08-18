@@ -13,9 +13,10 @@ import matplotlib.pyplot as plt
 from gunflows.trainer.base_trainer import BaseTrainer
 import gunflows.losses.importance_losses as IL
 
+# TODO : Add alpha divergence
 LOSS_MAP = {
     "exp_forward": IL.exp_forward,
-    "exp_reverse": IL.exp_reverse,
+    "exp_reverse": IL.exp_reverse, # Should I remove these forward/reverse losses?
     "exp_symmetric": IL.exp_symmetric,
     "kl_forward": IL.kl_forward,
     "kl_reverse": IL.kl_reverse,
