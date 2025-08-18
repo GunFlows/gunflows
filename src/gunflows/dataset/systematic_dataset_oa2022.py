@@ -8,7 +8,7 @@ Date  : 2025-08-14
 - Loads parameter batches from a *starting* folder and/or batches produced
   on-the-fly by a background sampler (written as `batch*.npz`).
 - Standardizes each batch with its own (mean, cov): x_std = (x - mean) / sqrt(diag(cov)).
-- For *starting* batches only, fixes log_q into standardized space by:
+- For starting batches only, fixes log_q into standardized space by:
       log_q <- (log_q - mean(log_q)) + 0.5*logdet(cov_std) + D/2*(log(2π) + 1)
 - Aligns log_p to log_q using one of:
     * shift_mode="per_batch" : shift each batch before concatenation
@@ -39,6 +39,7 @@ __all__ = ["SystematicDatasetOA2022"]
 def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, stage):
     samples = samples[:, phase_dims]
     mean = mean[phase_dims]
+    names = names[phase_dims]
     cov = cov[np.ix_(phase_dims, phase_dims)]
     fig, axes = plt.subplots(n, n, figsize=(3 * n, 3 * n))
     for i in range(n):
@@ -48,7 +49,10 @@ def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, stage
                 x = samples[:, i]
                 ax.hist(x, bins=60, weights=weights, density=True, histtype="step")
                 xs = np.linspace(x.min(), x.max(), 200)
-                ax.plot(xs, (1/np.sqrt(2*np.pi))*np.exp(-0.5*(xs**2)))
+                mu = mean[i]
+                sigma = np.sqrt(max(cov[i, i], 1e-12))
+                ax.plot(xs, (1.0/(np.sqrt(2*np.pi)*sigma))*np.exp(-0.5*((xs - mu)/sigma)**2))
+                ax.set_yscale("log")
             else:
                 ax.hist2d(samples[:, j], samples[:, i], weights=weights, bins=60, norm=LogNorm())
             if i == n - 1: ax.set_xlabel(names[j], fontsize=7)
@@ -80,7 +84,7 @@ class SystematicDatasetOA2022(Dataset):
         threads=6,
         data_is_asimov=True,
         model_cfg=None,
-        max_batches=5,
+        max_batches=10,
         shift_mode="per_batch",            # "per_batch", "global", or "none"
         mean_shift=True,                   # include the second (mean-weight) shift
     ):
@@ -172,8 +176,8 @@ class SystematicDatasetOA2022(Dataset):
                     self._append_batch_path(msg["from_file"], tag="runtime")
                     added = True
             if added:
-                self._rebuild_merged(plot_grid=plot_grid)
                 self.stage += 1
+                self._rebuild_merged(plot_grid=plot_grid)
                 updated = True
         return updated
 
@@ -227,6 +231,12 @@ class SystematicDatasetOA2022(Dataset):
         data_std_list, log_p_list, log_q_list = [], [], []
         meta_last = None
 
+        latest_samples_phys = None
+        latest_mean_phys = None
+        latest_cov_phys = None
+        latest_titles = None
+        latest_logw = None
+
         for path, tag in list(self._batches):
             ld = np.load(path, allow_pickle=True)
             is_starting = (os.path.realpath(path) in self._starting_paths)
@@ -234,8 +244,6 @@ class SystematicDatasetOA2022(Dataset):
             data_phys = torch.tensor(ld["data"], dtype=torch.float32)
             log_p_phys = torch.tensor(ld["log_p"], dtype=torch.float32)
             cov_ref   = torch.tensor(ld["cov"],  dtype=torch.float32)
-            # Compute empirical cov
-            cov_ref = torch.cov(data_phys.T)
             mean_ref  = torch.tensor(ld["mean"], dtype=torch.float32)
             titles_ref = ld["par_names"]
             bestfit_nll = float((ld["bestfit_nll"].item() if hasattr(ld["bestfit_nll"], "item") else ld["bestfit_nll"])) if "bestfit_nll" in ld else 0.0
@@ -249,12 +257,12 @@ class SystematicDatasetOA2022(Dataset):
             if "log_q" in ld and ld["log_q"] is not None:
                 log_q_phys = torch.tensor(ld["log_q"], dtype=torch.float32)
             else:
-                L = torch.linalg.cholesky(cov_ref + 1e-6 * torch.eye(cov_ref.shape[0], dtype=cov_ref.dtype))
-                diff = data_phys - mean_ref
+                L = torch.linalg.cholesky(cov_std)
+                diff = data_std
                 y = torch.linalg.solve_triangular(L, diff.T, upper=False)
                 quad = (y * y).sum(dim=0)
                 const_g = data_phys.shape[1] * np.log(2.0 * np.pi)
-                log_q_phys = -0.5 * (quad + 2.0 * torch.log(torch.diag(L)).sum() + const_g)
+                log_q_phys = 0.5 * (quad + 2.0 * torch.log(torch.diag(L)).sum() + const_g)
 
             if is_starting:
                 log_det_covstd = torch.logdet(cov_std)
@@ -286,17 +294,21 @@ class SystematicDatasetOA2022(Dataset):
                 "titles": titles_ref,
                 "chol": chol_std,
                 "std_per_dim": std_per_dim,
+                "cov_phys": cov_ref,  
             }
+            latest_samples_phys = data_phys.detach().cpu().numpy()
+            latest_mean_phys = mean_ref.detach().cpu().numpy()
+            latest_cov_phys = cov_ref.detach().cpu().numpy()
+            latest_titles = titles_ref
+            latest_logw = (log_q_adj - log_p_adj).detach().cpu().numpy()
 
         self.data  = torch.cat(data_std_list, dim=0)
         self.log_q = torch.cat(log_q_list,  dim=0)
         self.log_p = torch.cat(log_p_list,  dim=0)
 
         if self.shift_mode == "global":
-            # median shift
             shift = torch.median(self.log_q - self.log_p)
             self.log_p = self.log_p + shift
-            # mean-weight shift
             if self.mean_shift:
                 w = torch.exp(self.log_q - self.log_p)
                 q = torch.quantile(w, 0.995)
@@ -306,6 +318,7 @@ class SystematicDatasetOA2022(Dataset):
         self.cov = meta_last["cov"]; self.true_cov = meta_last["true_cov"]
         self.mean = meta_last["mean"]; self.titles = meta_last["titles"]
         self.cholesky = meta_last["chol"]; self.std_per_dim = meta_last["std_per_dim"]
+        self.cov_phys = meta_last["cov_phys"]
 
         self.nsample, self.ndim = self.data.shape
         self.list_dim_conditionnal = [i for i in range(self.ndim) if i not in self.phase_space_dim]
@@ -313,19 +326,52 @@ class SystematicDatasetOA2022(Dataset):
         self.data_spline = self.data[:, self.phase_space_dim]
 
         self._log(f"Merged {len(self._batches)} batches → {self.nsample} samples")
+        plot_grid=True
 
         if plot_grid:
             logw = (self.log_q - self.log_p).reshape(-1)
             q = torch.quantile(logw, 0.99)
             mask = logw <= q
             logw = logw[mask] - torch.logsumexp(logw[mask], dim=0)
+            samples_phys = (self.data * self.std_per_dim + self.mean)[mask, :].detach().cpu().numpy()
+            mean_phys = self.mean.detach().cpu().numpy()
+            cov_phys = self.cov_phys.detach().cpu().numpy()
+            weights_np = torch.exp(logw).detach().cpu().numpy()
             _plot_grid(
-                self.data[mask, :].detach().cpu().numpy(),
-                self.mean.detach().cpu().numpy(),
-                torch.exp(logw).detach().cpu().numpy(),
-                self.cov.detach().cpu().numpy(),
-                self.titles, 20, self.out_dir, self.phase_space_dim, self.stage,
+                samples_phys,
+                mean_phys,
+                weights_np,
+                cov_phys,
+                self.titles, 5, self.out_dir, self.phase_space_dim, self.stage,
             )
+            _plot_grid(
+                samples_phys,
+                mean_phys,
+                np.ones_like(weights_np),
+                cov_phys,
+                self.titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
+            )
+
+            if latest_samples_phys is not None:
+                lw = latest_logw
+                q_last = np.quantile(lw, 0.99)
+                m_last = lw <= q_last
+                lw = lw[m_last] - np.log(np.sum(np.exp(lw[m_last])) + 1e-40)
+                print(f"Current stage {self.stage}")
+                _plot_grid(
+                    latest_samples_phys[m_last, :],
+                    latest_mean_phys,
+                    np.exp(lw),
+                    latest_cov_phys,
+                    latest_titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
+                )
+                _plot_grid(
+                    latest_samples_phys[m_last, :],
+                    latest_mean_phys,
+                    np.ones_like(lw),
+                    latest_cov_phys,
+                    latest_titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
+                )
 
     def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None):
         self._data_q = mp.Queue(maxsize=queue_size)
@@ -360,8 +406,9 @@ class SystematicDatasetOA2022(Dataset):
             raise
         if isinstance(msg, dict) and "from_file" in msg:
             self._append_batch_path(msg["from_file"], tag="runtime")
-            self._rebuild_merged(plot_grid=plot_grid)
             self.stage += 1
+            self._rebuild_merged(plot_grid=plot_grid)
+            
 
     def _wait_for_first_file(self, folder, timeout):
         import time

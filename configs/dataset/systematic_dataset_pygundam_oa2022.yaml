@@ -13,9 +13,10 @@ with_sampler: true
 nf_ckpt: null
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000
+max_batches: 50
 
 llh_config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
-llh_overrides: ["/workspace/config/GundamInputOA2021/override/onlyRun4and5.yaml"]
+llh_overrides: []
 llh_cwd: /workspace/config/GundamInputOA2021
 
 seed: 42

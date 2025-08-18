@@ -268,17 +268,13 @@ class NFSamplerProcess(mp.Process):
                 par_names = llh.get_parameter_names()
                 bestfit = float(getattr(llh, "likelihood_at_bestfit", 0.0))
             else:
-                d = len(self.phase_space_dim) if self.phase_space_dim else 2
-                cov_ref = np.eye(d, dtype=np.float32)
-                mean_ref = np.zeros(d, dtype=np.float32)
-                par_names = [f"x{i}" for i in range(d)]
-                bestfit = 0.0
+                raise RuntimeError("No likelihood configuration provided, cannot sample from COV.")
             self._cov_ref = cov_ref
             self._mean_ref = mean_ref
 
             cov_t  = torch.as_tensor(cov_ref)
             mean_t = torch.as_tensor(mean_ref)
-            L_phys = torch.linalg.cholesky(cov_t + 1e-6 * torch.eye(cov_t.shape[0], dtype=cov_t.dtype))
+            L_phys = torch.linalg.cholesky(cov_t)
             logdet_cov = 2.0 * torch.log(torch.diag(L_phys)).sum()
             const = cov_t.shape[0] * np.log(2.0 * np.pi)
 
@@ -307,10 +303,15 @@ class NFSamplerProcess(mp.Process):
                 else:
                     z = torch.randn(k, mean_t.numel(), generator=rng)
                     x_phys = z @ L_phys.T + mean_t
+                    std = torch.sqrt(torch.diag(cov_t))
+                    Dinv = torch.diag(1.0 / std)
+                    cov_std = Dinv @ cov_t @ Dinv
+                    L_std = torch.linalg.cholesky(cov_std)
+                    logdet_covstd = 2.0 * torch.log(torch.diag(L_std)).sum()
                     diff = (x_phys - mean_t).T
                     y = torch.linalg.solve_triangular(L_phys, diff, upper=False)
                     quad = (y * y).sum(dim=0)
-                    log_q = (-0.5 * (quad + const + logdet_cov)).cpu().numpy().astype(np.float32)
+                    log_q = (0.5 * (quad + const + logdet_covstd)).cpu().numpy().astype(np.float32)
                     return x_phys, log_q
 
             while not self.stop_evt.is_set():
@@ -355,10 +356,11 @@ class NFSamplerProcess(mp.Process):
                             if self.llh_config:
                                 nll = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
                             else:
-                                nll = float(np.sum(x_np[i] * x_np[i]))
+                                raise NotImplementedError("Likelihood computation not implemented")
                             if nll == -1:
                                 if self.rethrow:
                                     continue
+                            print("Index:", i, "Log Q:", log_q_np[i], "NLL:", nll)
                             acc_x.append(x_np[i])
                             acc_lq.append(float(log_q_np[i]))
                             acc_lp.append(float(nll))

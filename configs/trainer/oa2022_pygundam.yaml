@@ -21,10 +21,10 @@ loss:
     a: 1.0
     b: 1.0
 
-warmup_k: 100            
-stage_len: 100   
+warmup_k: 500
+stage_len: 500
 gen_batch_size: ${experiment.dataset.gen_batch_size}
-use_best_for_sampling: False
-sample_chunk_size: 200  
-save_full_nf: true        
+use_best_for_sampling: false
+sample_chunk_size: 200
+save_full_nf: true
 stage_log_csv: ${hydra:runtime.output_dir}/stage_log.csv
