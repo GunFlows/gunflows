@@ -18,6 +18,7 @@ def parse_cli() -> argparse.Namespace:
         description="Run LikelihoodSampler throws and save basic diagnostics."
     )
     p.add_argument("-cfg", type=str, default="/workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov_ToyFit.root")    
+    p.add_argument("config")
     p.add_argument("-o", "--override", action="append", default=[])
     p.add_argument("-n", type=int, default=1_000)
     p.add_argument("--asimov", action="store_true")
@@ -59,7 +60,11 @@ def main():
     os.chdir("/workspace/config/GundamInputOA2021")
 
     lh = LikelihoodSampler(
+<<<<<<< HEAD
         args.cfg,
+=======
+        args.config,
+>>>>>>> 650826f (test files)
         override_files=args.override,
         threads=args.threads,
         data_is_asimov=args.asimov,
