@@ -80,13 +80,13 @@ def _wait_next(ds: SystematicDataset, timeout: float) -> bool:
             return True
         time.sleep(0.05)
     return False
-
+# Useful override : "/workspace/config/GundamInputOA2021/override/onlyRun4and5.yaml" -> 5 times less data I guess because 5 times faster
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--llh-config", type=str, required=True)
-    p.add_argument("--llh-overrides", type=str, nargs="*", default=[])
-    p.add_argument("--llh-cwd", type=str, required=True)
+    p.add_argument("--llh-config", type=str, default="/workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root")
+    p.add_argument("--llh-overrides", type=str, default=["/workspace/config/GundamInputOA2021/override/onlyRun4and5.yaml"])
+    p.add_argument("--llh-cwd", type=str, default="/workspace/config/GundamInputOA2021")
     p.add_argument("--nf-ckpt", type=str, default=None)
     p.add_argument("--gen-batch-size", type=int, default=1000)
     p.add_argument("--phase-space-dim", type=int, nargs="+", default=[0, 1, 2])

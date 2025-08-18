@@ -26,7 +26,7 @@ class CovFlow(nn.Module):
         self.phase_space_dim = target.phase_space_dim
         print(f"CovFlow initialized with phase space dimensions ranging from {self.phase_space_dim[0]} to {self.phase_space_dim[-1]}")
 
-    def freeze_params(self):
+    def freeze_params(self): # IMPORTANT : This seems crucial for the training process. But changing the covarainace matrix might mix parameters together
         self.param_tril.requires_grad_(False)
         self.mu.requires_grad_(False)
 

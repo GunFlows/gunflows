@@ -14,7 +14,7 @@ import torch.nn as nn
 from normflows.core import NormalizingFlow
 from .cov_flow import CovFlow
 from .context_flow import ContextFlow
-
+# TODO: Add a schematic to explain the flow architecture
 class SystematicFlow(NormalizingFlow):
     def __init__(self, base, flows, target, context_transform=True, n_context_flows=12,
                  n_hidden_layers=2, hidden_dim=64, freeze_covflow=False):
