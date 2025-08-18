@@ -29,6 +29,7 @@ class LikelihoodSampler:
         self.override_files = override_files if override_files else []
         self.prior_parameter_values = None
         self.postfit_parameter_values = None
+        self.prefit_covariance_matrix = None  # Not used for sampling, useful for debugging
         self.postfit_covariance_matrix = None
         self.likelihood_at_bestfit = None
 
@@ -259,6 +260,9 @@ class LikelihoodSampler:
         self.fitter = GUNDAM.FitterEngine()
         self.fitter.setConfig(fitter_engine_config)
         self.fitter.configure()
+
+        # load prefit covariance matrix
+        self. prefit_covariance_matrix = self.fitter_root_file.Get("FitterEngine/FitterEngine/propagator/globalCovarianceMatrix_TMatrixD")
 
     def load_postfit_covariance_in_propagator(self):
         if self.fitter_root_file is None:

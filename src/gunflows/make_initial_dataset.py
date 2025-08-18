@@ -67,6 +67,8 @@ print(f"Sampling and computing likelihoods for {n} throws in batches of {b}.")
 throws = []
 log_q_list = []
 log_p_list = []
+stat_NLL_list = []
+syst_NLL_list = []
 
 while len(throws) < n:
     i_global = len(throws)
@@ -80,15 +82,22 @@ while len(throws) < n:
     for i, throw in enumerate(throws_batch):
         i_global = len(throws) + i
         NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False)
+        penalty_NLL = likelihood_sampler.likelihood_interface.getBuffer().penaltyLikelihood
+        stat_NLL = likelihood_sampler.likelihood_interface.getBuffer().statLikelihood
         while NLL == -1:
             # I need to re-throw and replace the throw in the batch
             rethrow = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance)
             NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False)
+            penalty_NLL = likelihood_sampler.likelihood_interface.getBuffer().penaltyLikelihood
+            stat_NLL = likelihood_sampler.likelihood_interface.getBuffer().statLikelihood
+            NLL = penalty_NLL + stat_NLL
             throw = rethrow
             throws_batch[i] = rethrow
         logq = pygundam_utils.log_multivariate_normal_pdf(throw, mean=bestfit_parameter_values, cov=postfit_covariance, with_log_det=True, precomputed_log_det=log_det_cov)
         log_q_batch.append(logq)
         log_p_batch.append(NLL)
+        stat_NLL_list.append(stat_NLL)
+        syst_NLL_list.append(penalty_NLL)
         print(f"Throw {i_global}: log_q = {logq}")
         print(f"                  log_p = {NLL}", flush=True)
     #test
@@ -110,6 +119,83 @@ while len(throws) < n:
     log_q = np.array(data['log_q'])
     # draw NLL and gNLL
     pygundam_utils.draw_logp_logq(log_p, log_q, bestfit_nll, out_dir)
+
+    # draw syst and stat nll separately
+    plt.figure(figsize=(10, 6))
+    plt.hist(stat_NLL_list, alpha=0.7, density=True,
+             color='lightblue', bins=100, edgecolor='black', label='Stat NLL Samples')
+    plt.xlabel('Stat NLL')
+    plt.ylabel('Density')
+    plt.title(f'Stat NLL Distribution (throws: {len(stat_NLL_list)})')
+    plt.legend()
+    # mean and std
+    mu, std = np.mean(stat_NLL_list), np.std(stat_NLL_list)
+    plt.axvline(mu, color='red', linestyle='--', label=f'Mean: {mu:.2f}')
+    plt.axvline(mu + std, color='green', linestyle='--', label=f'Std: {std:.2f}')
+    plt.axvline(mu - std, color='green', linestyle='--')
+    plt.legend()
+    plt.savefig(os.path.join(out_dir, 'Stat_NLL_distribution.png'), dpi=100, bbox_inches='tight')
+    plt.close()
+    plt.figure(figsize=(10, 6))
+    plt.hist(syst_NLL_list, alpha=0.7, density=True,
+             color='orange', bins=100, edgecolor='black', label='Syst NLL Samples')
+    plt.xlabel('Syst NLL')
+    plt.ylabel('Density')
+    plt.title(f'Syst NLL Distribution (throws: {len(syst_NLL_list)})')
+    plt.legend()
+    # mean and std
+    mu, std = np.mean(syst_NLL_list), np.std(syst_NLL_list)
+    plt.axvline(mu, color='red', linestyle='--', label=f'Mean: {mu:.2f}')
+    plt.axvline(mu + std, color='green', linestyle='--', label=f'Std: {std:.2f}')
+    plt.axvline(mu - std, color='green', linestyle='--')
+    plt.legend()
+    plt.savefig(os.path.join(out_dir, 'Syst_NLL_distribution.png'), dpi=100, bbox_inches='tight')
+    plt.close()
+    # plot syst and stat vs. gNLL
+    plt.figure(figsize=(10, 6))
+    plt.scatter(stat_NLL_list, syst_NLL_list, alpha=0.5,
+                color='blue', label='Stat vs Syst NLL')
+    plt.xlabel('Stat NLL')
+    plt.ylabel('Syst NLL')
+    plt.title('Stat NLL vs Syst NLL')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(out_dir, 'Stat_vs_Syst_NLL.png'), dpi=100, bbox_inches='tight')
+    plt.close()
+    plt.figure(figsize=(10, 6))
+    plt.hist2d(stat_NLL_list, log_q, alpha=0.5,
+                cmap='viridis', bins=100, label='Stat NLL vs gNLL', density=True)
+    plt.xlabel('Stat NLL')
+    plt.ylabel('gNLL')
+    plt.title('Stat NLL vs gNLL')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(out_dir, 'Stat_NLL_vs_gNLL.png'), dpi=100, bbox_inches='tight')
+    plt.close()
+    plt.figure(figsize=(10, 6))
+    m1 = np.mean(syst_NLL_list)
+    m2 = np.mean(log_q)
+    plt.hist2d(syst_NLL_list, log_q - m2 + m1, alpha=0.5,
+               cmap='viridis', bins=100, label='Syst NLL vs gNLL', density=True, norm='log')
+    plt.xlabel('Syst NLL')
+    plt.ylabel('gNLL (shifted)')
+    plt.title('Syst NLL vs gNLL')
+    # overlay a diagonal line
+    min_val = min(min(log_q), min(syst_NLL_list))
+    max_val = max(max(log_q), max(syst_NLL_list))
+    plt.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', label='y=x')
+    plt.colorbar(label='Density')
+    plt.tight_layout()
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(out_dir, 'Syst_NLL_vs_gNLL.png'), dpi=100, bbox_inches='tight')
+    plt.close()
+    prefit_cov = likelihood_sampler.prefit_covariance_matrix
+    log_det = np.linalg.slogdet(prefit_cov)[1]  # log determinant of the prefit covariance matrix
+    print(f"Log determinant of the prefit covariance matrix: {log_det}")
+
+
+
 
 
 
