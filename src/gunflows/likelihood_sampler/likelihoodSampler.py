@@ -177,6 +177,7 @@ class LikelihoodSampler:
         """
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
+        current = self.get_current_parameter_values()
         n = 0
         out_of_domain_penalty = 0
         for par_set in self.propagator.getParametersManager().getParameterSetsList():
@@ -190,7 +191,8 @@ class LikelihoodSampler:
                         else:
                             if not extend_continue:
                                 print(f"WARNING| Parameter value out of domain: {values[n]} out of [{min},{max}] for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
-                                return -1  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
+                                self.inject_parameter_values(current)
+                                return -1,-1,0  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
                             if values[n] < min:
                                 out_of_domain_penalty += math.exp((min - values[n])**2) - 1
                                 par.setParameterValue(min, False)
@@ -210,7 +212,7 @@ class LikelihoodSampler:
                     if par.isEnabled():
                         if not par.isValueWithinBounds():
                             print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
-                            par.setParameterValue(par.getPriorValue(), False)
+                            return -1,-1,0
 
         if n != len(values):
             # If the number of values does not match, reset to previous values
@@ -220,12 +222,13 @@ class LikelihoodSampler:
 
         # Now compute the likelihood
         self.likelihood_interface.propagateAndEvalLikelihood()
-        NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood
-        NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood
+        # print(f"computing LH at: {big_vector_summary(self.get_current_parameter_values(), 10)}")
+        NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood / 2.
+        NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood / 2.
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
         # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
         # print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
-        return NLL_tot
+        return NLL_tot, NLL_stat, NLL_syst
 
     def configure_using_root(self):
         print("Extracting config from root file:", self.config_file)
@@ -262,7 +265,16 @@ class LikelihoodSampler:
         self.fitter.configure()
 
         # load prefit covariance matrix
-        self. prefit_covariance_matrix = self.fitter_root_file.Get("FitterEngine/FitterEngine/propagator/globalCovarianceMatrix_TMatrixD")
+
+        tmatrix_tmp = self.fitter_root_file.Get("FitterEngine/propagator/globalCovarianceMatrix_TMatrixD")
+        self.prefit_covariance_matrix = []
+        n_rows = tmatrix_tmp.GetNrows()
+        n_cols = tmatrix_tmp.GetNcols()
+        for i in range(n_rows):
+            row = []
+            for j in range(n_cols):
+                row.append(tmatrix_tmp[i,j])
+            self.prefit_covariance_matrix.append(row)
 
     def load_postfit_covariance_in_propagator(self):
         if self.fitter_root_file is None:

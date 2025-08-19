@@ -53,6 +53,11 @@ parameter_names = likelihood_sampler.get_parameter_names()
 # compute log_det of the covariance matrix. Gonna use it later for normalization
 log_det_cov = np.linalg.slogdet(postfit_covariance)[1]  # log determinant
 print(f"Log determinant of the covariance matrix: {log_det_cov} (Used for normalization)")
+if log_det_cov == -np.inf:
+    raise ValueError("Log determinant of the covariance matrix is -inf. This indicates a singular matrix, which cannot be used for sampling.")
+prefit_cov = likelihood_sampler.prefit_covariance_matrix
+log_det = np.linalg.slogdet(prefit_cov)[1]  # log determinant of the prefit covariance matrix
+print(f"Log determinant of the prefit covariance matrix: {log_det}")
 
 n = int(args.n)
 b = int(args.b) if args.b else n
@@ -75,29 +80,31 @@ while len(throws) < n:
     start_time = time.time()
     log_q_batch = []
     log_p_batch = []
+    stat_NLL_list_batch = []
+    syst_NLL_list_batch = []
     # Sample throws from the multivariate normal distribution
     b = min(b, n - len(throws))  # Ensure we don't exceed the total number of throws
     throws_batch = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=b)
     # Compute the log probabilities
     for i, throw in enumerate(throws_batch):
         i_global = len(throws) + i
-        NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False)
-        penalty_NLL = likelihood_sampler.likelihood_interface.getBuffer().penaltyLikelihood
-        stat_NLL = likelihood_sampler.likelihood_interface.getBuffer().statLikelihood
-        while NLL == -1:
+        # print(f"first throw: {pygundam_utils.big_vector_summary(throw, 10)}")
+        tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False)
+        NLL = penalty_NLL + stat_NLL
+        while tot == -1:
             # I need to re-throw and replace the throw in the batch
             rethrow = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance)
-            NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False)
-            penalty_NLL = likelihood_sampler.likelihood_interface.getBuffer().penaltyLikelihood
-            stat_NLL = likelihood_sampler.likelihood_interface.getBuffer().statLikelihood
+            # print(f"re-throw: {pygundam_utils.big_vector_summary(rethrow, 10)}")
+            tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False)
             NLL = penalty_NLL + stat_NLL
+
             throw = rethrow
             throws_batch[i] = rethrow
         logq = pygundam_utils.log_multivariate_normal_pdf(throw, mean=bestfit_parameter_values, cov=postfit_covariance, with_log_det=True, precomputed_log_det=log_det_cov)
         log_q_batch.append(logq)
         log_p_batch.append(NLL)
-        stat_NLL_list.append(stat_NLL)
-        syst_NLL_list.append(penalty_NLL)
+        stat_NLL_list_batch.append(stat_NLL)
+        syst_NLL_list_batch.append(penalty_NLL)
         print(f"Throw {i_global}: log_q = {logq}")
         print(f"                  log_p = {NLL}", flush=True)
     #test
@@ -105,6 +112,8 @@ while len(throws) < n:
     throws.extend(throws_batch)
     log_q_list.extend(log_q_batch)
     log_p_list.extend(log_p_batch)
+    stat_NLL_list.extend(stat_NLL_list_batch)
+    syst_NLL_list.extend(syst_NLL_list_batch)
     # At every batch, we also save the current state of the throws
     print(f"Processed {len(throws)}/{n} throws. Time per throw in last batch: {(time.time() - start_time)/b:.2f} seconds (batch size: {b})")
     dataset_dict = likelihood_sampler.generate_dataset_dictionary(throws, log_q_list, log_p_list)
@@ -176,7 +185,7 @@ while len(throws) < n:
     m1 = np.mean(syst_NLL_list)
     m2 = np.mean(log_q)
     plt.hist2d(syst_NLL_list, log_q - m2 + m1, alpha=0.5,
-               cmap='viridis', bins=100, label='Syst NLL vs gNLL', density=True, norm='log')
+               cmap='viridis', bins=100, label='Syst NLL vs gNLL', density=True)
     plt.xlabel('Syst NLL')
     plt.ylabel('gNLL (shifted)')
     plt.title('Syst NLL vs gNLL')
@@ -190,9 +199,7 @@ while len(throws) < n:
     plt.grid(True, alpha=0.3)
     plt.savefig(os.path.join(out_dir, 'Syst_NLL_vs_gNLL.png'), dpi=100, bbox_inches='tight')
     plt.close()
-    prefit_cov = likelihood_sampler.prefit_covariance_matrix
-    log_det = np.linalg.slogdet(prefit_cov)[1]  # log determinant of the prefit covariance matrix
-    print(f"Log determinant of the prefit covariance matrix: {log_det}")
+
 
 
 
