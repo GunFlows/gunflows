@@ -64,7 +64,14 @@ b = int(args.b) if args.b else n
 if b > n:
     b = n
 
-out_dir = "img"
+output_file = args.o
+# Check if the output file has a .npz extension, if not, add it
+if not output_file.endswith('.npz'):
+    output_file += '.npz'
+# remove .npz for the output directory
+out_dir = os.path.splitext(output_file)[0] + '_plots'
+if not os.path.exists(out_dir):
+    os.makedirs(out_dir)
 
 print(f"Sampling and computing likelihoods for {n} throws in batches of {b}.")
 
@@ -117,7 +124,6 @@ while len(throws) < n:
     # At every batch, we also save the current state of the throws
     print(f"Processed {len(throws)}/{n} throws. Time per throw in last batch: {(time.time() - start_time)/b:.2f} seconds (batch size: {b})")
     dataset_dict = likelihood_sampler.generate_dataset_dictionary(throws, log_q_list, log_p_list)
-    output_file = args.o
     np.savez(output_file, **dataset_dict)
     print(f"Saved dataset to {output_file}")
     data = dataset_dict
