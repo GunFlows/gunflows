@@ -340,7 +340,6 @@ class LikelihoodSampler:
         # Now the current parameter values should be updated to the best fit values
         self.postfit_parameter_values = self.get_current_parameter_values()
 
-
     def get_current_parameter_values(self):
         if self.propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
