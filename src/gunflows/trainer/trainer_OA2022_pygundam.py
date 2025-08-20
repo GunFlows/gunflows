@@ -28,6 +28,7 @@ LOSS_MAP = {
     "kl_forward":    IL.kl_forward,
     "kl_reverse":    IL.kl_reverse,
     "kl_symmetric":  IL.kl_symmetric,
+    "absolute_kl_symmetric": IL.absolute_kl_symmetric,
 }
 
 class OA2022TrainerPyGundam(BaseTrainer):

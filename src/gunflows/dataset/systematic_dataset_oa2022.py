@@ -52,7 +52,7 @@ def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, stage
                 mu = mean[i]
                 sigma = np.sqrt(max(cov[i, i], 1e-12))
                 ax.plot(xs, (1.0/(np.sqrt(2*np.pi)*sigma))*np.exp(-0.5*((xs - mu)/sigma)**2))
-                ax.set_yscale("log")
+
             else:
                 ax.hist2d(samples[:, j], samples[:, i], weights=weights, bins=60, norm=LogNorm())
             if i == n - 1: ax.set_xlabel(names[j], fontsize=7)

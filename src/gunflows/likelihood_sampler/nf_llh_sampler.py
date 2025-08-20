@@ -354,7 +354,7 @@ class NFSamplerProcess(mp.Process):
                         for i in range(x_np.shape[0]):
                             if self.stop_evt.is_set(): break
                             if self.llh_config:
-                                nll = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
+                                nll, _, _ = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
                             else:
                                 raise NotImplementedError("Likelihood computation not implemented")
                             if nll == -1:
