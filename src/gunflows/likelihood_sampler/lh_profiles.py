@@ -84,7 +84,6 @@ for i, parameter_name in enumerate(parameter_names):
     parameter_range = [bf[i] - 2*math.sqrt(postfit_covariance[i][i]), bf[i] + 2*math.sqrt(postfit_covariance[i][i])]
     print(f": [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
     step = (parameter_range[1] - parameter_range[0]) / n
-    # print(f" bf:[[{likelihood_sampler.inject_params_and_compute_likelihood(bf,extend_continue=False)[0]}]]")
     parameter_values = bf.copy()
     for j in range(n+1):
         point = j*step + parameter_range[0]
