@@ -10,3 +10,4 @@ tests/sample*
 tests/job*
 setup.sh
 setup_nosubshell.sh
+bash/logs/
