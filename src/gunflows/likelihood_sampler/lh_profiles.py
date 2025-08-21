@@ -49,6 +49,14 @@ if likelihood_sampler.likelihood_interface is None:
 
 n = int(args.n)
 
+if args.s:
+    try:
+        w = float(args.s)
+    except ValueError:
+        raise ValueError(f"Invalid value for sigma: {args.s}. Please provide a float value.")
+else:
+    w = 3.0
+
 output_folder = args.o
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
@@ -83,7 +91,7 @@ for i, parameter_name in enumerate(parameter_names):
     print(f"Computing profile for parameter {i+1}/{len(parameter_names)}: {parameter_name}",end=' ')
     nll_list = []
     points = []
-    parameter_range = [bf[i] - 2*math.sqrt(postfit_covariance[i][i]), bf[i] + 3*math.sqrt(postfit_covariance[i][i])]
+    parameter_range = [bf[i] - w*math.sqrt(postfit_covariance[i][i]), bf[i] + w*math.sqrt(postfit_covariance[i][i])]
     print(f": [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
     step = (parameter_range[1] - parameter_range[0]) / n
     parameter_values = bf.copy()
