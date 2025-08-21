@@ -18,9 +18,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-c', required=True, help='Config file path')
 parser.add_argument('-o', required=True, help='Name of the output folder')
 parser.add_argument('-n', help='Number of samples per profile', default=10)
+parser.add_argument('-s', help='width of profile in sigmas', default=3)
 parser.add_argument('-of', nargs='+', help='Override config file paths')
 parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
+
 args = parser.parse_args()
 
 
@@ -81,7 +83,7 @@ for i, parameter_name in enumerate(parameter_names):
     print(f"Computing profile for parameter {i+1}/{len(parameter_names)}: {parameter_name}",end=' ')
     nll_list = []
     points = []
-    parameter_range = [bf[i] - 2*math.sqrt(postfit_covariance[i][i]), bf[i] + 2*math.sqrt(postfit_covariance[i][i])]
+    parameter_range = [bf[i] - 2*math.sqrt(postfit_covariance[i][i]), bf[i] + 3*math.sqrt(postfit_covariance[i][i])]
     print(f": [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
     step = (parameter_range[1] - parameter_range[0]) / n
     parameter_values = bf.copy()
