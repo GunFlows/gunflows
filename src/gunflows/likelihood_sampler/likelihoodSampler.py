@@ -170,6 +170,20 @@ class LikelihoodSampler:
             self.inject_parameter_values(current)
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
 
+    def get_parameter_physical_range(self,par_name):
+        """
+        Get the physical range of the parameter with the given name.
+        Returns a tuple (min, max) of the parameter limits.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled() and par.getFullTitle() == par_name:
+                        return (par.getPhysicalLimits().min, par.getParameterLimits().max)
+        raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
+
     def inject_params_and_compute_likelihood(self, values, extend_continue=True):
         """
         Inject the given vector of parameter values into the propagator and compute the likelihood.

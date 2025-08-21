@@ -89,10 +89,12 @@ dummy = [1] * len(bf)  # dummy list of 1s
 
 for i, parameter_name in enumerate(parameter_names):
     print(f"Computing profile for parameter {i+1}/{len(parameter_names)}: {parameter_name}",end=' ')
+    phys_range_min, phys_range_max = likelihood_sampler.get_parameter_physical_range(parameter_name)
+    print(f"- phys range: [{phys_range_min:.2f}, {phys_range_max:.2f}]", end=' ')
     nll_list = []
     points = []
     parameter_range = [bf[i] - w*math.sqrt(postfit_covariance[i][i]), bf[i] + w*math.sqrt(postfit_covariance[i][i])]
-    print(f": [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
+    print(f"- scan: [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
     step = (parameter_range[1] - parameter_range[0]) / n
     parameter_values = bf.copy()
     for j in range(n+1):
