@@ -102,6 +102,8 @@ for i, parameter_name in enumerate(parameter_names):
     plt.axvline(x=bf[i] + 1*math.sqrt(postfit_covariance[i][i]), color='g', linestyle='-')
     plt.axvline(x=bf[i] - 2*math.sqrt(postfit_covariance[i][i]), color=('green',0.5), linestyle='-', label=r"$\pm 2 \sigma$")
     plt.axvline(x=bf[i] + 2*math.sqrt(postfit_covariance[i][i]), color=('green',0.5), linestyle='-')
+    plt.axvline(x=prior_parameter_values[i], color=('orange',0.5), linestyle='--', label='Prior')
+    plt.axvline(x=bf[i], color='orange', linestyle='--', label='Best fit')
     plt.xlabel(parameter_name)
     plt.ylabel('nll')
     plt.title(f'Profile of {parameter_name}')
