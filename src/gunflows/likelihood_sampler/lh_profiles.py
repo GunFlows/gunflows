@@ -74,7 +74,7 @@ print(f"nll bf: {likelihood_at_bestfit:.2f} (should be 0 for Asimov fit)")
 # initialize parameter values to bf
 parameter_values = bf.copy()
 
-dummy = [1] * len(bf)  # dummy list to hold parameter values
+dummy = [1] * len(bf)  # dummy list of 1s
 
 
 for i, parameter_name in enumerate(parameter_names):
