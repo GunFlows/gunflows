@@ -1,7 +1,7 @@
 _target_: gunflows.dataset.systematic_dataset_file.SystematicDatasetFile
 
 # REQUIRED: path that has batch*.npz
-data_dir: /workspace/data/Datasets_0805
+data_dir: /workspace/config/GundamInputOA2021/oa2022_asimov
 
 # Your phase space indices (same list you’ve been using)
 phase_space_dim:
