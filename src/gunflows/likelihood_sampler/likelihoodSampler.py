@@ -74,7 +74,7 @@ class LikelihoodSampler:
         self.propagator = self.likelihood_interface.getModelPropagator()
 
         # The following needs the propagator to be initialized
-        self.load_data_histograms(self.data_is_asimov)
+        self.load_data_histograms()
 
         # Load the postfit covariance matrix into the propagator
         self.load_postfit_covariance_in_propagator()
@@ -97,12 +97,21 @@ class LikelihoodSampler:
         self._load_bestfit_parameter_values_() # this writes self.postfit_parameter_values and sets the current parameter values to the post-fit values
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
+        self.likelihood_interface.propagateAndEvalLikelihood()
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
         print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
-        self.likelihood_at_bestfit = NLL_stat + NLL_syst
+
+        print(f"NLL at best fit from fitter file: {self.likelihood_at_bestfit}")
+        print(f"NLL at best fit computed:         {NLL_stat + NLL_syst}")
+        if self.likelihood_at_bestfit is None:
+            raise RuntimeError("Likelihood at best fit not found in the root file.")
+        if abs(self.likelihood_at_bestfit - (NLL_stat + NLL_syst) ) > 1e-13:
+            raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
 
         # Reset the prior values to the postfit values
+        if self.postfit_parameter_values is None:
+            raise RuntimeError("Post-fit parameter values not loaded.")
         self.reset_prior_values(self.postfit_parameter_values)
         print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
@@ -277,6 +286,11 @@ class LikelihoodSampler:
         self.fitter = GUNDAM.FitterEngine()
         self.fitter.setConfig(fitter_engine_config)
         self.fitter.configure()
+        self.fitter.getLikelihoodInterface().setForceAsimovData(True)
+
+        # read best-fit NLL from file
+        bf_lh_tree = self.fitter_root_file.Get("FitterEngine/postFit/bestFitStats")
+        self.likelihood_at_bestfit = bf_lh_tree.GetLeaf("totalLikelihoodAtBestFit").GetValue()
 
         # load prefit covariance matrix
 
@@ -379,12 +393,11 @@ class LikelihoodSampler:
             samples.append(sample)
         return sample_names, samples
 
-    def load_data_histograms(self, data_is_asimov):
+    def load_data_histograms(self):
         # Set the data as asimov (prior)
-        self.fitter.getLikelihoodInterface().setForceAsimovData(True)
-        if data_is_asimov:
-            print("Data is set to Asimov priors.")
-            return
+        # if data_is_asimov:
+        #     print("Data is set to Asimov priors.")
+        #     return
         if self.fitter_root_file is None:
             print("WARNING: No root file provided. Data is set to Asimov priors.")
             return

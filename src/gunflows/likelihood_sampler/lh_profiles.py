@@ -57,6 +57,8 @@ if args.s:
 else:
     w = 3.0
 
+print(f"\n\nMaking NLL profile plots with {n} in a range of +-{w} sigmas around the best fit point.\n\n")
+
 output_folder = args.o
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
