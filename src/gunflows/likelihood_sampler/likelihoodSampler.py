@@ -109,8 +109,13 @@ class LikelihoodSampler:
         print(f"NLL at best fit computed:         {2*tot}")
         if self.likelihood_at_bestfit is None:
             raise RuntimeError("Likelihood at best fit not found in the root file.")
-        if abs(self.likelihood_at_bestfit - 2*tot ) > 10:
+        if abs(self.likelihood_at_bestfit - 2*tot ) > 1.e-5:
             raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
+
+        for i, par_name in enumerate(self.get_parameter_names()):
+            min_, max_ = self.get_parameter_physical_range(par_name)
+            print(f" Parameter {par_name}  prior: {self.prior_parameter_values[i]:.3f}  bestfit: {self.postfit_parameter_values[i]:.3f}  physical range: [{min_:.3f}, {max_:.3f}]")
+
 
         # Reset the prior values to the postfit values
         if self.postfit_parameter_values is None:
@@ -118,6 +123,7 @@ class LikelihoodSampler:
         self.reset_prior_values(self.postfit_parameter_values)
         print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
+
 
         ######################################
         #        INITIALIZATION DONE         #
@@ -436,17 +442,17 @@ class LikelihoodSampler:
             bin_content_list = sample.getHistogram().getBinContentList()
             # loop and replace contents
             # print(sample.getSummary())
-            print(f"DEBUG| sample {sample_name}. bins: {n_bins_data}. Replacing data histogram contents.")
+            print(f"Replacing data histogram contents for sample {sample_name}. bins: {n_bins_data}. ")
             for i in range(n_bins_data):
                 bin_content = data_histogram.GetBinContent(i+1)
                 bin_error = data_histogram.GetBinError(i+1)
-                current_bin_content = bin_content_list[i].sumWeights + 400
-                current_bin_error = bin_content_list[i].sqrtSumSqWeights + 400
+                current_bin_content = bin_content_list[i].sumWeights
+                current_bin_error = bin_content_list[i].sqrtSumSqWeights
                 # print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
                 bin_content_list[i].sumWeights = bin_content  # this replaces the bin content in the sample histogram
                 bin_content_list[i].sqrtSumSqWeights = bin_error  # I THINK this should be the bin error...
-            print(sample.getSummary())
-            # print(self.likelihood_interface.getSampleBreakdownTable())
+            # print(sample.getSummary())
+        print(self.likelihood_interface.getSampleBreakdownTable())
 
 
     def throw_one_from_covariance(self, printout=False):
