@@ -101,7 +101,7 @@ class LikelihoodSampler:
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
         print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
-        print(f"LH summary: {self.likelihood_interface.getSummary()})
+        print(f"LH summary: {self.likelihood_interface.getSummary()}")
 
         print(f"NLL at best fit from fitter file: {self.likelihood_at_bestfit}")
         print(f"NLL at best fit computed:         {NLL_stat + NLL_syst}")
