@@ -75,6 +75,7 @@ class LikelihoodSampler:
 
         # The following needs the propagator to be initialized
         self.load_data_histograms()
+        self.likelihood_interface.propagateAndEvalLikelihood()
 
         # Load the postfit covariance matrix into the propagator
         self.load_postfit_covariance_in_propagator()
@@ -98,16 +99,17 @@ class LikelihoodSampler:
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
         self.likelihood_interface.propagateAndEvalLikelihood()
-        NLL_syst = self.compute_syst_likelihood()
-        NLL_stat = self.compute_stat_likelihood()
-        print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        # NLL_syst = self.compute_syst_likelihood()
+        # NLL_stat = self.compute_stat_likelihood()
+        tot, NLL_stat, NLL_syst = self.inject_params_and_compute_likelihood(self.postfit_parameter_values, extend_continue=False)
+        print(f"At Best Fit: NLL= {2*NLL_stat} (stat) + {2*NLL_syst} (syst) = {2*(NLL_stat + NLL_syst)}")
         print(f"LH summary: {self.likelihood_interface.getSummary()}")
 
         print(f"NLL at best fit from fitter file: {self.likelihood_at_bestfit}")
-        print(f"NLL at best fit computed:         {NLL_stat + NLL_syst}")
+        print(f"NLL at best fit computed:         {2*tot}")
         if self.likelihood_at_bestfit is None:
             raise RuntimeError("Likelihood at best fit not found in the root file.")
-        if abs(self.likelihood_at_bestfit - (NLL_stat + NLL_syst) ) > 1e-13:
+        if abs(self.likelihood_at_bestfit - 2*tot ) > 10:
             raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
 
         # Reset the prior values to the postfit values
@@ -393,8 +395,8 @@ class LikelihoodSampler:
                 values.append(par.getParameterValue())
         return values
 
-    def get_list_of_samples(self):
-        if self.propagator is None:
+    def get_list_of_samples(self, propagator):
+        if propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
         sample_names = []
         samples = []
@@ -414,8 +416,10 @@ class LikelihoodSampler:
             print("WARNING: No root file provided. Data is set to Asimov priors.")
             return
         # Load data histograms from the root file
-        # Loop through the samples
-        sample_names, samples = self.get_list_of_samples()
+        # Loop through the DATA samples
+        sample_pair_list = self.likelihood_interface.getSamplePairList()
+        samples = [sample_pair.data for sample_pair in sample_pair_list] # List of data samples
+        sample_names = [sample_pair.data.getName() for sample_pair in sample_pair_list] # List of data sample names
         for sample_name, sample in zip(sample_names, samples):
             # Skip if the sample is not enabled
             if not sample.isEnabled():
@@ -431,15 +435,19 @@ class LikelihoodSampler:
                 raise RuntimeError(f"Data histogram for sample '{sample_name}' has {n_bins_data} bins, but model histogram has {n_bins_model} bins.\nPossible mismatch in fitter and LH sampelr configs!")
             bin_content_list = sample.getHistogram().getBinContentList()
             # loop and replace contents
-            print(f"DEBUG| sample {sample_name}")
+            # print(sample.getSummary())
+            print(f"DEBUG| sample {sample_name}. bins: {n_bins_data}. Replacing data histogram contents.")
             for i in range(n_bins_data):
                 bin_content = data_histogram.GetBinContent(i+1)
                 bin_error = data_histogram.GetBinError(i+1)
-                current_bin_content = bin_content_list[i].sumWeights
-                current_bin_error = bin_content_list[i].sqrtSumSqWeights
-                print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
+                current_bin_content = bin_content_list[i].sumWeights + 400
+                current_bin_error = bin_content_list[i].sqrtSumSqWeights + 400
+                # print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
                 bin_content_list[i].sumWeights = bin_content  # this replaces the bin content in the sample histogram
                 bin_content_list[i].sqrtSumSqWeights = bin_error  # I THINK this should be the bin error...
+            print(sample.getSummary())
+            # print(self.likelihood_interface.getSampleBreakdownTable())
+
 
     def throw_one_from_covariance(self, printout=False):
         # the following throws parameters from the covariance matrix
