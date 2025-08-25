@@ -288,6 +288,8 @@ class LikelihoodSampler:
         self.fitter.configure()
         self.fitter.getLikelihoodInterface().setForceAsimovData(True)
 
+        print(f"LH Summary: {self.likelihood_interface.getSummary()}")
+
         # read best-fit NLL from file
         bf_lh_tree = self.fitter_root_file.Get("FitterEngine/postFit/bestFitStats")
         bf_lh_tree.GetEntry(0)
