@@ -290,6 +290,7 @@ class LikelihoodSampler:
 
         # read best-fit NLL from file
         bf_lh_tree = self.fitter_root_file.Get("FitterEngine/postFit/bestFitStats")
+        bf_lh_tree.GetEntry(0)
         self.likelihood_at_bestfit = bf_lh_tree.GetLeaf("totalLikelihoodAtBestFit").GetValue()
 
         # load prefit covariance matrix
