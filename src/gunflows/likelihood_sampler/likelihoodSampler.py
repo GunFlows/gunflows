@@ -101,6 +101,7 @@ class LikelihoodSampler:
         NLL_syst = self.compute_syst_likelihood()
         NLL_stat = self.compute_stat_likelihood()
         print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
+        print(f"LH summary: {self.likelihood_interface.getSummary()})
 
         print(f"NLL at best fit from fitter file: {self.likelihood_at_bestfit}")
         print(f"NLL at best fit computed:         {NLL_stat + NLL_syst}")
@@ -288,7 +289,6 @@ class LikelihoodSampler:
         self.fitter.configure()
         self.fitter.getLikelihoodInterface().setForceAsimovData(True)
 
-        # print(f"LH Summary: {self.fitter.getLikelihoodInterface.getSummary()}")
 
         # read best-fit NLL from file
         bf_lh_tree = self.fitter_root_file.Get("FitterEngine/postFit/bestFitStats")
@@ -367,6 +367,15 @@ class LikelihoodSampler:
             raise RuntimeError("Post-fit parameter values not found in the root file [searched in \"FitterEngine/postFit/parState_TNamed\"].")
         par_list_json = GUNDAM.GenericToolbox.Json.readConfigJsonStr(par_list_tnamed.GetTitle())
         self.propagator.getParametersManager().injectParameterValues(par_list_json, quietVerbose_=True)
+        # Making sure eigendecomposed parameters get the conversion done
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled() and par_set.isEnableEigenDecomp():
+                par_set.propagateOriginalToEigen()
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        if not par.isValueWithinBounds():
+                            print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
+                            return -1,-1,0
         print("WARNING: Post-Fit parameter values injected as current parameter values!")
         # Now the current parameter values should be updated to the best fit values
         self.postfit_parameter_values = self.get_current_parameter_values()
