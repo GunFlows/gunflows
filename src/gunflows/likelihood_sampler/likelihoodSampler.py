@@ -110,6 +110,7 @@ class LikelihoodSampler:
         if self.likelihood_at_bestfit is None:
             raise RuntimeError("Likelihood at best fit not found in the root file.")
         if abs(self.likelihood_at_bestfit - 2*tot ) > 1.e-1:
+
             raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
 
         for i, par_name in enumerate(self.get_parameter_names()):
