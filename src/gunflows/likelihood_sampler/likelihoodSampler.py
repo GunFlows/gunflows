@@ -416,9 +416,9 @@ class LikelihoodSampler:
 
     def load_data_histograms(self):
         # Set the data as asimov (prior)
-        # if data_is_asimov:
-        #     print("Data is set to Asimov priors.")
-        #     return
+        if self.data_is_asimov:
+            print("Data is set to Asimov priors.")
+            return
         if self.fitter_root_file is None:
             print("WARNING: No root file provided. Data is set to Asimov priors.")
             return
