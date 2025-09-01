@@ -1,13 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=gunflows-train
-#SBATCH --partition=private-dpnc-gpu
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=180G
-#SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --time=168:00:00
-#SBATCH --constraint=COMPUTE_TYPE_AMPERE
+#SBATCH --job-name=gunflows-mcmc
+#SBATCH --partition=private-dpnc-cpu
+#SBATCH --mem=40G
+#SBATCH --time=4:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -39,4 +34,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.mcmc${EXTRA_ARGS}"
