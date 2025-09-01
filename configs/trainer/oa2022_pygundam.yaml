@@ -13,8 +13,8 @@ early_stop:
   min_epoch: 20000
 
 loss:
-  name_train: absolute_kl_symmetric
-  name_val:   absolute_kl_symmetric
+  name_train: kl_symmetric
+  name_val:   kl_symmetric
   cap_f: 100000
   cap_r: 100000
   kwargs:

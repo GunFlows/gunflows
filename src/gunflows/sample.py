@@ -14,6 +14,7 @@ from __future__ import annotations
 import math, time, os, sys, json
 from pathlib import Path
 from datetime import datetime
+from contextlib import contextmanager
 
 import hydra
 import torch
@@ -28,6 +29,17 @@ NF_LOCAL = os.path.join(os.path.dirname(__file__), "..", "normalizing-flows")
 sys.path.append(os.path.abspath(NF_LOCAL))
 
 from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
+
+
+@contextmanager
+def pushd(path: str | None):
+    prev = os.getcwd()
+    if path:
+        os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 
 def _plot_least_gaussian(samples, mean, cov, names, out_dir, phase_dims):
@@ -133,8 +145,44 @@ def main(cfg: DictConfig) -> None:
     if cfg.return_probs:
         logqs = np.concatenate(logqs, 0)[: cfg.num_samples]
 
-
     samples = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples)).numpy()
+
+    weights = None
+    if getattr(cfg, "reweight", None) and cfg.reweight.enabled:
+        from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
+
+        lh_cfg = cfg.reweight.likelihood
+        cwd = lh_cfg.get("cwd", None)
+        with pushd(cwd or os.path.dirname(lh_cfg.config)):
+            sampler = LikelihoodSampler(
+                lh_cfg.config,
+                override_files=lh_cfg.get("overrides", []),
+                threads=lh_cfg.get("threads", 1),
+                data_is_asimov=lh_cfg.get("asimov", True),
+                seed=cfg.seed,
+            )
+
+        weights = []
+        for s in samples:
+            nll, _, _ = sampler.inject_params_and_compute_likelihood(s.tolist(), extend_continue=False)
+            if nll == -1:
+                weights.append(0.0)
+            else:
+                weights.append(math.exp(-nll))
+        weights = np.asarray(weights, dtype=float)
+
+        cap_q = cfg.reweight.weight_cap_quantile
+        if cap_q is not None:
+            cap = np.quantile(weights, cap_q)
+            weights = np.minimum(weights, cap)
+            weights = weights / weights.sum()
+            idx = np.random.choice(len(samples), size=len(samples), replace=True, p=weights)
+            samples = samples[idx]
+            if cfg.return_probs:
+                logqs = logqs[idx]
+            weights = weights[idx]
+        np.save(out_dir / "weights.npy", weights)
+
     mean_sample = dataset.mean.numpy()
     cov_sample = dataset.get_true_cov().numpy()
 
