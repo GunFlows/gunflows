@@ -1,3 +1,2 @@
 # passed to NFSamplerProcess
-threads: 12
 data_is_asimov: true

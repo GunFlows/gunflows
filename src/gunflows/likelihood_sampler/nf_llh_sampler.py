@@ -57,7 +57,8 @@ class NFSamplerProcess(mp.Process):
                  save_dir: str | None = None,
                  write_every: int | None = None,
                  log_every: int = 100,
-                 rethrow: bool = True):
+                 rethrow: bool = True,
+                 worker_id: int = 0):
         super().__init__(daemon=True)
         self.nf_ckpt = nf_ckpt
         self.n_points = int(n_points)
@@ -85,6 +86,7 @@ class NFSamplerProcess(mp.Process):
         self._cov_ref = None
         self._mean_ref = None
         self.rethrow = bool(rethrow)
+        self.worker_id = int(worker_id)
 
     def _sd(self):
         sd = self.save_dir if self.save_dir else os.environ.get("TMPDIR", "/tmp")
@@ -93,10 +95,10 @@ class NFSamplerProcess(mp.Process):
 
     def _setup_io(self):
         sd = self._sd()
-        self._log_path = os.path.join(sd, "sampling.log")
-        self._progress_path = os.path.join(sd, "progress.json")
-        sys.stdout = open(os.path.join(sd, "stdout.log"), "a", buffering=1)
-        sys.stderr = open(os.path.join(sd, "stderr.log"), "a", buffering=1)
+        self._log_path = os.path.join(sd, f"sampling_{self.worker_id}.log")
+        self._progress_path = os.path.join(sd, f"progress_{self.worker_id}.json")
+        sys.stdout = open(os.path.join(sd, f"stdout_{self.worker_id}.log"), "a", buffering=1)
+        sys.stderr = open(os.path.join(sd, f"stderr_{self.worker_id}.log"), "a", buffering=1)
         self._logger = logging.getLogger(f"sampling.{os.getpid()}")
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
@@ -106,7 +108,7 @@ class NFSamplerProcess(mp.Process):
         self._logger.addHandler(fh)
 
     def _write_progress(self, generated:int, mode:str, status:str="running", err:str|None=None):
-        payload = {"generated": int(generated), "files": int(self._batch_counter), "mode": mode, "pid": os.getpid(), "status": status, "ts": time.time()}
+        payload = {"generated": int(generated), "files": int(self._batch_counter), "mode": mode, "pid": os.getpid(), "status": status, "ts": time.time(), "worker_id": int(self.worker_id)}
         if err is not None:
             payload["error"] = err
         with open(self._progress_path, "w") as f:
@@ -115,7 +117,7 @@ class NFSamplerProcess(mp.Process):
     def _save_batch_npz(self, data_chunk, log_p_chunk, log_q_chunk,
                         cov_ref, mean_ref, par_names, bestfit, mode):
         sd = self._sd()
-        fname = f"batch{self._batch_counter:06d}.npz"
+        fname = f"batch{self._batch_counter:06d}_s{self.worker_id:02d}.npz"
         final_path = os.path.join(sd, fname)
         with tempfile.NamedTemporaryFile(dir=sd, delete=False, suffix=".npz") as tf:
             np.savez_compressed(
@@ -291,9 +293,9 @@ class NFSamplerProcess(mp.Process):
                     need = k
                     while need > 0:
                         b = min(self.nf_chunk_size, need)
-                        z, logq = nf_model.sample(b)  
+                        z, logq = nf_model.sample(b)
                         xs.append(z.cpu())
-                        lqs.append(-logq.cpu())         
+                        lqs.append(-logq.cpu())
                         need -= b
                     x_std = torch.cat(xs, 0)
                     std = torch.sqrt(torch.diag(cov_t))
@@ -354,7 +356,7 @@ class NFSamplerProcess(mp.Process):
                         for i in range(x_np.shape[0]):
                             if self.stop_evt.is_set(): break
                             if self.llh_config:
-                                nll = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
+                                nll, _, _ = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
                             else:
                                 raise NotImplementedError("Likelihood computation not implemented")
                             if nll == -1:
@@ -386,7 +388,7 @@ class NFSamplerProcess(mp.Process):
         except Exception:
             tb = traceback.format_exc()
             try:
-                with open(os.path.join(self._sd(), "stderr.log"), "a") as f:
+                with open(os.path.join(self._sd(), f"stderr_{self.worker_id}.log"), "a") as f:
                     f.write(tb + "\n")
                 self._write_progress(0, "unknown", status="error", err=str(tb.splitlines()[-1]))
             except Exception:

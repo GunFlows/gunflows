@@ -14,7 +14,7 @@ from pathlib import Path
 # TODO: To be cleaned after we figure out a working training configuration
 __all__ = [
     "exp_forward", "exp_reverse", "exp_symmetric",
-    "kl_forward", "kl_reverse", "kl_symmetric",
+    "kl_forward", "kl_reverse", "kl_symmetric", "absolute_kl_symmetric"
 ]
 
 def _cap_logw(log_w: torch.Tensor, cap: float) -> torch.Tensor:
@@ -76,7 +76,7 @@ def _diag_plot(
         cmap="viridis",
         range=[[x_lower, x_upper], [x_lower, x_upper]],
     )
-    # plt.colorbar(h1[3], ax=axs[0])
+    plt.colorbar(h1[3], ax=axs[0])
     axs[0].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
     axs[0].set_title("-log(p) vs -log(NF)")
     axs[0].set_xlabel("-log(p)")
@@ -90,7 +90,7 @@ def _diag_plot(
         cmap="viridis",
         range=[[x_lower, x_upper], [x_lower, x_upper]],
     )
-    # plt.colorbar(h2[3], ax=axs[1])
+    plt.colorbar(h2[3], ax=axs[1])
     axs[1].plot([x_lower, x_upper], [x_lower, x_upper], "r--", linewidth=1)
     axs[1].set_title("-log(p) vs -log(g)")
     axs[1].set_xlabel("-log(p)")
@@ -304,6 +304,53 @@ def kl_symmetric(
     w_r = _cap_logw(log_w_r, cap_r)
 
     loss = torch.mean(a * w_f * log_pq - b * w_r * log_pq)
+
+    if validation:
+        _diag_plot(log_p, log_q, log_g, save_dir, "kl_sym", stage)
+        print(f"Forward KL loss: {torch.mean(w_f * log_pq).item()}")
+        print(f"Reverse KL loss: {-torch.mean(w_r * log_pq).item()}")
+        print(f"Mean log_pq: {log_pq.mean().item()}")
+        print(f"Mean w_forward: {w_f.mean().item()}")
+        print(f"Mean w_reverse: {w_r.mean().item()}")
+
+    if not return_extra:
+        return loss
+    
+    q_pq = torch.quantile(log_pq, 0.999)
+    mask_pq = log_pq <= q_pq
+    w_f = w_f[mask_pq]
+    w_r = w_r[mask_pq]
+    return loss, {
+        "ess": _ess(torch.exp(log_pq[mask_pq])),
+        "mean_w_forward": w_f.mean().item(),
+        "mean_w_reverse": w_r.mean().item(),
+    }
+
+def absolute_kl_symmetric(
+    model,
+    dataset,
+    idx,
+    stage,
+    *,
+    a=1.0,
+    b=1.0,
+    cap_f=np.exp(50),
+    cap_r=np.exp(500),
+    return_extra=False,
+    validation=False,
+    save_dir=".",
+):
+    _, _, log_g , log_p, log_q = _common(model, dataset, idx)
+
+    log_pq = log_p - model.log_norm - log_q
+
+    log_w_f = log_p - model.log_norm - log_g
+    w_f = _cap_logw(log_w_f, cap_f)
+
+    log_w_r = log_q - log_g
+    w_r = _cap_logw(log_w_r, cap_r)
+
+    loss = torch.mean(torch.abs(a * w_f * log_pq - b * w_r * log_pq))
 
     if validation:
         _diag_plot(log_p, log_q, log_g, save_dir, "kl_sym", stage)
