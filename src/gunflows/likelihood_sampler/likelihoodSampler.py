@@ -74,7 +74,8 @@ class LikelihoodSampler:
         self.propagator = self.likelihood_interface.getModelPropagator()
 
         # The following needs the propagator to be initialized
-        self.load_data_histograms(self.data_is_asimov)
+        self.load_data_histograms()
+        self.likelihood_interface.propagateAndEvalLikelihood()
 
         # Load the postfit covariance matrix into the propagator
         self.load_postfit_covariance_in_propagator()
@@ -97,15 +98,33 @@ class LikelihoodSampler:
         self._load_bestfit_parameter_values_() # this writes self.postfit_parameter_values and sets the current parameter values to the post-fit values
         print(f"Parameters at best fit:{big_vector_summary(self.postfit_parameter_values)}")
         print(f"Current parameter values: {big_vector_summary(self.get_current_parameter_values())}")
-        NLL_syst = self.compute_syst_likelihood()
-        NLL_stat = self.compute_stat_likelihood()
-        print(f"At Best Fit: NLL= {NLL_stat} (stat) + {NLL_syst} (syst) = {NLL_stat + NLL_syst}")
-        self.likelihood_at_bestfit = NLL_stat + NLL_syst
+        self.likelihood_interface.propagateAndEvalLikelihood()
+        # NLL_syst = self.compute_syst_likelihood()
+        # NLL_stat = self.compute_stat_likelihood()
+        tot, NLL_stat, NLL_syst = self.inject_params_and_compute_likelihood(self.postfit_parameter_values, extend_continue=False)
+        print(f"At Best Fit: NLL= {2*NLL_stat} (stat) + {2*NLL_syst} (syst) = {2*(NLL_stat + NLL_syst)}")
+        print(f"LH summary: {self.likelihood_interface.getSummary()}")
+
+        print(f"NLL at best fit from fitter file: {self.likelihood_at_bestfit}")
+        print(f"NLL at best fit computed:         {2*tot}")
+        if self.likelihood_at_bestfit is None:
+            raise RuntimeError("Likelihood at best fit not found in the root file.")
+        if abs(self.likelihood_at_bestfit - 2*tot ) > 1.e-1:
+
+            raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
+
+        for i, par_name in enumerate(self.get_parameter_names()):
+            min_, max_ = self.get_parameter_physical_range(par_name)
+            print(f" Parameter {par_name}  prior: {self.prior_parameter_values[i]:.3f}  bestfit: {self.postfit_parameter_values[i]:.3f}  physical range: [{min_:.3f}, {max_:.3f}]")
+
 
         # Reset the prior values to the postfit values
+        if self.postfit_parameter_values is None:
+            raise RuntimeError("Post-fit parameter values not loaded.")
         self.reset_prior_values(self.postfit_parameter_values)
         print("INFO: Prior values redefined as Best Fit values!")
         print("LikelihoodSampler initialized successfully.")
+
 
         ######################################
         #        INITIALIZATION DONE         #
@@ -169,6 +188,20 @@ class LikelihoodSampler:
             # If the number of values does not match, reset to previous values
             self.inject_parameter_values(current)
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
+
+    def get_parameter_physical_range(self,par_name):
+        """
+        Get the physical range of the parameter with the given name.
+        Returns a tuple (min, max) of the parameter limits.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled() and par.getFullTitle() == par_name:
+                        return (par.getPhysicalLimits().min, par.getParameterLimits().max)
+        raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
 
     def inject_params_and_compute_likelihood(self, values, extend_continue=True):
         """
@@ -263,6 +296,13 @@ class LikelihoodSampler:
         self.fitter = GUNDAM.FitterEngine()
         self.fitter.setConfig(fitter_engine_config)
         self.fitter.configure()
+        self.fitter.getLikelihoodInterface().setForceAsimovData(True)
+
+
+        # read best-fit NLL from file
+        bf_lh_tree = self.fitter_root_file.Get("FitterEngine/postFit/bestFitStats")
+        bf_lh_tree.GetEntry(0)
+        self.likelihood_at_bestfit = bf_lh_tree.GetLeaf("totalLikelihoodAtBestFit").GetValue()
 
         # load prefit covariance matrix
 
@@ -336,6 +376,15 @@ class LikelihoodSampler:
             raise RuntimeError("Post-fit parameter values not found in the root file [searched in \"FitterEngine/postFit/parState_TNamed\"].")
         par_list_json = GUNDAM.GenericToolbox.Json.readConfigJsonStr(par_list_tnamed.GetTitle())
         self.propagator.getParametersManager().injectParameterValues(par_list_json, quietVerbose_=True)
+        # Making sure eigendecomposed parameters get the conversion done
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled() and par_set.isEnableEigenDecomp():
+                par_set.propagateOriginalToEigen()
+                for par in par_set.getParameterList():
+                    if par.isEnabled():
+                        if not par.isValueWithinBounds():
+                            print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
+                            return -1,-1,0
         print("WARNING: Post-Fit parameter values injected as current parameter values!")
         # Now the current parameter values should be updated to the best fit values
         self.postfit_parameter_values = self.get_current_parameter_values()
@@ -353,8 +402,8 @@ class LikelihoodSampler:
                 values.append(par.getParameterValue())
         return values
 
-    def get_list_of_samples(self):
-        if self.propagator is None:
+    def get_list_of_samples(self, propagator):
+        if propagator is None:
             raise RuntimeError("The propagator object is not initialized.")
         sample_names = []
         samples = []
@@ -365,18 +414,19 @@ class LikelihoodSampler:
             samples.append(sample)
         return sample_names, samples
 
-    def load_data_histograms(self, data_is_asimov):
+    def load_data_histograms(self):
         # Set the data as asimov (prior)
-        self.fitter.getLikelihoodInterface().setForceAsimovData(True)
-        if data_is_asimov:
+        if self.data_is_asimov:
             print("Data is set to Asimov priors.")
             return
         if self.fitter_root_file is None:
             print("WARNING: No root file provided. Data is set to Asimov priors.")
             return
         # Load data histograms from the root file
-        # Loop through the samples
-        sample_names, samples = self.get_list_of_samples()
+        # Loop through the DATA samples
+        sample_pair_list = self.likelihood_interface.getSamplePairList()
+        samples = [sample_pair.data for sample_pair in sample_pair_list] # List of data samples
+        sample_names = [sample_pair.data.getName() for sample_pair in sample_pair_list] # List of data sample names
         for sample_name, sample in zip(sample_names, samples):
             # Skip if the sample is not enabled
             if not sample.isEnabled():
@@ -392,15 +442,19 @@ class LikelihoodSampler:
                 raise RuntimeError(f"Data histogram for sample '{sample_name}' has {n_bins_data} bins, but model histogram has {n_bins_model} bins.\nPossible mismatch in fitter and LH sampelr configs!")
             bin_content_list = sample.getHistogram().getBinContentList()
             # loop and replace contents
-            print(f"DEBUG| sample {sample_name}")
+            # print(sample.getSummary())
+            print(f"Replacing data histogram contents for sample {sample_name}. bins: {n_bins_data}. ")
             for i in range(n_bins_data):
                 bin_content = data_histogram.GetBinContent(i+1)
                 bin_error = data_histogram.GetBinError(i+1)
                 current_bin_content = bin_content_list[i].sumWeights
                 current_bin_error = bin_content_list[i].sqrtSumSqWeights
-                print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
+                # print(f"DEBUG| bin {i}: {current_bin_content:.2f} -> {bin_content:.2f} | {current_bin_error:.2f} -> {bin_error:.2f}")
                 bin_content_list[i].sumWeights = bin_content  # this replaces the bin content in the sample histogram
                 bin_content_list[i].sqrtSumSqWeights = bin_error  # I THINK this should be the bin error...
+            # print(sample.getSummary())
+        print(self.likelihood_interface.getSampleBreakdownTable())
+
 
     def throw_one_from_covariance(self, printout=False):
         # the following throws parameters from the covariance matrix

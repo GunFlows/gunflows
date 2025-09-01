@@ -18,9 +18,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-c', required=True, help='Config file path')
 parser.add_argument('-o', required=True, help='Name of the output folder')
 parser.add_argument('-n', help='Number of samples per profile', default=10)
+parser.add_argument('-s', help='width of profile in sigmas', default=3)
 parser.add_argument('-of', nargs='+', help='Override config file paths')
 parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
+
 args = parser.parse_args()
 
 
@@ -47,6 +49,16 @@ if likelihood_sampler.likelihood_interface is None:
 
 n = int(args.n)
 
+if args.s:
+    try:
+        w = float(args.s)
+    except ValueError:
+        raise ValueError(f"Invalid value for sigma: {args.s}. Please provide a float value.")
+else:
+    w = 3.0
+
+print(f"\n\nMaking NLL profile plots with {n} in a range of +-{w} sigmas around the best fit point.\n\n")
+
 output_folder = args.o
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
@@ -64,25 +76,24 @@ bf = bestfit_parameter_values
 # compute likelihood at best fit
 likelihood_at_bestfit,_,_ = likelihood_sampler.inject_params_and_compute_likelihood(bf,extend_continue=False)
 print(f"nll bf: {likelihood_at_bestfit:.2f} (should be 0 for Asimov fit)")
-bf[0] = bf[0] + 1e-15
-likelihood_at_bestfit,_,_ = likelihood_sampler.inject_params_and_compute_likelihood(bf,extend_continue=False)
-print(f"nll bf: {likelihood_at_bestfit:.2f} (should be 0 for Asimov fit)")
-bf[0] = bf[0] + 4e-14
-likelihood_at_bestfit,_,_ = likelihood_sampler.inject_params_and_compute_likelihood(bf,extend_continue=False)
-print(f"nll bf: {likelihood_at_bestfit:.2f} (should be 0 for Asimov fit)")
 
 # initialize parameter values to bf
 parameter_values = bf.copy()
 
-dummy = [1] * len(bf)  # dummy list to hold parameter values
+dummy = [1] * len(bf)  # dummy list of 1s
 
 
 for i, parameter_name in enumerate(parameter_names):
+    # test
+    if i<650:
+        continue
     print(f"Computing profile for parameter {i+1}/{len(parameter_names)}: {parameter_name}",end=' ')
+    phys_range_min, phys_range_max = likelihood_sampler.get_parameter_physical_range(parameter_name)
+    # print(f"- phys range: [{phys_range_min:.2f}, {phys_range_max:.2f}]", end=' ')
     nll_list = []
     points = []
-    parameter_range = [bf[i] - 2*math.sqrt(postfit_covariance[i][i]), bf[i] + 2*math.sqrt(postfit_covariance[i][i])]
-    print(f": [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
+    parameter_range = [bf[i] - w*math.sqrt(postfit_covariance[i][i]), bf[i] + w*math.sqrt(postfit_covariance[i][i])]
+    print(f"- scan: [{parameter_range[0]:.2f} , {parameter_range[1]:.2f}]", end=' ')
     step = (parameter_range[1] - parameter_range[0]) / n
     parameter_values = bf.copy()
     for j in range(n+1):
@@ -102,6 +113,16 @@ for i, parameter_name in enumerate(parameter_names):
     plt.axvline(x=bf[i] + 1*math.sqrt(postfit_covariance[i][i]), color='g', linestyle='-')
     plt.axvline(x=bf[i] - 2*math.sqrt(postfit_covariance[i][i]), color=('green',0.5), linestyle='-', label=r"$\pm 2 \sigma$")
     plt.axvline(x=bf[i] + 2*math.sqrt(postfit_covariance[i][i]), color=('green',0.5), linestyle='-')
+    plt.axvline(x=prior_parameter_values[i], color=('orange',0.5), linestyle='--', label='Prior')
+    plt.axvline(x=bf[i], color='orange', linestyle='--', label='Best fit')
+    if phys_range_min > parameter_range[0]:
+        plt.axvline(x=phys_range_min, color='black', linestyle=':', label='Physical limit')
+        # shade the unphysical region
+        plt.fill_betweenx([min(nll_list), max(nll_list)], parameter_range[0], phys_range_min, color='gray', alpha=0.3)
+    if phys_range_max < parameter_range[1]:
+        plt.axvline(x=phys_range_max, color='black', linestyle=':', label='Physical limit')
+        # shade the unphysical region
+        plt.fill_betweenx([min(nll_list), max(nll_list)], phys_range_max, parameter_range[1], color='gray', alpha=0.3)
     plt.xlabel(parameter_name)
     plt.ylabel('nll')
     plt.title(f'Profile of {parameter_name}')
