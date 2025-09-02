@@ -11,3 +11,4 @@ tests/job*
 setup.sh
 setup_nosubshell.sh
 bash/logs/
+bash/train_gunflows.sh
