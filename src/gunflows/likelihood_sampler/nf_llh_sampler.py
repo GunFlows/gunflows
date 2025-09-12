@@ -147,6 +147,7 @@ class NFSamplerProcess(mp.Process):
 
     def _load_llh(self):
         from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
+        print(f"Loading likelihood interface... data_is_asimov: {self.data_is_asimov}")
         with pushd(self.llh_cwd):
             return LikelihoodSampler(
                 self.llh_config,
