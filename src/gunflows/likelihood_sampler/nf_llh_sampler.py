@@ -50,7 +50,7 @@ class NFSamplerProcess(mp.Process):
                  phase_space_dim, data_q, cmd_q, stop_evt, seed=123,
                  llh_cwd: str | None = None,
                  threads: int = 6,
-                 data_is_asimov: bool = True,
+                 data_is_asimov: bool = False,
                  nf_chunk_size: int = 32768,
                  device: str = "cpu",
                  model_cfg: dict | None = None,

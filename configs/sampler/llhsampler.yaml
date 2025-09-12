@@ -1,3 +1,4 @@
 # passed to NFSamplerProcess
+_target_: gunflows.likelihood_sampler.nf_llh_sampler.NFSamplerProcess
 threads: 12
 data_is_asimov: true
