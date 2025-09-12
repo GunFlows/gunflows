@@ -59,6 +59,7 @@ class NFSamplerProcess(mp.Process):
                  log_every: int = 100,
                  rethrow: bool = True,
                  worker_id: int = 0):
+        print("Raw data_is_asimov:", repr(data_is_asimov), type(data_is_asimov))
         super().__init__(daemon=True)
         self.nf_ckpt = nf_ckpt
         self.n_points = int(n_points)
@@ -72,7 +73,7 @@ class NFSamplerProcess(mp.Process):
         base_cwd = (llh_cwd or os.path.dirname(os.path.abspath(llh_config))) if llh_config else (llh_cwd or ".")
         self.llh_cwd = base_cwd
         self.threads = int(threads)
-        self.data_is_asimov = bool(data_is_asimov)
+        self.data_is_asimov = data_is_asimov
         self.nf_chunk_size = int(nf_chunk_size)
         self.device = device
         self.model_cfg = model_cfg or {}
