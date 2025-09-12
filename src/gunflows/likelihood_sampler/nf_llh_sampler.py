@@ -88,6 +88,8 @@ class NFSamplerProcess(mp.Process):
         self.rethrow = bool(rethrow)
         self.worker_id = int(worker_id)
 
+        print(f"NFSamplerProcess[{self.worker_id}] initialized: nf_ckpt={self.nf_ckpt} n_points={self.n_points} llh_config={self.llh_config} llh_cwd={self.llh_cwd} threads={self.threads} asimov={self.data_is_asimov} device={self.device} save_dir={self.save_dir} write_every={self.write_every} log_every={self.log_every} rethrow={self.rethrow}")
+
     def _sd(self):
         sd = self.save_dir if self.save_dir else os.environ.get("TMPDIR", "/tmp")
         os.makedirs(sd, exist_ok=True)
