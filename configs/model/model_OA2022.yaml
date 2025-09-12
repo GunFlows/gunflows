@@ -4,16 +4,16 @@ dim_spline: ${len:${experiment.dataset.phase_space_dim}}
 
 # RQ-NSF
 nflows: 10
-hidden: 512
+hidden: 256
 nlayers: 1
 nbins: 11
 tail_bound: 3.0
 
 # Cov Flow
-freeze_covflow: true
+freeze_covflow: false
 
 # Context Flow
 context_transform: true
 n_context_flows: 12
 n_hidden_layers: 2
-hidden_dim: 64
+hidden_dim: 512

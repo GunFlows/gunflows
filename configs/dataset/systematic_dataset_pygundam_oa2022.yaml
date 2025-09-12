@@ -1,21 +1,22 @@
 _target_: gunflows.dataset.systematic_dataset_oa2022.SystematicDatasetOA2022
 
-phase_space_dim:
-  [652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666,
-   667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681,
-   682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696,
-   697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710]
+phase_space_dim: [652, 653, 654, 655, 656, 657, 658, 659, 660,
+                  661, 662, 663, 664, 665, 666, 667, 668, 669,
+                  670, 671, 672, 673, 674, 675, 676, 677, 678,
+                  679, 680, 681, 682, 683, 684, 685, 686, 687,
+                  688, 689, 690, 691, 692, 693, 694, 695, 696,
+                  697, 698, 699, 700, 701, 702, 703, 704, 705,
+                  706, 707, 708, 709, 710]
 
-starting_folder: /workspace/config/GundamInputOA2021/oa2022_asimov
-# batch_index: null
-
+starting_folder: /workspace/config/GundamInputOA2021/oa2022_toy
 with_sampler: true
-nf_ckpt: null
+nf_ckpt: null                     # path to NF checkpoint if available
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000
-max_batches: 50
+max_batches: 500
+num_samplers: 5
 
-llh_config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
+llh_config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov_ToyFit.root
 llh_overrides: []
 llh_cwd: /workspace/config/GundamInputOA2021
 
@@ -24,6 +25,3 @@ queue_size: 1000
 timeout: 60000000.0
 plot_grid: true
 out_dir: ${hydra:runtime.output_dir}/plots
-# load_data: true
-
-

@@ -3,16 +3,23 @@ defaults:
   - model: model_OA2022
   - override hydra/job_logging: disabled
   - _self_
-dataset:
-  load_data: True
-  batch_index: 0
 seed: 42
 device: cpu
 
-ckpt: /workspace/work/GuNFlows/outputs/2025-08-27/15-20-36
+ckpt: /workspace/work/GuNFlows/outputs/2025-08-27/15-20-36/checkpoints/sampler_epoch20000.pt
 save_dir: null 
 
 num_samples: 1000
 batch_size: 100
 return_probs: false
 grid: 5
+
+reweight:
+  enabled: false
+  weight_cap_quantile: null
+  likelihood:
+    config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_onlyRun4and5_Asimov.root
+    overrides: ["/workspace/config/GundamInputOA2021/override/onlyRun4and5.yaml"]
+    cwd: /workspace/config/GundamInputOA2021
+    threads: 6
+    asimov: true

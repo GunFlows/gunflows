@@ -22,6 +22,7 @@ Date  : 2025-08-14
 - refresh_if_ready(): merge newly produced batches (from sampler queue)
 - request_switch_to_nf(path): tell sampler to switch NF checkpoint
 - sampler_status(), close(), getters, __len__, __getitem__
+- num_samplers > 1 launches several parallel NFSamplerProcess workers
 """
 
 import glob, os, json, numpy as np, torch, logging, multiprocessing as mp, queue as _q
@@ -36,11 +37,43 @@ from gunflows.likelihood_sampler.nf_llh_sampler import NFSamplerProcess
 __all__ = ["SystematicDatasetOA2022"]
 
 
-def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, stage):
-    samples = samples[:, phase_dims]
-    mean = mean[phase_dims]
-    names = names[phase_dims]
-    cov = cov[np.ix_(phase_dims, phase_dims)]
+def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims=None, stage=0):
+    n_total = samples.shape[1]
+    n = min(int(n), n_total)
+
+    if weights is None or not np.all(np.isfinite(weights)):
+        weights = np.ones(samples.shape[0])
+    w = weights / np.clip(np.sum(weights), 1e-12, None)
+
+    # Standardise using provided mean and covariance to remain insensitive to cuts
+    std = np.sqrt(np.clip(np.diag(cov), 1e-12, None))
+    z = (samples - mean) / std
+
+    ks = np.zeros(n_total)
+    for i in range(n_total):
+        x = z[:, i]
+        m = np.isfinite(x) & np.isfinite(w)
+        if not np.any(m):
+            ks[i] = 0.0
+            continue
+        x_i = x[m]
+        w_i = w[m]
+        w_i = w_i / np.clip(np.sum(w_i), 1e-12, None)
+        order = np.argsort(x_i)
+        x_sorted = x_i[order]
+        w_sorted = w_i[order]
+        cdf = np.cumsum(w_sorted)
+        cdf_norm = 0.5 * (1.0 + torch.erf(torch.from_numpy(x_sorted) / np.sqrt(2.0))).numpy()
+        ks[i] = np.max(np.abs(cdf - cdf_norm))
+
+    candidates = np.array(phase_dims if phase_dims is not None else np.arange(n_total))
+    selected = candidates[np.argsort(-ks[candidates])[:n]]
+
+    samples = samples[:, selected]
+    mean = mean[selected]
+    names = np.array(names)[selected]
+    cov = cov[np.ix_(selected, selected)]
+
     fig, axes = plt.subplots(n, n, figsize=(3 * n, 3 * n))
     for i in range(n):
         for j in range(n):
@@ -48,15 +81,17 @@ def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, stage
             if i == j:
                 x = samples[:, i]
                 ax.hist(x, bins=60, weights=weights, density=True, histtype="step")
-                xs = np.linspace(x.min(), x.max(), 200)
-                mu = mean[i]
+                mu_i = mean[i]
                 sigma = np.sqrt(max(cov[i, i], 1e-12))
-                ax.plot(xs, (1.0/(np.sqrt(2*np.pi)*sigma))*np.exp(-0.5*((xs - mu)/sigma)**2))
-                ax.set_yscale("log")
+                xs = np.linspace(mu_i - 3*sigma, mu_i + 3*sigma, 200)
+
+                ax.plot(xs, (1.0/(np.sqrt(2*np.pi)*sigma))*np.exp(-0.5*((xs - mu_i)/sigma)**2))
             else:
                 ax.hist2d(samples[:, j], samples[:, i], weights=weights, bins=60, norm=LogNorm())
-            if i == n - 1: ax.set_xlabel(names[j], fontsize=7)
-            if j == 0:     ax.set_ylabel(names[i], fontsize=7)
+            if i == n - 1:
+                ax.set_xlabel(names[j], fontsize=7)
+            if j == 0:
+                ax.set_ylabel(names[i], fontsize=7)
             ax.tick_params(axis="both", labelsize=6)
     out_dir.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
@@ -82,6 +117,7 @@ class SystematicDatasetOA2022(Dataset):
         timeout=6000.0,
         data_dir=None,
         threads=6,
+        num_samplers=1,
         data_is_asimov=True,
         model_cfg=None,
         max_batches=10,
@@ -97,14 +133,15 @@ class SystematicDatasetOA2022(Dataset):
         self.shift_mode = str(shift_mode).lower()
         assert self.shift_mode in {"per_batch", "global", "none"}
         self.mean_shift = bool(mean_shift)
+        self.num_samplers = int(max(1, num_samplers))
 
-        self._gen_proc = None
+        self._gen_procs = []
         self._data_q = None
-        self._cmd_q = None
+        self._cmd_queues = None
         self._stop_evt = None
 
         self._logger = None
-        self._batches = deque(maxlen=self.max_batches)  
+        self._batches = deque(maxlen=self.max_batches)
         self._seen_paths = set()
         self._starting_paths = set()
         self.stage = 0
@@ -137,6 +174,7 @@ class SystematicDatasetOA2022(Dataset):
                 threads=threads,
                 data_is_asimov=data_is_asimov,
                 model_cfg=model_cfg,
+                num_samplers=self.num_samplers,
             )
             if not starting_folder:
                 if self.save_dir is not None:
@@ -182,21 +220,31 @@ class SystematicDatasetOA2022(Dataset):
         return updated
 
     def request_switch_to_nf(self, nf_ckpt):
-        if self._cmd_q is not None:
-            self._cmd_q.put(f"reload:{nf_ckpt}")
+        if self._cmd_queues:
+            for q in self._cmd_queues:
+                q.put(f"reload:{nf_ckpt}")
 
     def sampler_status(self):
-        p = self._gen_proc
-        return {"alive": bool(p and p.is_alive()),
+        statuses = []
+        for p in self._gen_procs:
+            statuses.append({
+                "alive": bool(p and p.is_alive()),
                 "pid": int(p.pid) if p else None,
-                "exitcode": int(p.exitcode) if p and p.exitcode is not None else None}
+                "exitcode": int(p.exitcode) if p and p.exitcode is not None else None,
+            })
+        return statuses
 
     def close(self):
-        if self._stop_evt is not None: self._stop_evt.set()
-        if self._gen_proc is not None:
-            self._gen_proc.join(timeout=5.0)
-            if self._gen_proc.is_alive(): self._gen_proc.terminate()
-        self._gen_proc = None; self._data_q = None; self._cmd_q = None; self._stop_evt = None
+        if self._stop_evt is not None:
+            self._stop_evt.set()
+        for p in self._gen_procs:
+            p.join(timeout=5.0)
+            if p.is_alive():
+                p.terminate()
+        self._gen_procs = []
+        self._data_q = None
+        self._cmd_queues = None
+        self._stop_evt = None
 
     def __del__(self):
         try: self.close()
@@ -294,7 +342,7 @@ class SystematicDatasetOA2022(Dataset):
                 "titles": titles_ref,
                 "chol": chol_std,
                 "std_per_dim": std_per_dim,
-                "cov_phys": cov_ref,  
+                "cov_phys": cov_ref,
             }
             latest_samples_phys = data_phys.detach().cpu().numpy()
             latest_mean_phys = mean_ref.detach().cpu().numpy()
@@ -342,14 +390,14 @@ class SystematicDatasetOA2022(Dataset):
                 mean_phys,
                 weights_np,
                 cov_phys,
-                self.titles, 5, self.out_dir, self.phase_space_dim, self.stage,
+                self.titles, 10, self.out_dir, self.phase_space_dim, self.stage,
             )
             _plot_grid(
                 samples_phys,
                 mean_phys,
                 np.ones_like(weights_np),
                 cov_phys,
-                self.titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
+                self.titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
             )
 
             if latest_samples_phys is not None:
@@ -363,52 +411,58 @@ class SystematicDatasetOA2022(Dataset):
                     latest_mean_phys,
                     np.exp(lw),
                     latest_cov_phys,
-                    latest_titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
+                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
                 )
                 _plot_grid(
                     latest_samples_phys[m_last, :],
                     latest_mean_phys,
                     np.ones_like(lw),
                     latest_cov_phys,
-                    latest_titles, 5, self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
+                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
                 )
 
-    def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None):
+    def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None, num_samplers=1):
         self._data_q = mp.Queue(maxsize=queue_size)
-        self._cmd_q = mp.Queue()
         self._stop_evt = mp.Event()
-        self._gen_proc = NFSamplerProcess(
-            nf_ckpt=nf_ckpt,
-            n_points=n_points,
-            llh_config=llh_config,
-            llh_overrides=llh_overrides,
-            phase_space_dim=self.phase_space_dim,
-            data_q=self._data_q,
-            cmd_q=self._cmd_q,
-            stop_evt=self._stop_evt,
-            seed=seed,
-            llh_cwd=llh_cwd,
-            save_dir=str(save_dir) if save_dir else None,
-            write_every=int(write_every) if write_every else None,
-            threads=threads,
-            data_is_asimov=data_is_asimov,
-            model_cfg=model_cfg,
-        )
-        self._gen_proc.start()
+        self._gen_procs = []
+        self._cmd_queues = []
+        for i in range(int(num_samplers)):
+            cmd_q = mp.Queue()
+            p = NFSamplerProcess(
+                nf_ckpt=nf_ckpt,
+                n_points=n_points,
+                llh_config=llh_config,
+                llh_overrides=llh_overrides,
+                phase_space_dim=self.phase_space_dim,
+                data_q=self._data_q,
+                cmd_q=cmd_q,
+                stop_evt=self._stop_evt,
+                seed=seed + i,
+                llh_cwd=llh_cwd,
+                save_dir=str(save_dir) if save_dir else None,
+                write_every=int(write_every) if write_every else None,
+                threads=threads,
+                data_is_asimov=data_is_asimov,
+                model_cfg=model_cfg,
+                worker_id=i,
+            )
+            p.start()
+            self._gen_procs.append(p)
+            self._cmd_queues.append(cmd_q)
 
     def _wait_and_merge(self, timeout=600.0, plot_grid=True):
-        assert self._data_q is not None and self._gen_proc is not None
+        assert self._data_q is not None and self._gen_procs
         try:
             msg = self._data_q.get(timeout=timeout)
         except Exception as e:
-            if not self._gen_proc.is_alive():
-                raise RuntimeError(f"Sampler exited with code {self._gen_proc.exitcode}") from e
+            if not any(p.is_alive() for p in self._gen_procs):
+                codes = [p.exitcode for p in self._gen_procs]
+                raise RuntimeError(f"Sampler exited with codes {codes}") from e
             raise
         if isinstance(msg, dict) and "from_file" in msg:
             self._append_batch_path(msg["from_file"], tag="runtime")
             self.stage += 1
             self._rebuild_merged(plot_grid=plot_grid)
-            
 
     def _wait_for_first_file(self, folder, timeout):
         import time

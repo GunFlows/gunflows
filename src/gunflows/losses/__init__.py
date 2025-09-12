@@ -6,6 +6,7 @@ from .importance_losses import (
     kl_forward,
     kl_reverse,
     kl_symmetric,
+    absolute_kl_symmetric
 )
 
 LOSS_MAP = {
@@ -15,6 +16,7 @@ LOSS_MAP = {
     "kl_forward":    kl_forward,
     "kl_reverse":    kl_reverse,
     "kl_symmetric":  kl_symmetric,
+    "absolute_kl_symmetric": absolute_kl_symmetric,
 }
 
 __all__ = [
@@ -24,6 +26,7 @@ __all__ = [
     "kl_forward",
     "kl_reverse",
     "kl_symmetric",
+    "absolute_kl_symmetric",
     "LOSS_MAP",
 ]
 

@@ -105,6 +105,8 @@ def main(cfg: DictConfig) -> None:
     dim_spline = len(phase_dims)
     names = [dataset.titles[i].split("/")[-1] for i in range(cfg.model.total_dim)]
 
+    print(f"Instantiated dataset class.")
+
     base = build_base(cfg.model.total_dim)
     tail_bounds = torch.ones(dim_spline) * cfg.model.tail_bound
     flows = build_flow_layers(
@@ -119,6 +121,8 @@ def main(cfg: DictConfig) -> None:
     model = build_model(base, flows, dataset, cfg.model.context_transform)
     model.load_state_dict(torch.load(cfg.ckpt, map_location=cfg.device))
     model = model.to(cfg.device).eval()
+
+    print("Loaded NF model.")
 
     batches = math.ceil(cfg.num_samples / cfg.batch_size)
     samples, logqs = [], []
