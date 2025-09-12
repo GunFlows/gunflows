@@ -3,13 +3,10 @@ defaults:
   - model: model_OA2022
   - override hydra/job_logging: disabled
   - _self_
-dataset:
-  load_data: True
-  batch_index: 0
 seed: 42
 device: cpu
 
-ckpt: /workspace/work/GuNFlows/outputs/2025-08-27/15-20-36
+ckpt: /workspace/work/GuNFlows/outputs/2025-08-27/15-20-36/checkpoints/sampler_epoch20000.pt
 save_dir: null 
 
 num_samples: 1000
