@@ -11,6 +11,7 @@ phase_space_dim:
    697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710]
 
 batch_index: 0
-load_data: true
+#load_data: true
 plot_grid: false
 out_dir: ${hydra:runtime.output_dir}/plots
+data_is_asimov: false

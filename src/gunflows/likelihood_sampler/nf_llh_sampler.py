@@ -50,7 +50,7 @@ class NFSamplerProcess(mp.Process):
                  phase_space_dim, data_q, cmd_q, stop_evt, seed=123,
                  llh_cwd: str | None = None,
                  threads: int = 6,
-                 data_is_asimov: bool = True,
+                 data_is_asimov: bool = False,
                  nf_chunk_size: int = 32768,
                  device: str = "cpu",
                  model_cfg: dict | None = None,
@@ -59,6 +59,7 @@ class NFSamplerProcess(mp.Process):
                  log_every: int = 100,
                  rethrow: bool = True,
                  worker_id: int = 0):
+        print("Raw data_is_asimov:", repr(data_is_asimov), type(data_is_asimov))
         super().__init__(daemon=True)
         self.nf_ckpt = nf_ckpt
         self.n_points = int(n_points)
@@ -72,7 +73,7 @@ class NFSamplerProcess(mp.Process):
         base_cwd = (llh_cwd or os.path.dirname(os.path.abspath(llh_config))) if llh_config else (llh_cwd or ".")
         self.llh_cwd = base_cwd
         self.threads = int(threads)
-        self.data_is_asimov = bool(data_is_asimov)
+        self.data_is_asimov = data_is_asimov
         self.nf_chunk_size = int(nf_chunk_size)
         self.device = device
         self.model_cfg = model_cfg or {}
@@ -87,6 +88,8 @@ class NFSamplerProcess(mp.Process):
         self._mean_ref = None
         self.rethrow = bool(rethrow)
         self.worker_id = int(worker_id)
+
+        print(f"NFSamplerProcess[{self.worker_id}] initialized: nf_ckpt={self.nf_ckpt} n_points={self.n_points} llh_config={self.llh_config} llh_cwd={self.llh_cwd} threads={self.threads} asimov={self.data_is_asimov} device={self.device} save_dir={self.save_dir} write_every={self.write_every} log_every={self.log_every} rethrow={self.rethrow}")
 
     def _sd(self):
         sd = self.save_dir if self.save_dir else os.environ.get("TMPDIR", "/tmp")
@@ -145,6 +148,7 @@ class NFSamplerProcess(mp.Process):
 
     def _load_llh(self):
         from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
+        if self._logger: self._logger.info(f"Loading likelihood interface... data_is_asimov: {self.data_is_asimov}")
         with pushd(self.llh_cwd):
             return LikelihoodSampler(
                 self.llh_config,
