@@ -10,7 +10,7 @@ likelihood:
   asimov: true
 
 seed: 42
-n_steps: 100000
+n_steps: 20000
 burn_in: 1000  # discard this many initial steps
 proposal_scale: 0.01
 initial_point: null # if null, use the postfit best fit point
