@@ -26,7 +26,6 @@ queue_size: 1000
 timeout: 60000000.0
 plot_grid: true
 out_dir: ${hydra:runtime.output_dir}/plots
-data_is_asimov: false
 
 # load_data: true
 

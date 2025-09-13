@@ -17,7 +17,7 @@ module load apptainer 2>/dev/null || true
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
 HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos"
 HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
