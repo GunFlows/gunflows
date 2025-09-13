@@ -3,10 +3,10 @@
 #SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=180G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --time=168:00:00
+#SBATCH --time=12:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
