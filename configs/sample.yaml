@@ -1,25 +1,30 @@
 defaults:
-  - dataset: systematic_dataset_pygundam_oa2022
-  - model: model_OA2022
+  # - dataset: systematic_dataset_pygundam_toy_oa2022
+  # - model: model_OA2022
   - override hydra/job_logging: disabled
   - _self_
 seed: 42
 device: cpu
 
-ckpt: /workspace/work/GuNFlows/outputs/2025-08-27/15-20-36/checkpoints/sampler_epoch20000.pt
+training_folder: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/
+# ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
-num_samples: 1000
-batch_size: 100
+num_samples: 10
+batch_size: 1
 return_probs: false
 grid: 5
+
+# MCMC Chain
+mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
+mcmc_translator: /workspace/data/OA2021/ND280/MaCh3/xsec_2021a_flux_21bv2_v15.root
 
 reweight:
   enabled: false
   weight_cap_quantile: null
   likelihood:
-    config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_onlyRun4and5_Asimov.root
-    overrides: ["/workspace/config/GundamInputOA2021/override/onlyRun4and5.yaml"]
+    config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
+    overrides: []
     cwd: /workspace/config/GundamInputOA2021
     threads: 6
     asimov: true
