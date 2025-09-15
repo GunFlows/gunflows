@@ -232,7 +232,7 @@ class LikelihoodSampler:
                         return (par.getPhysicalLimits().min, par.getParameterLimits().max)
         raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
 
-    def inject_params_and_compute_likelihood(self, values, extend_continue=True):
+    def inject_params_and_compute_likelihood(self, values, extend_continue=True, verbose=False):
         """
         Inject the given vector of parameter values into the propagator and compute the likelihood.
         Returns the negative log likelihood.
@@ -252,7 +252,7 @@ class LikelihoodSampler:
                             par.setParameterValue(float(values[n]), False)
                         else:
                             if not extend_continue:
-                                print(f"WARNING| Parameter value out of domain: {values[n]} out of [{min},{max}] for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
+                                if (verbose): print(f"WARNING| Parameter value out of domain: {values[n]} out of [{min},{max}] for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
                                 self.inject_parameter_values(current)
                                 return -1,-1,0  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
                             if values[n] < min:
@@ -261,11 +261,11 @@ class LikelihoodSampler:
                             elif values[n] > max:
                                 out_of_domain_penalty += math.exp((values[n] - max)**2) - 1
                                 par.setParameterValue(max, False)
-                            print(f"Parameter {par.getName()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
+                            if (verbose): print(f"Parameter {par.getName()} has bounds [{min}, {max}]. Injected value: {values[n]:.1f}. Setting value to {par.getParameterValue():.1f} and increasing NLL by {out_of_domain_penalty:.2f}.")
                         # print(f"DEBUG| Parameter {par.getFullTitle()} set to {par.getParameterValue()} (injected value: {values[n]}, domain limits:[{min},{max}]).")
                         n += 1
             else:
-                print(f"Parameter set {par_set.getName()} is disabled. Skipping.")
+                if (verbose): print(f"Parameter set {par_set.getName()} is disabled. Skipping.")
         # Making sure eigendecomposed parameters get the conversion done
         for par_set in self.propagator.getParametersManager().getParameterSetsList():
             if par_set.isEnabled() and par_set.isEnableEigenDecomp():
@@ -273,7 +273,7 @@ class LikelihoodSampler:
                 for par in par_set.getParameterList():
                     if par.isEnabled():
                         if not par.isValueWithinBounds():
-                            print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
+                            if (verbose): print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
                             return -1,-1,0
 
         if n != len(values):
