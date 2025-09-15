@@ -14,10 +14,30 @@ from tqdm import tqdm
 import sys
 import time
 import math
+import os
+from contextlib import contextmanager
 
+@contextmanager
+def pushd(path: str):
+    prev = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 class LikelihoodSampler:
-    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None):
+    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None, llh_cwd=None):
+        """
+        Initialize the LikelihoodSampler with the given configuration.
+        Parameters:
+        - config_file: Path to the configuration file (.yaml) or Fitter output file (.root).
+        - override_files: List of paths to override configuration files.
+        - threads: Number of threads to use.
+        - data_is_asimov: Boolean indicating if the data is Asimov (True) or real data (False).
+        - seed: Random seed for reproducibility. If None, uses current time.
+        - llh_cwd: Directory to change to before loading the config file. If None, uses current directory.
+        """
         self.likelihood_interface = None
         self.cb = None
         self.cr = None
@@ -32,6 +52,15 @@ class LikelihoodSampler:
         self.prefit_covariance_matrix = None  # Not used for sampling, useful for debugging
         self.postfit_covariance_matrix = None
         self.likelihood_at_bestfit = None
+
+        if llh_cwd is not None:
+            with pushd(llh_cwd):
+                self._initialize(config_file, override_files, threads, data_is_asimov, seed)
+        else:
+            self._initialize(config_file, override_files, threads, data_is_asimov, seed)
+
+
+    def _initialize(self, config_file, override_files, threads, data_is_asimov, seed):
 
         GUNDAM.setNumberOfThreads(threads)
         GUNDAM.setLightOutputMode(True)
