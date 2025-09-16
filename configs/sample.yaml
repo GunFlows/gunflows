@@ -6,25 +6,27 @@ defaults:
 seed: 42
 device: cpu
 
-training_folder: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/
+training_folder: /workspace/work/GuNFlows/outputs/09-09-23/
 # ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
-num_samples: 10
-batch_size: 1
+num_samples: 10000
+batch_size: 1000
 return_probs: false
 grid: 5
+# Number of parallel workers used for plotting (0 or null = auto)
+plot_workers: 8
 
 # MCMC Chain
 mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
 mcmc_translator: /workspace/data/OA2021/ND280/MaCh3/xsec_2021a_flux_21bv2_v15.root
 
-reweight:
-  enabled: false
-  weight_cap_quantile: null
-  likelihood:
-    config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
-    overrides: []
-    cwd: /workspace/config/GundamInputOA2021
-    threads: 6
-    asimov: true
+# reweight:
+#   enabled: false
+#   weight_cap_quantile: null
+#   likelihood:
+#     config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
+#     overrides: []
+#     cwd: /workspace/config/GundamInputOA2021
+#     threads: 6
+#     asimov: true

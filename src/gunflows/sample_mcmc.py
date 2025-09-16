@@ -20,6 +20,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import kstest
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 from hydra.utils import instantiate
@@ -29,6 +30,7 @@ NF_LOCAL = os.path.join(os.path.dirname(__file__), "..", "normalizing-flows")
 sys.path.append(os.path.abspath(NF_LOCAL))
 
 from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
+from gunflows.likelihood_sampler import LikelihoodSampler, pygundam_utils
 
 import ROOT # to read the MCMC chain ROOT file
 
@@ -68,13 +70,12 @@ def main(cfg: DictConfig) -> None:
 
     # Get the folder with all the training information from one folder. This allows to have everything consistent
     training_folder = cfg.training_folder
-    print("Training folder:", training_folder)
+    print("Training folder:", training_folder,flush=True)
     # override config with config.yaml file found in the training folder
     OmegaConf.set_struct(cfg, False)
     cfg = OmegaConf.merge(cfg, OmegaConf.load(os.path.join(training_folder, ".hydra", "config.yaml")))
 
     # just one batch, necessary to load the data.
-    # TODO: use sampler, so that the GUNDAM LH interace is loaded
     cfg.experiment.dataset.max_batches = 1
     cfg.experiment.dataset.with_sampler = False
     # not needed here
@@ -83,7 +84,7 @@ def main(cfg: DictConfig) -> None:
 
     # print out the whole config for debugging
     print("Full config:")
-    print(OmegaConf.to_yaml(cfg))
+    print(OmegaConf.to_yaml(cfg),flush=True)
 
 
     torch.manual_seed(cfg.seed)
@@ -114,7 +115,7 @@ def main(cfg: DictConfig) -> None:
     out_dir = (
         Path(cfg.save_dir).expanduser()
         if cfg.save_dir is not None
-        else ckpt_path.parent.parent / "samples" / "test"  #replace "test" with ts in the official version
+        else ckpt_path.parent.parent / "samples" / ts  #replace "test" with ts in the official version
     )
     img_dir = out_dir / "img"
     img_dir.mkdir(parents=True, exist_ok=True)
@@ -127,7 +128,7 @@ def main(cfg: DictConfig) -> None:
     # plt.close()
     # print(f"Test image saved to {dummy_img_path}")
 
-    print(f"device: {cfg.device}")
+    print(f"device: {cfg.device}",flush=True)
 
 
 
@@ -149,7 +150,7 @@ def main(cfg: DictConfig) -> None:
         tail_bounds,
         n_context=cfg.experiment.model.total_dim - dim_spline,
     )
-    print(f"Building NF model...")
+    print(f"Building NF model...",flush=True)
     model = build_model(base, 
                         flows, 
                         dataset, 
@@ -162,8 +163,9 @@ def main(cfg: DictConfig) -> None:
     model.load_state_dict(torch.load(ckpt_path, map_location=cfg.device))
     model = model.to(cfg.device).eval()
 
-    print(f"Built NF model. ")
-    
+    print(f"Built NF model. ",flush=True)
+
+    print(f"Sampling {cfg.num_samples} events from NF model...",flush=True)    
     # Sample from NF
     batches = math.ceil(cfg.num_samples / cfg.batch_size)
     samples_nf, logqs = [], []
@@ -180,14 +182,37 @@ def main(cfg: DictConfig) -> None:
 
     samples_nf = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples_nf)).numpy()
 
-    print(f"Sampled {len(samples_nf)} events from NF in {time.time()-start:.1f} seconds")
+    print(f"Sampled {len(samples_nf)} events from NF in {time.time()-start:.1f} seconds",flush=True)
 
-    # Load translator file
-    print(f"Loading translator file {cfg.mcmc_translator}...")
+
+    # Sample from gaussian (postfit covariance matrix)
+    # Load llh interface
+    likelihood_sampler = LikelihoodSampler(
+            config_file=cfg.experiment.dataset.llh_config,
+            override_files=cfg.experiment.dataset.llh_overrides,
+            data_is_asimov=cfg.experiment.dataset.data_is_asimov,
+            threads=cfg.experiment.sampler.threads,
+            llh_cwd=cfg.experiment.dataset.llh_cwd
+        ) # random seed not used in this mode (throwing outside gundam)
+
+    print("Gundam likelihood interface initialized.",flush=True)
+    bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
+    postfit_covariance = likelihood_sampler.postfit_covariance_matrix
+
+    # Sample from gaussian (postfit covariance matrix)
+    print(f"Sampling from covariance matrix for {cfg.num_samples} samples...",flush=True)
+    start_time = time.time()
+    gaus_throws = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=cfg.num_samples)
+    end_time = time.time()
+    print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
+
+
+    # Load translator file for MCMC chain
+    print(f"Loading translator file {cfg.mcmc_translator}...",flush=True)
     nf_translator = ROOT.TFile.Open(cfg.mcmc_translator)
     translator_array = nf_translator.Get("xsec_param_names")
     translator_array = [str(translator_array.At(i)) for i in range(translator_array.GetEntries())]
-    print(f"Translator array has {len(translator_array)} entries.")
+    print(f"Translator array has {len(translator_array)} entries.",flush=True)
 
     # Check the matching between MCMC xsec_0..73 and NF parameters
     n_matches = 0
@@ -225,44 +250,86 @@ def main(cfg: DictConfig) -> None:
         # open root file and read the tree
         f_mcmc = ROOT.TFile.Open(cfg.mcmc_chain)
         tree = f_mcmc.Get("posteriors")
-        mcmc_entries = tree.GetEntries()
-        print(f"MCMC chain has {mcmc_entries} entries. Requested {cfg.num_samples} samples.")
-        # tree structure: each branch is one variable.
-        # ndd_0..ndd_551 are the detector syst. 
-        # xsec_0..xsec_174 are the cross-section AND flux systematics (xsec until 73 (included), flux from 74 to 173)
-        # debug: just draw the marginal of each variable
-        branch_names = [br.GetName() for br in tree.GetListOfBranches()]
-        count_marginals = 0
-        for branch_name in branch_names:
-            if branch_name == "xsec_174":
-                print("I don't know what to map xsec_174 to.")
-                continue
-            mcmc_values = []
-            for i in range( min(cfg.num_samples, mcmc_entries) ):
-                # take a random entry
-                tree.GetEntry(i)
-                mcmc_values.append( getattr(tree, branch_name) )
-            mcmc_values = np.array(mcmc_values)
+        mcmc_entries = int(tree.GetEntries())
+        n_take = int(min(cfg.num_samples, mcmc_entries))
+        print(f"MCMC chain has {mcmc_entries} entries. Sampling {n_take} unique entries.", flush=True)
 
-            index_nf, meaningful_name = index_mcmc_to_nf(branch_name, translator_array, nf_names)
-            if index_nf is None:
-                print(f"Skipping {branch_name} as it has no correspondence in the NF samples.")
-                continue
+        # Build list of branches to read and precompute mapping
+        all_branches = [br.GetName() for br in tree.GetListOfBranches()]
+        # skip problematic one
+        all_branches = [b for b in all_branches if b != "xsec_174"]
+
+        branch_map = {}
+        for b in all_branches:
+            idx, name = index_mcmc_to_nf(b, translator_array, nf_names)
+            if idx is not None:
+                branch_map[b] = (idx, name)
+        selected_branches = list(branch_map.keys())
+        print(f"Using {len(selected_branches)}/{len(all_branches)} branches after mapping.", flush=True)
+
+        # Restrict IO to just the needed branches
+        tree.SetBranchStatus("*", 0)
+        for b in selected_branches:
+            tree.SetBranchStatus(b, 1)
+
+        # Sample unique entry indices once
+        rng = np.random.default_rng(cfg.seed)
+        indices = rng.choice(mcmc_entries, size=n_take, replace=False)
+        # sort them to minimize random disk access
+        indices = np.sort(indices)
+        # Pre-allocate storage per branch
+        mcmc_data = {b: np.empty(n_take, dtype=float) for b in selected_branches}
+
+        print("Reading selected entries from MCMC TTree (might take some time)...", flush=True)
+        t0 = time.time()
+        for i, entry in enumerate(indices):
+            tree.GetEntry(int(entry))
+            # print(f"{i}: Reading entry {entry}")
+            for b in selected_branches:
+                mcmc_data[b][i] = getattr(tree, b)
+            if (i + 1) % max(1, n_take // 10) == 0:
+                print(f"  {i + 1}/{n_take} entries read", flush=True)
+        print(f"Done reading in {time.time() - t0:.2f}s", flush=True)
+
+        # Plotting function
+        def plot_one(branch_name: str):
+            index_nf, meaningful_name = branch_map[branch_name]
+            mcmc_values = mcmc_data[branch_name]
             nf_values = samples_nf[:, index_nf]
+            gaus_values = gaus_throws[:, index_nf]
 
-            plt.figure(figsize=(6,4))
+            fig = plt.figure(figsize=(6, 4))
             plt.hist(mcmc_values, bins=50, histtype='step')
             plt.hist(nf_values, bins=50, histtype='step', color='red')
-            plt.legend(["MCMC", "NF"])
+            plt.hist(gaus_values, bins=50, histtype='step', color='green')
+            plt.legend(["MCMC", "NF", "Gaus"])
             plt.xlabel(meaningful_name)
             plt.ylabel("a.u.")
-            plt.title(f"MCMC marginal of {meaningful_name}. entries: {len(mcmc_values)}")
+            plt.title(f"Marginal of {meaningful_name}    Entries: {len(mcmc_values)}")
             plt.grid()
-            plt.savefig(img_dir / f"MCMC_marginal_{meaningful_name}.png")
-            print(f"Saved MCMC marginal of {meaningful_name}")
-            plt.close()
-            count_marginals += 1
-        print(f"Plotted {count_marginals} marginals.")
+            out_path = img_dir / f"MCMC_marginal_{meaningful_name}.png"
+            plt.savefig(out_path)
+            plt.close(fig)
+            return meaningful_name
+
+        # Parallelize plotting (reading remains single-threaded)
+        # Resolve plotting worker count from config if present
+        cfg_workers = None
+        try:
+            cfg_workers = int(cfg.plot_workers) or 0
+        except Exception:
+            cfg_workers = 0
+        print("Plotting marginals in parallel...", flush=True)
+        count_marginals = 0
+        max_workers = cfg_workers if cfg_workers and cfg_workers > 0 else min(8, os.cpu_count())
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(plot_one, b): b for b in selected_branches}
+            for fut in as_completed(futures):
+                name = fut.result()
+                count_marginals += 1
+                if count_marginals % 20 == 0:
+                    print(f"  Plotted {count_marginals}/{len(selected_branches)}", flush=True)
+        print(f"Plotted {count_marginals} marginals.", flush=True)
 
 
 if __name__ == "__main__":
