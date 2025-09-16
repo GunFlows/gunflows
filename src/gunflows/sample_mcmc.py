@@ -272,11 +272,15 @@ def main(cfg: DictConfig) -> None:
         for b in selected_branches:
             tree.SetBranchStatus(b, 1)
 
-        # Sample unique entry indices once
-        rng = np.random.default_rng(cfg.seed)
-        indices = rng.choice(mcmc_entries, size=n_take, replace=False)
-        # sort them to minimize random disk access
-        indices = np.sort(indices)
+        if cfg.randomize_mcmc:
+            # Sample unique entry indices once
+            rng = np.random.default_rng(cfg.seed)
+            indices = rng.choice(mcmc_entries, size=n_take, replace=False)
+            # sort them to minimize random disk access
+            indices = np.sort(indices)
+        else:
+            indices = np.arange(n_take)
+            print(f"Taking first {n_take} entries from MCMC chain (no randomization).", flush=True)
         # Pre-allocate storage per branch
         mcmc_data = {b: np.empty(n_take, dtype=float) for b in selected_branches}
 

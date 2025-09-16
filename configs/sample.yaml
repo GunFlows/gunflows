@@ -16,6 +16,7 @@ return_probs: false
 grid: 5
 # Number of parallel workers used for plotting (0 or null = auto)
 plot_workers: 8
+randomize_mcmc: true
 
 # MCMC Chain
 mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
