@@ -30,6 +30,8 @@ if args.a:
 else:
     data_is_asimov = False
 
+
+
 # number of threads
 if args.t:
     try:
@@ -72,6 +74,15 @@ if not output_file.endswith('.npz'):
 out_dir = os.path.splitext(output_file)[0] + '_plots'
 if not os.path.exists(out_dir):
     os.makedirs(out_dir)
+
+# save in a yaml file to the output folder: config file, overrides and working directory
+# TODO: It's ok as long as there are few params, but this is a bit too manual... 
+with open(os.path.join(out_dir, "config_make_initial_dataset.yaml"), "w") as f:
+    f.write("experiment:")
+    f.write("  dataset:")
+    f.write(f"    llh_config: {args.c}\n")
+    f.write(f"    llh_overrides: {args.of}\n")
+    f.write(f"    llh_cwd: {os.getcwd()}\n")
 
 print(f"Sampling and computing likelihoods for {n} throws in batches of {b}.")
 
