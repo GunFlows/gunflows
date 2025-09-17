@@ -303,9 +303,12 @@ def main(cfg: DictConfig) -> None:
             gaus_values = gaus_throws[:, index_nf]
 
             fig = plt.figure(figsize=(6, 4))
-            plt.hist(mcmc_values, bins=50, histtype='step')
-            plt.hist(nf_values, bins=50, histtype='step', color='red')
-            plt.hist(gaus_values, bins=50, histtype='step', color='green')
+            # unify bin width for the three histograms
+            bin_width =  (max(mcmc_values.max(), nf_values.max(), gaus_values.max()) - min(mcmc_values.min(), nf_values.min(), gaus_values.min())) / 50
+            bins = np.arange(min(mcmc_values.min(), nf_values.min(), gaus_values.min()), max(mcmc_values.max(), nf_values.max(), gaus_values.max()) + bin_width, bin_width)
+            plt.hist(mcmc_values, bins=bins, histtype='step')
+            plt.hist(nf_values, bins=bins, histtype='step', color='red')
+            plt.hist(gaus_values, bins=bins, histtype='step', color='green')
             plt.legend(["MCMC", "NF", "Gaus"])
             plt.xlabel(meaningful_name)
             plt.ylabel("a.u.")
