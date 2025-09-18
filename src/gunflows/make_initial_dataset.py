@@ -23,6 +23,20 @@ parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
 args = parser.parse_args()
 
+
+output_file = args.o
+# Check if the output file has a .npz extension, if not, add it
+if not output_file.endswith('.npz'):
+    output_file += '.npz'
+# remove .npz for the output directory
+out_dir = os.path.splitext(output_file)[0] + '_plots'
+print(f"Output dataset will be saved to: {output_file}")
+print(f"Output plots will be saved to: {out_dir}")
+if not os.path.exists(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    # raise RuntimeError(f"Output directory {out_dir} does not exist. Please create it first.")
+
+
 print("Using base config file:", args.c)
 # Asimov or not?
 if args.a:
@@ -66,18 +80,12 @@ b = int(args.b) if args.b else n
 if b > n:
     b = n
 
-output_file = args.o
-# Check if the output file has a .npz extension, if not, add it
-if not output_file.endswith('.npz'):
-    output_file += '.npz'
-# remove .npz for the output directory
-out_dir = os.path.splitext(output_file)[0] + '_plots'
-if not os.path.exists(out_dir):
-    os.makedirs(out_dir)
+
 
 # save in a yaml file to the output folder: config file, overrides and working directory
-# TODO: It's ok as long as there are few params, but this is a bit too manual... 
-with open(os.path.join(out_dir, "config_make_initial_dataset.yaml"), "w") as f:
+# TODO: It's ok as long as there are few params, but this is a bit too manual...
+same_folder_as_outputfile = os.path.dirname(os.path.abspath(output_file))
+with open(os.path.join(same_folder_as_outputfile,"config_make_initial_dataset.yaml"), "w") as f:
     f.write("experiment:")
     f.write("  dataset:")
     f.write(f"    llh_config: {args.c}\n")
