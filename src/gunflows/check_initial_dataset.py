@@ -171,7 +171,7 @@ for i in range(num_params):
         plt.text(0.5, 0.5, 'No island points detected', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
 
     plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, f'{param_names[i]}_hist_scatter.png'), dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(out_dir, f'{param_names[i]}.png'), dpi=150, bbox_inches='tight')
     print(f"Saved plot for {param_names[i]}")
     plt.close()
 
