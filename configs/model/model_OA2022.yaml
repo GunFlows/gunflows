@@ -3,7 +3,7 @@ total_dim: 711
 dim_spline: ${len:${experiment.dataset.phase_space_dim}}
 
 # RQ-NSF
-nflows: 10
+nflows: 15
 hidden: 256
 nlayers: 1
 nbins: 11
