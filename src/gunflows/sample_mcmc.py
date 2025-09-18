@@ -37,11 +37,17 @@ import ROOT # to read the MCMC chain ROOT file
 
 
 def index_mcmc_to_nf(mcmc_branch_name, translator_array, nf_names):
+    parameter_name = None
     # find the corresponding index in the NF samples
     if mcmc_branch_name.startswith("ndd_"):
         return int(mcmc_branch_name.split("_")[1]) + 100, f"DetSyst_{int(mcmc_branch_name.split('_')[1])}" # det syst start at 100 in the NF samples
     elif mcmc_branch_name.startswith("xsec_"):
-        parameter_name = translator_array[int(mcmc_branch_name.split("_")[1])]
+        if mcmc_branch_name == "xsec_74": 
+            return None, None  # skip problematic one (I think this is EB alpha, only present in MCMC)
+        index = int(mcmc_branch_name.split("_")[1])
+        if index > 74:
+            index -= 1  # adjust index to skip xsec_74
+        parameter_name = translator_array[index]
         # print(f"Mapping MCMC branch {mcmc_branch_name} to parameter name {parameter_name}")
         if parameter_name.startswith("b_"):
             return int(parameter_name.split("_")[1]), f"FluxSyst_{int(parameter_name.split('_')[1])}"  # xsec_100..xsec_174 are the flux syst in the NF samples
@@ -59,10 +65,10 @@ def index_mcmc_to_nf(mcmc_branch_name, translator_array, nf_names):
             pattern = re.compile(r"#\d+_(.*)")
             if pattern.match(nf_name) is not None:
                 if parameter_name == pattern.match(nf_name).group(1):
-                    print(f" -> Mapping {parameter_name} to {nf_name}")
+                    # print(f" -> Mapping {parameter_name} to {nf_name}")
                     return i, pattern.match(nf_name).group(1)
     # print(f"Warning: unrecognized MCMC branch name {mcmc_branch_name}.")
-    return None, None            
+    return None, parameter_name            
 
 
 @hydra.main(config_path="../../configs", config_name="sample", version_base=None)
@@ -130,6 +136,15 @@ def main(cfg: DictConfig) -> None:
 
     print(f"device: {cfg.device}",flush=True)
 
+    # Load translator file for MCMC chain
+    print(f"Loading translator file {cfg.mcmc_translator}...",flush=True)
+    nf_translator = ROOT.TFile.Open(cfg.mcmc_translator)
+    translator_array = nf_translator.Get("xsec_param_names")
+    translator_array = [str(translator_array.At(i)) for i in range(translator_array.GetEntries())]
+    print(f"Translator array has {len(translator_array)} entries.",flush=True)
+    for i, name in enumerate(translator_array):
+        print(f"  {i}: {name}",flush=True)
+
 
 
     dataset = instantiate(cfg.experiment.dataset)
@@ -137,6 +152,26 @@ def main(cfg: DictConfig) -> None:
     dim_spline = len(phase_dims)
     nf_names = [dataset.titles[i].split("/")[-1] for i in range(cfg.experiment.model.total_dim)]
     
+
+    # check correct functioning of the mapping function
+    if cfg.mcmc_chain is not None:
+            # open root file and read the tree
+            f_mcmc = ROOT.TFile.Open(cfg.mcmc_chain)
+            tree = f_mcmc.Get("posteriors")
+            mcmc_entries = int(tree.GetEntries())
+            # Build list of branches to read and precompute mapping
+            all_branches = [br.GetName() for br in tree.GetListOfBranches()]
+            for b in all_branches:
+                idx, name = index_mcmc_to_nf(b, translator_array, nf_names)
+                if idx is not None:
+                    print(f"Mapping MCMC branch {b} to NF index {idx} ({name})")
+                else:
+                    print(f"Skipping MCMC branch {b} ({name})")
+    
+    # now print nf names with their indices
+    print("NF parameter names and their indices:")
+    for i, name in enumerate(nf_names):
+        print(f"  {i}: {name}")
 
 
     base = build_base(cfg.experiment.model.total_dim)
@@ -207,43 +242,7 @@ def main(cfg: DictConfig) -> None:
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
 
-    # Load translator file for MCMC chain
-    print(f"Loading translator file {cfg.mcmc_translator}...",flush=True)
-    nf_translator = ROOT.TFile.Open(cfg.mcmc_translator)
-    translator_array = nf_translator.Get("xsec_param_names")
-    translator_array = [str(translator_array.At(i)) for i in range(translator_array.GetEntries())]
-    print(f"Translator array has {len(translator_array)} entries.",flush=True)
 
-    # Check the matching between MCMC xsec_0..73 and NF parameters
-    n_matches = 0
-    for i in range(74):
-        parameter_name = translator_array[i]
-        # handle special cases
-        if parameter_name == "EB_dial_O_nubar":
-            parameter_name = "EB_bin_O_nubar"
-        if parameter_name == "EB_dial_O_nu":
-            parameter_name = "EB_bin_O_nu"
-        if parameter_name == "EB_dial_C_nubar":
-            parameter_name = "EB_bin_C_nubar"
-        if parameter_name == "EB_dial_C_nu":
-            parameter_name = "EB_bin_C_nu"
-        # print(f"Mapping for MCMC xsec_{i}:")
-        matches = 0
-        for nf_name in nf_names:
-            pattern = re.compile(r"#\d+_(.*)")
-            if pattern.match(nf_name) is not None:
-                if parameter_name == pattern.match(nf_name).group(1):
-                    print(f"Mapping {translator_array[i]} to {nf_name}")
-                    matches += 1
-        if matches == 0:
-            print(f"  No matches found for {translator_array[i]}")
-        elif matches > 1:
-            print("  Warning: multiple matches found!")
-        if matches == 1:
-            n_matches += 1
-    
-    print(f"Total of {n_matches} unique matches found between MCMC xsec_0..73 and NF parameters.")
-            
 
     # Sample from MCMC chain
     if cfg.mcmc_chain is not None:
@@ -256,8 +255,6 @@ def main(cfg: DictConfig) -> None:
 
         # Build list of branches to read and precompute mapping
         all_branches = [br.GetName() for br in tree.GetListOfBranches()]
-        # skip problematic one
-        all_branches = [b for b in all_branches if b != "xsec_174"]
 
         branch_map = {}
         for b in all_branches:
