@@ -11,6 +11,14 @@ from gunflows.likelihood_sampler import LikelihoodSampler
 from gunflows.likelihood_sampler import pygundam_utils
 
 
+def get_dir(path_or_list):
+    # if it's a list, pick the first element
+    if isinstance(path_or_list, (list, tuple)):
+        path = path_or_list[0]
+    else:
+        path = path_or_list
+
+    return os.path.dirname(os.path.abspath(path))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-f', required=True, help='dataset file(s) to check (batch#.npz)', nargs='+')
@@ -84,7 +92,8 @@ log_q = np.concatenate(log_q_chunks, axis=0) if log_q_chunks else None
 # plot histograms of each parameter with corelations to the next one only (just  a check)
 
 if out_dir == "input":
-    out_dir = os.path.join(os.environ.get("CONFIG_FOLDER"), "check_initial_dataset_plots")
+    out_dir = get_dir(args.f)
+    out_dir = os.path.join(out_dir, "check_initial_dataset_plots")
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 elif not os.path.exists(out_dir):
