@@ -20,15 +20,57 @@ args = parser.parse_args()
 
 out_dir = args.o
 print("Using dataset file(s):", args.f)
-# merge all files into one dictionary
-all_data = {}
+# merge all files into one dictionary (concatenate data, log_p, log_q)
+
+data_chunks = []
+log_p_chunks = []
+log_q_chunks = []
+cov = None
+mean = None
+par_names = None
+bestfit_nll = None
+
 for file in args.f:
-    data = np.load(file, allow_pickle=True)
-    for key in data:
-        if key in all_data:
-            all_data[key] = np.concatenate((all_data[key], data[key]), axis=0)
-        else:
-            all_data[key] = data[key]
+    loaded = np.load(file, allow_pickle=True)
+
+    # Validate and append
+    if "data" in loaded:
+        arr = np.asarray(loaded["data"])
+        if arr.ndim == 0:
+            print(f"⚠️ Skipping {file}: 'data' is scalar")
+            continue
+        data_chunks.append(arr)
+
+    if "log_p" in loaded:
+        arr = np.asarray(loaded["log_p"])
+        if arr.ndim == 0:
+            print(f"⚠️ Skipping {file}: 'log_p' is scalar")
+            continue
+        log_p_chunks.append(arr)
+
+    if "log_q" in loaded:
+        arr = np.asarray(loaded["log_q"])
+        if arr.ndim == 0:
+            print(f"⚠️ Skipping {file}: 'log_q' is scalar")
+            continue
+        log_q_chunks.append(arr)
+
+    if cov is None and "cov" in loaded:
+        cov = loaded["cov"]
+    if mean is None and "mean" in loaded:
+        mean = loaded["mean"]
+    if par_names is None and "par_names" in loaded:
+        par_names = loaded["par_names"]
+    if bestfit_nll is None and "bestfit_nll" in loaded:
+        bestfit_nll = loaded["bestfit_nll"]
+
+# Final concatenation (safe and fast)
+all_data = np.concatenate(data_chunks, axis=0) if data_chunks else None
+log_p = np.concatenate(log_p_chunks, axis=0) if log_p_chunks else None
+log_q = np.concatenate(log_q_chunks, axis=0) if log_q_chunks else None
+        
+
+
 
 # Dictionary should look like:
             # "data": params_list,
@@ -48,7 +90,7 @@ if out_dir == "input":
 elif not os.path.exists(out_dir):
     os.makedirs(out_dir)
 
-print(f"Number of samples in the dataset: {all_data['data'].shape[0]}")
+print(f"Number of samples in the dataset: {all_data.shape[0]}")
 print(f"Output plots will be saved in: {out_dir}")
 
 # Helper: robust 2D histogram with safe LogNorm and colorbar
@@ -75,20 +117,20 @@ def hist2d_logsafe(x, y, bins=60, weights=None, cmap="magma"):
         # Last resort: draw without colorbar
         plt.hist2d(x, y, bins=bins, weights=weights, cmap=cmap)
 
-num_params = all_data['data'].shape[1]
-param_names = all_data['par_names']
+num_params = all_data.shape[1]
+param_names = par_names
 # equalize medians of log_p and log_q
-median_log_p = np.median(all_data['log_p'])
-median_log_q = np.median(all_data['log_q'])
+median_log_p = np.median(log_p)
+median_log_q = np.median(log_q)
 if np.isfinite(median_log_p) and np.isfinite(median_log_q):
-    all_data['log_q'] += (median_log_p - median_log_q)
+    log_q += (median_log_p - median_log_q)
 
 #plot log_p and log_q overlaid
 plt.figure(figsize=(10, 6))
-range_min = min(np.min(all_data['log_p']), np.min(all_data['log_q']))
-range_max = max(np.max(all_data['log_p']), np.max(all_data['log_q']))
-plt.hist(all_data['log_p'], bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_p (NLL)', color='blue', histtype='stepfilled')
-plt.hist(all_data['log_q'], bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_q (baseline NLL)', color='orange', histtype='stepfilled')
+range_min = min(np.min(log_p), np.min(log_q))
+range_max = max(np.max(log_p), np.max(log_q))
+plt.hist(log_p, bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_p (NLL)', color='blue', histtype='stepfilled')
+plt.hist(log_q, bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_q (baseline NLL)', color='orange', histtype='stepfilled')
 # log scale y-axis
 plt.yscale('log')
 plt.xlabel('NLL')
@@ -98,11 +140,11 @@ plt.legend()
 plt.savefig(os.path.join(out_dir, '1_logp_logq_distribution.png'), dpi=150, bbox_inches='tight')
 plt.close()
 
-island_data = all_data['data'][(abs(all_data['log_p'] - all_data['log_q'])) > 250]
-non_island_data = all_data['data'][(abs(all_data['log_p'] - all_data['log_q'])) <= 250]
+island_data = all_data[(abs(log_p - log_q)) > 250]
+non_island_data = all_data[(abs(log_p - log_q)) <= 250]
 
 
-weights = np.exp(all_data['log_p'] - all_data['log_q'])[(abs(all_data['log_p'] - all_data['log_q'])) <= 250]  # weights for the histograms
+weights = np.exp(log_p - log_q)[(abs(log_p - log_q)) <= 250]  # weights for the histograms
 # Robustify weights: finite-only, clip extreme tail, and logweight < 250
 weights = np.where(np.isfinite(weights), weights, 0.0)
 if weights.ndim > 1:
