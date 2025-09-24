@@ -575,3 +575,7 @@ class LikelihoodSampler:
         }
         return dataset_dict
 
+    def get_gundam_config_yaml(self):
+        if self.cb is None:
+            raise RuntimeError("ConfigBuilder is not initialized.")
+        return self.cb.toString()

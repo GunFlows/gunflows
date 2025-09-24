@@ -60,6 +60,8 @@ likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.o
 if likelihood_sampler.likelihood_interface is None:
     raise RuntimeError("Likelihood interface is not configured properly.")
 
+print("GUNDAM CONFIG:")
+print(likelihood_sampler.get_gundam_config_yaml())
 
 bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
 prior_parameter_values = likelihood_sampler.prior_parameter_values
