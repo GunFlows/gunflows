@@ -11,5 +11,7 @@ tests/job*
 setup.sh
 setup_nosubshell.sh
 bash/logs/
+bash/logs_old/
 bash/logs_toy/
 bash/train_gunflows.sh
+fds_check/
