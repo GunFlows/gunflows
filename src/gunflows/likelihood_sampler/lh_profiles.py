@@ -11,6 +11,8 @@ from gunflows.likelihood_sampler import LikelihoodSampler
 from gunflows.likelihood_sampler import pygundam_utils
 
 # Start of the script
+# save current directory
+cwd = os.getcwd()
 os.chdir(os.environ.get("CONFIG_FOLDER") )
 
 # Instantiate a likelihood sampler
@@ -22,7 +24,7 @@ parser.add_argument('-s', help='width of profile in sigmas', default=3)
 parser.add_argument('-of', nargs='+', help='Override config file paths')
 parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
-
+parser.add_argument('-x', action='store_true',help='Only xsec parameters')
 args = parser.parse_args()
 
 
@@ -47,6 +49,9 @@ likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.o
 if likelihood_sampler.likelihood_interface is None:
     raise RuntimeError("Likelihood interface is not configured properly.")
 
+print("GUNDAM CONFIG:")
+print(likelihood_sampler.get_gundam_config_yaml())
+
 n = int(args.n)
 
 if args.s:
@@ -57,8 +62,10 @@ if args.s:
 else:
     w = 3.0
 
-print(f"\n\nMaking NLL profile plots with {n} in a range of +-{w} sigmas around the best fit point.\n\n")
+print(f"\n\nMaking NLL profile plots with {n} points in a range of +-{w} sigmas around the best fit point.\n\n")
 
+# go back to original directory
+os.chdir(cwd)
 output_folder = args.o
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
@@ -84,9 +91,8 @@ dummy = [1] * len(bf)  # dummy list of 1s
 
 
 for i, parameter_name in enumerate(parameter_names):
-    # test
-    if i<650:
-        continue
+    if args.x and "Cross-Section" not in parameter_name:
+        continue    
     print(f"Computing profile for parameter {i+1}/{len(parameter_names)}: {parameter_name}",end=' ')
     phys_range_min, phys_range_max = likelihood_sampler.get_parameter_physical_range(parameter_name)
     # print(f"- phys range: [{phys_range_min:.2f}, {phys_range_max:.2f}]", end=' ')

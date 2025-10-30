@@ -17,11 +17,25 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-c', required=True, help='Config file path')
 parser.add_argument('-n', required=True, help='Number of throws')
 parser.add_argument('-o', required=True, help='Name of the output file')
-parser.add_argument('-b', help='Number of throws ina batch')
+parser.add_argument('-b', help='Number of throws in a batch')
 parser.add_argument('-of', nargs='+', help='Override config file paths')
 parser.add_argument('-t', help='Number of threads')
 parser.add_argument('-a', action='store_true',help='Set data to prior, to be used for Asimov fits')
 args = parser.parse_args()
+
+
+output_file = args.o
+# Check if the output file has a .npz extension, if not, add it
+if not output_file.endswith('.npz'):
+    output_file += '.npz'
+# remove .npz for the output directory
+out_dir = os.path.splitext(output_file)[0] + '_plots'
+print(f"Output dataset will be saved to: {output_file}")
+print(f"Output plots will be saved to: {out_dir}")
+if not os.path.exists(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    # raise RuntimeError(f"Output directory {out_dir} does not exist. Please create it first.")
+
 
 print("Using base config file:", args.c)
 # Asimov or not?
@@ -29,6 +43,8 @@ if args.a:
     data_is_asimov = True
 else:
     data_is_asimov = False
+
+
 
 # number of threads
 if args.t:
@@ -44,6 +60,8 @@ likelihood_sampler = LikelihoodSampler(config_file=args.c, override_files=args.o
 if likelihood_sampler.likelihood_interface is None:
     raise RuntimeError("Likelihood interface is not configured properly.")
 
+print("GUNDAM CONFIG:")
+print(likelihood_sampler.get_gundam_config_yaml())
 
 bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
 prior_parameter_values = likelihood_sampler.prior_parameter_values
@@ -64,14 +82,21 @@ b = int(args.b) if args.b else n
 if b > n:
     b = n
 
-output_file = args.o
-# Check if the output file has a .npz extension, if not, add it
-if not output_file.endswith('.npz'):
-    output_file += '.npz'
-# remove .npz for the output directory
-out_dir = os.path.splitext(output_file)[0] + '_plots'
-if not os.path.exists(out_dir):
-    os.makedirs(out_dir)
+
+
+# save in a yaml file to the output folder: config file, overrides and working directory
+# TODO: It's ok as long as there are few params, but this is a bit too manual...
+same_folder_as_outputfile = os.path.dirname(os.path.abspath(output_file))
+with open(os.path.join(same_folder_as_outputfile,"config_make_initial_dataset.yaml"), "w") as f:
+    f.write("experiment:")
+    f.write("  dataset:")
+    f.write(f"    llh_config: {args.c}\n")
+    f.write(f"    llh_overrides: {args.of}\n")
+    f.write(f"    llh_cwd: {os.getcwd()}\n")
+    f.write(f"    data_is_asimov: {data_is_asimov}\n")
+    f.write(f"make_initial_dataset:\n")
+    f.write(f"  total_throws: {n}\n")
+    f.write(f"  batch_size: {b}\n")
 
 print(f"Sampling and computing likelihoods for {n} throws in batches of {b}.")
 
@@ -114,6 +139,9 @@ while len(throws) < n:
         syst_NLL_list_batch.append(penalty_NLL)
         print(f"Throw {i_global}: log_q = {logq}")
         print(f"                  log_p = {NLL}", flush=True)
+        if (i_global == 42):
+            print("42 is the answer to life, the universe and everything.")
+            print(likelihood_sampler.likelihood_interface.getSummary())
     #test
 
     throws.extend(throws_batch)

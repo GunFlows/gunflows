@@ -13,20 +13,20 @@ with_sampler: true
 nf_ckpt: null
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000
-max_batches: 100
+max_batches: 50
 num_samplers: 10
 
 llh_config: /workspace/config/GundamInputOA2021/output/FDSOA2021/fdsFit_Martini1pi.root
   #llh_config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov_ToyFit.root
 llh_overrides: []
 llh_cwd: /workspace/config/GundamInputOA2021
-data_is_asimov: False
 
 seed: 42
 queue_size: 1000
 timeout: 60000000.0
 plot_grid: true
 out_dir: ${hydra:runtime.output_dir}/plots
+data_is_asimov: false
 
 # load_data: true
 

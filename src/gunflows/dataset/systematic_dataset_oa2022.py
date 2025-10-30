@@ -374,7 +374,6 @@ class SystematicDatasetOA2022(Dataset):
         self.data_spline = self.data[:, self.phase_space_dim]
 
         self._log(f"Merged {len(self._batches)} batches → {self.nsample} samples")
-        plot_grid=True
 
         if plot_grid:
             logw = (self.log_q - self.log_p).reshape(-1)
