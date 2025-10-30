@@ -3,7 +3,7 @@
 #SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=180G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --time=168:00:00
@@ -17,7 +17,7 @@ module load apptainer 2>/dev/null || true
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
 HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos"
 HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
@@ -39,4 +39,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=oa2022_pygundam_toy ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train ${EXTRA_ARGS}"

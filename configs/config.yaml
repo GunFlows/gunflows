@@ -1,5 +1,5 @@
 defaults:
-  - experiment: oa2022_pygundam
+  - experiment: oa2022_pygundam_data
   - _self_
 
 

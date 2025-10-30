@@ -2,7 +2,7 @@
 #SBATCH --job-name=gunflows-mcmc
 #SBATCH --partition=private-dpnc-cpu
 #SBATCH --mem=40G
-#SBATCH --time=4:00:00
+#SBATCH --time=12:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 

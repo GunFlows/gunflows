@@ -15,3 +15,5 @@ bash/logs_old/
 bash/logs_toy/
 bash/train_gunflows.sh
 fds_check/
+src/normalizing-flows
+.vscode/
