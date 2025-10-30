@@ -23,6 +23,7 @@ def get_dir(path_or_list):
 parser = argparse.ArgumentParser()
 parser.add_argument('-f', required=True, help='dataset file(s) to check (batch#.npz)', nargs='+')
 parser.add_argument('-o', required=True, help='Name of the output folder for the plots.')
+parser.add_argument('-x', action='store_true',help='Only xsec parameters')
 
 args = parser.parse_args()
 
@@ -138,8 +139,8 @@ if np.isfinite(median_log_p) and np.isfinite(median_log_q):
 plt.figure(figsize=(10, 6))
 range_min = min(np.min(log_p), np.min(log_q))
 range_max = max(np.max(log_p), np.max(log_q))
-plt.hist(log_p, bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_p (NLL)', color='blue', histtype='stepfilled')
-plt.hist(log_q, bins=100, range=(range_min, range_max), density=True, alpha=0.5, label='log_q (baseline NLL)', color='orange', histtype='stepfilled')
+plt.hist(log_p, bins=100, range=(range_min, range_max), density=False, alpha=0.5, label='log_p (NLL)', color='blue', histtype='stepfilled')
+plt.hist(log_q, bins=100, range=(range_min, range_max), density=False, alpha=0.5, label='log_q (baseline NLL)', color='orange', histtype='stepfilled')
 # log scale y-axis
 plt.yscale('log')
 plt.xlabel('NLL')
@@ -151,6 +152,27 @@ plt.close()
 
 island_data = all_data[(abs(log_p - log_q)) > 250]
 non_island_data = all_data[(abs(log_p - log_q)) <= 250]
+
+# log_p and log_q for island only points
+plt.figure(figsize=(10, 6))
+if island_data.shape[0] > 0:
+    range_min = min(np.min(log_p[(abs(log_p - log_q)) > 250]), np.min(log_q[(abs(log_p - log_q)) > 250]))
+    range_max = max(np.max(log_p[(abs(log_p - log_q)) > 250]), np.max(log_q[(abs(log_p - log_q)) > 250]))
+    plt.hist(log_p[(abs(log_p - log_q)) > 250], bins=100, range=(range_min, range_max), density=False, alpha=0.5, label='log_p (NLL)', color='blue', histtype='stepfilled')
+    plt.hist(log_q[(abs(log_p - log_q)) > 250], bins=100, range=(range_min, range_max), density=False, alpha=0.5, label='log_q (baseline NLL)', color='orange', histtype='stepfilled')
+    # log scale y-axis
+    plt.yscale('log')
+    plt.xlabel('NLL')
+    plt.ylabel('Density')
+    plt.title('Distribution of log_p and log_q for island points (|log_p-log_q| > 250)')
+    plt.legend()
+    plt.savefig(os.path.join(out_dir, '2_logp_logq_island_points.png'), dpi=150, bbox_inches='tight')
+else:
+    plt.text(0.5, 0.5, 'No island points detected', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
+    plt.title('No island points detected (|log_p-log_q| > 250)')
+    plt.savefig(os.path.join(out_dir, '2_logp_logq_island_points.png'), dpi=150, bbox_inches='tight')
+plt.close()
+
 
 
 weights = np.exp(log_p - log_q)[(abs(log_p - log_q)) <= 250]  # weights for the histograms
@@ -182,10 +204,12 @@ bins_1d = 60
 bins_2d = 60
 
 for i in range(num_params):
-    plt.figure(figsize=(12, 5))
+    if args.x and "Cross_Section" not in param_names[i]:
+        continue
+    plt.figure(figsize=(12, 12))
 
     # Histogram of the parameter
-    plt.subplot(1, 3, 1)
+    plt.subplot(2, 2, 1)
     xi = non_island_data[:, i]
     range_min = np.min(xi)
     range_max = np.max(xi)
@@ -197,14 +221,14 @@ for i in range(num_params):
 
     # Scatter plot with the next parameter if it exists, otherwise with the previous one
     if i < num_params - 1:
-        plt.subplot(1, 3, 2)
+        plt.subplot(2, 2, 2)
         x = non_island_data[:, i]
         y = non_island_data[:, i + 1]
         hist2d_logsafe(x, y, bins=bins_2d, weights=weights, cmap="magma")
         plt.xlabel(f'{param_names[i]}')
         plt.ylabel(f'{param_names[i+1]}')
     else:
-        plt.subplot(1, 3, 2)
+        plt.subplot(2, 2, 2)
         x = non_island_data[:, i]
         y = non_island_data[:, i - 1]
         hist2d_logsafe(x, y, bins=bins_2d, weights=weights, cmap="magma")
@@ -212,14 +236,26 @@ for i in range(num_params):
         plt.ylabel(f'{param_names[i-1]}')
     
     # third column with island points only
-    plt.subplot(1, 3, 3)
+    plt.subplot(2, 2, 3)
     if island_data.shape[0] > 0:
-        plt.hist(island_data[:, i], bins=bins_1d, range=(range_min, range_max), density=True, histtype="step", color='red')
+        plt.hist(island_data[:, i], bins=bins_1d, range=(range_min, range_max), density=False, histtype="step", color='red')
         plt.title("|log_p-log_q| > 250 (unweighted)")
         plt.xlabel(param_names[i])
         plt.ylabel('Frequency')
     else:
         plt.text(0.5, 0.5, 'No island points detected', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes)
+
+    # fourth column with log_p and log_q as a function of the parameter
+    plt.subplot(2, 2, 4)
+    x = all_data[:, i]
+    y1 = log_p
+    y2 = log_q
+    plt.scatter(x, y1, color='blue', label='log_p',s=10)
+    plt.scatter(x, y2, color='orange', label='log_q', alpha=0.7,s=10)
+    plt.xlabel(param_names[i])
+    plt.ylabel('neg-log-probability')
+    plt.title('log_p and log_q as a function of the parameter')
+    plt.legend()
 
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, f'{param_names[i]}.png'), dpi=150, bbox_inches='tight')

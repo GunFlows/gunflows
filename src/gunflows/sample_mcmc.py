@@ -117,12 +117,12 @@ def main(cfg: DictConfig) -> None:
 
     # ckpt_path = Path(os.path.join(ckpt_folder, "last_model.pth"))
 
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    out_dir = (
-        Path(cfg.save_dir).expanduser()
-        if cfg.save_dir is not None
-        else ckpt_path.parent.parent / "samples" / ts  #replace "test" with ts in the official version
-    )
+    # Only write to a user-specified directory. Do not auto-create timestamped folders.
+    if not cfg.save_dir:
+        save_dir = training_folder + "/samples/" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    else:
+        save_dir = cfg.save_dir
+    out_dir = Path(save_dir).expanduser()
     img_dir = out_dir / "img"
     img_dir.mkdir(parents=True, exist_ok=True)
 
@@ -216,6 +216,15 @@ def main(cfg: DictConfig) -> None:
         logqs = np.concatenate(logqs, 0)[: cfg.num_samples]
 
     samples_nf = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples_nf)).numpy()
+    # Prepare optional weights for NF histogram
+    weights_nf = None
+    if cfg.return_probs:
+        w = np.asarray(logqs)
+        if w.ndim > 1:
+            w = w.reshape(-1)
+        # Ensure weights length matches number of NF samples
+        weights_nf = w[: samples_nf.shape[0]]
+
 
     print(f"Sampled {len(samples_nf)} events from NF in {time.time()-start:.1f} seconds",flush=True)
 
@@ -241,8 +250,20 @@ def main(cfg: DictConfig) -> None:
     end_time = time.time()
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
+    # scan through the nf samples, compute the nll and compare it to the nf weight (weights_nf)
+    iter = 0
+    reweight_nf_to_lh = []
+    for nf_vector, weight in zip(samples_nf, weights_nf):
+        nll,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
+        # print(f"iter {iter} NLL: {nll}, (log q_nf): {weight}", flush=True)
+        iter += 1
+        reweight_nf_to_lh.append(weight - nll)
 
-
+    # Normalize reweighting factors
+    if reweight_nf_to_lh:
+        median_reweight = np.median(reweight_nf_to_lh)
+        reweight_nf_to_lh = (np.array(reweight_nf_to_lh)-median_reweight)
+        print(f"Reweighting factors (NF to LH): {reweight_nf_to_lh}")
 
     # Sample from MCMC chain
     if cfg.mcmc_chain is not None:
@@ -303,10 +324,16 @@ def main(cfg: DictConfig) -> None:
             # unify bin width for the three histograms
             bin_width =  (max(mcmc_values.max(), nf_values.max(), gaus_values.max()) - min(mcmc_values.min(), nf_values.min(), gaus_values.min())) / 50
             bins = np.arange(min(mcmc_values.min(), nf_values.min(), gaus_values.min()), max(mcmc_values.max(), nf_values.max(), gaus_values.max()) + bin_width, bin_width)
-            plt.hist(mcmc_values, bins=bins, histtype='step')
-            plt.hist(nf_values, bins=bins, histtype='step', color='red')
-            plt.hist(gaus_values, bins=bins, histtype='step', color='green')
-            plt.legend(["MCMC", "NF", "Gaus"])
+            plt.hist(mcmc_values, bins=bins, histtype='step', label='MCMC', color='blue')
+            # Plot weighted NF only if weights are available and correctly shaped
+            # if (weights_nf is not None) and (np.size(weights_nf) == nf_values.shape[0]):
+            #     w = weights_nf
+            #     if hasattr(w, "ndim") and w.ndim > 1:
+            #         w = w.reshape(-1)
+            #     plt.hist(nf_values, bins=bins, histtype='step', color='red', weights=w, label='NF (weighted)')
+            plt.hist(nf_values, bins=bins, histtype='step', color='black', label='NF (unweighted)', alpha=0.5)
+            plt.hist(gaus_values, bins=bins, histtype='step', color='green', label='Gaussian', alpha=0.7)
+            plt.legend()
             plt.xlabel(meaningful_name)
             plt.ylabel("a.u.")
             plt.title(f"Marginal of {meaningful_name}    Entries: {len(mcmc_values)}")

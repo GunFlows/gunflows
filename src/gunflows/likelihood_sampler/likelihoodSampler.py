@@ -290,6 +290,12 @@ class LikelihoodSampler:
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
         # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
         # print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
+
+        # # HEAVY DEBUGGING INFO
+        # if (NLL_tot>700):
+        #     print("disclaimer: real NLL is this divided by 2.")
+        #     print(self.likelihood_interface.getSummary())
+
         return NLL_tot, NLL_stat, NLL_syst
 
     def configure_using_root(self):
