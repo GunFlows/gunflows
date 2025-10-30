@@ -39,4 +39,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=oa2022_pygundam_toy ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train ${EXTRA_ARGS}"
