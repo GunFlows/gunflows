@@ -253,11 +253,13 @@ def main(cfg: DictConfig) -> None:
     # scan through the nf samples, compute the nll and compare it to the nf weight (weights_nf)
     iter = 0
     reweight_nf_to_lh = []
+    print("Computing reweighting factors from NF to LH...",flush=True)
     for nf_vector, weight in zip(samples_nf, weights_nf):
         nll,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
         # print(f"iter {iter} NLL: {nll}, (log q_nf): {weight}", flush=True)
         iter += 1
         reweight_nf_to_lh.append(weight - nll)
+    print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
     # Normalize reweighting factors
     if reweight_nf_to_lh:

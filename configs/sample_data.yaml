@@ -1,0 +1,46 @@
+defaults:
+  # - dataset: systematic_dataset_pygundam_toy_oa2022
+  # - model: model_OA2022
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+  - _self_
+seed: 42
+device: cuda
+
+training_folder: /workspace/work/GuNFlows/outputs/2025-10-30/11-57-29/
+# ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
+save_dir: null 
+
+num_samples: 100000
+batch_size: 100000
+return_probs: true
+grid: 5
+# Number of parallel workers used for plotting (0 or null = auto)
+plot_workers: 1
+randomize_mcmc: true # no need if sampling 10M points (all) from the chain
+
+# MCMC Chain
+# mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
+mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_DataFit_Uniform_1DEb.root
+mcmc_translator: /workspace/data/OA2021/ND280/MaCh3/xsec_2021a_flux_21bv2_v15.root
+
+# reweight:
+#   enabled: false
+#   weight_cap_quantile: null
+#   likelihood:
+#     config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
+#     overrides: []
+#     cwd: /workspace/config/GundamInputOA2021
+#     threads: 6
+#     asimov: true
+
+# Prevent Hydra from creating outputs/<date>/<time> and .hydra subfolders.
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .
+    subdir: .
+  job:
+    chdir: false
+  output_subdir: null
