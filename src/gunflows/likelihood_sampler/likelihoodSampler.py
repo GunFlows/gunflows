@@ -232,6 +232,20 @@ class LikelihoodSampler:
                         return (par.getPhysicalLimits().min, par.getParameterLimits().max)
         raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
 
+    def get_parameter_limits(self,par_name):
+        """
+        Get the parameter limits of the parameter with the given name.
+        Returns a tuple (min, max) of the parameter limits.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled() and par.getFullTitle() == par_name:
+                        return (par.getParameterLimits().min, par.getParameterLimits().max)
+        raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
+
     def inject_params_and_compute_likelihood(self, values, extend_continue=True, verbose=False):
         """
         Inject the given vector of parameter values into the propagator and compute the likelihood.
