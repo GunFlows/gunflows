@@ -35,6 +35,16 @@ from gunflows.likelihood_sampler import LikelihoodSampler, pygundam_utils
 import ROOT # to read the MCMC chain ROOT file
 
 
+def check_parameters_physical(param_vector, limits_dictionary):
+    par_names = list(limits_dictionary.keys())
+    limits_vector = [limits_dictionary[name] for name in par_names]
+    for i, val in enumerate(param_vector):
+        limits = limits_vector[i]
+        if val < limits[0] or val > limits[1]:
+            # print(f"-debug- parameter {par_names[i]} with value {val} out of limits {limits}")
+            return False
+    return True
+
 
 def index_mcmc_to_nf(mcmc_branch_name, translator_array, nf_names):
     parameter_name = None
@@ -173,6 +183,30 @@ def main(cfg: DictConfig) -> None:
     for i, name in enumerate(nf_names):
         print(f"  {i}: {name}")
 
+    # Load llh interface
+    likelihood_sampler = LikelihoodSampler(
+            config_file=cfg.experiment.dataset.llh_config,
+            override_files=cfg.experiment.dataset.llh_overrides,
+            data_is_asimov=cfg.experiment.dataset.data_is_asimov,
+            threads=cfg.experiment.sampler.threads,
+            llh_cwd=cfg.experiment.dataset.llh_cwd
+        ) # random seed not used in this mode (throwing outside gundam)
+
+    print("Gundam likelihood interface initialized.",flush=True)
+    bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
+    postfit_covariance = likelihood_sampler.postfit_covariance_matrix
+    parameter_names = likelihood_sampler.get_parameter_names()
+    # obtain parameters limits from likelihood sampler
+    parameter_limits = {}
+    parameter_limits_vector = []
+    for name in parameter_names:
+        limits = likelihood_sampler.get_parameter_limits(name) # USE THIS!
+        physical_limits = likelihood_sampler.get_parameter_physical_range(name)
+        parameter_limits[name] = limits
+        parameter_limits_vector.append(limits)
+        print(f"  {name}: {limits} - {physical_limits}",flush=True)
+    print("Parameter limits obtained from likelihood sampler:",flush=True)
+
 
     base = build_base(cfg.experiment.model.total_dim)
     tail_bounds = torch.ones(dim_spline) * cfg.experiment.model.tail_bound
@@ -201,21 +235,63 @@ def main(cfg: DictConfig) -> None:
     print(f"Built NF model. ",flush=True)
 
     print(f"Sampling {cfg.num_samples} events from NF model...",flush=True)    
-    # Sample from NF
+    # Sample from NF (vectorized): sample batches at once, filter vectorially
     batches = math.ceil(cfg.num_samples / cfg.batch_size)
     samples_nf, logqs = [], []
     start = time.time()
+    need_total = int(cfg.num_samples)
     with torch.no_grad():
-        for _ in range(batches):
-            z, logq = model.sample(cfg.batch_size)
-            samples_nf.append(z.cpu().numpy())
-            if cfg.return_probs:
-                logqs.append(logq.cpu().numpy())
-    samples_nf = np.concatenate(samples_nf, 0)[: cfg.num_samples]
-    if cfg.return_probs:
-        logqs = np.concatenate(logqs, 0)[: cfg.num_samples]
+        while len(samples_nf) < need_total:
+            need = need_total - len(samples_nf)
+            b = min(int(cfg.batch_size), need)
+            print(f" NF sampling. {need} throws to go. Sampling {b} now ...", flush=True)            
+            # draw a batch and move to CPU
+            z_batch, lq_batch = model.sample(b)
+            z_batch = z_batch.detach().cpu()
+            lq_np = lq_batch.detach().cpu().numpy() if isinstance(lq_batch, torch.Tensor) else np.asarray(lq_batch)
 
-    samples_nf = dataset.transform_eigen_space_to_data_space(torch.from_numpy(samples_nf)).numpy()
+            # transform entire batch to physical/data space using dataset helper
+            try:
+                phys_batch = dataset.transform_eigen_space_to_data_space(z_batch)
+                phys_np = phys_batch.detach().cpu().numpy()
+            except Exception:
+                # fallback: convert via numpy path if transform expects numpy input
+                phys_np = dataset.transform_eigen_space_to_data_space(torch.from_numpy(z_batch.numpy())).numpy()
+
+            # build low/high arrays from parameter_limits_vector (same order)
+            lows = np.asarray([lv[0] for lv in parameter_limits_vector], dtype=phys_np.dtype)
+            highs = np.asarray([lv[1] for lv in parameter_limits_vector], dtype=phys_np.dtype)
+
+            # vectorized mask: within [low, high] for all parameters and finite
+            within_low = phys_np >= lows
+            within_high = phys_np <= highs
+            finite_mask = np.isfinite(phys_np).all(axis=1)
+            mask = finite_mask & np.all(within_low & within_high, axis=1)
+
+            accepted_idx = np.nonzero(mask)[0]
+            take = min(len(accepted_idx), need)
+            # append accepted samples (up to needed)
+            for idx in accepted_idx[:take]:
+                samples_nf.append(phys_np[idx])
+                if cfg.return_probs:
+                    logqs.append(float(lq_np[idx]))
+
+            # for any remaining samples not accepted, fall back to single-sample retry
+            remain = need - take
+            for _ in range(remain):
+                while True:
+                    z, logq = model.sample(1)
+                    zv = z.detach().cpu().numpy()[0]
+                    if check_parameters_physical(zv, parameter_limits):
+                        samples_nf.append(zv)
+                        if cfg.return_probs:
+                            logqs.append(float(logq.detach().cpu().numpy()[0]))
+                        break
+
+    # samples_nf already contains physical-space numpy arrays (appended above);
+    # just convert the list to a single NumPy array instead of transforming again.
+    samples_nf = np.asarray(samples_nf)
+
     # Prepare optional weights for NF histogram
     weights_nf = None
     if cfg.return_probs:
@@ -230,18 +306,6 @@ def main(cfg: DictConfig) -> None:
 
 
     # Sample from gaussian (postfit covariance matrix)
-    # Load llh interface
-    likelihood_sampler = LikelihoodSampler(
-            config_file=cfg.experiment.dataset.llh_config,
-            override_files=cfg.experiment.dataset.llh_overrides,
-            data_is_asimov=cfg.experiment.dataset.data_is_asimov,
-            threads=cfg.experiment.sampler.threads,
-            llh_cwd=cfg.experiment.dataset.llh_cwd
-        ) # random seed not used in this mode (throwing outside gundam)
-
-    print("Gundam likelihood interface initialized.",flush=True)
-    bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
-    postfit_covariance = likelihood_sampler.postfit_covariance_matrix
 
     # Sample from gaussian (postfit covariance matrix)
     print(f"Sampling from covariance matrix for {cfg.num_samples} samples...",flush=True)
@@ -253,13 +317,13 @@ def main(cfg: DictConfig) -> None:
     # scan through the nf samples, compute the nll and compare it to the nf weight (weights_nf)
     iter = 0
     reweight_nf_to_lh = []
-    print("Computing reweighting factors from NF to LH...",flush=True)
-    for nf_vector, weight in zip(samples_nf, weights_nf):
-        nll,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
-        # print(f"iter {iter} NLL: {nll}, (log q_nf): {weight}", flush=True)
-        iter += 1
-        reweight_nf_to_lh.append(weight - nll)
-    print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
+    # print("Computing reweighting factors from NF to LH...",flush=True)
+    #for nf_vector, weight in zip(samples_nf, weights_nf):
+    #    nll,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
+    #    # print(f"iter {iter} NLL: {nll}, (log q_nf): {weight}", flush=True)
+    #    iter += 1
+    #    reweight_nf_to_lh.append(weight - nll)
+    # print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
     # Normalize reweighting factors
     if reweight_nf_to_lh:
@@ -299,8 +363,8 @@ def main(cfg: DictConfig) -> None:
             # sort them to minimize random disk access
             indices = np.sort(indices)
         else:
-            indices = np.arange(n_take)
-            print(f"Taking first {n_take} entries from MCMC chain (no randomization).", flush=True)
+            indices = np.arange(mcmc_entries - n_take, mcmc_entries)
+            print(f"Taking last {n_take} entries from MCMC chain (no randomization).", flush=True)
         # Pre-allocate storage per branch
         mcmc_data = {b: np.empty(n_take, dtype=float) for b in selected_branches}
 
@@ -316,6 +380,7 @@ def main(cfg: DictConfig) -> None:
         print(f"Done reading in {time.time() - t0:.2f}s", flush=True)
 
         # Plotting function
+        print("Finally, plotting marginals...", flush=True)
         def plot_one(branch_name: str):
             index_nf, meaningful_name = branch_map[branch_name]
             mcmc_values = mcmc_data[branch_name]
