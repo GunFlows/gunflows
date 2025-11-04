@@ -21,7 +21,7 @@ randomize_mcmc: true # no need if sampling 10M points (all) from the chain
 
 # MCMC Chain
 # mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
-mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_DataFit_Uniform_1DEb.root
+mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_DataFit_Uniform_2DEb.root
 mcmc_translator: /workspace/data/OA2021/ND280/MaCh3/xsec_2021a_flux_21bv2_v15.root
 
 # reweight:

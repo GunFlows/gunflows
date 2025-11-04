@@ -7,7 +7,7 @@ defaults:
 seed: 42
 device: cuda
 
-training_folder: /workspace/work/GuNFlows/outputs/2025-10-21/11-17-40/
+training_folder: /workspace/work/GuNFlows/outputs/2025-10-31/15-04-52
 # ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
