@@ -34,16 +34,90 @@ from gunflows.likelihood_sampler import LikelihoodSampler, pygundam_utils
 
 import ROOT # to read the MCMC chain ROOT file
 
-
-def check_parameters_physical(param_vector, limits_dictionary):
+# check the validity of a single throw
+def check_parameters_limits(param_vector, limits_dictionary):
     par_names = list(limits_dictionary.keys())
     limits_vector = [limits_dictionary[name] for name in par_names]
     for i, val in enumerate(param_vector):
-        limits = limits_vector[i]
-        if val < limits[0] or val > limits[1]:
+        low, high = limits_vector[i]
+        if np.isnan(low):
+            low = -np.inf
+        if np.isnan(high):
+            high = np.inf
+        if val < low or val > high:
             # print(f"-debug- parameter {par_names[i]} with value {val} out of limits {limits}")
             return False
     return True
+
+#check the validity of an array of throws, returns a mask of booleans
+def check_parameters_array_limits(array_of_param_vector, limits_dictionary):
+    # returns a mask of booleans
+    par_names = list(limits_dictionary.keys())
+    limits_vector = [limits_dictionary[name] for name in par_names]
+    mask = np.ones(array_of_param_vector.shape[0], dtype=bool) # a vector of 1s as long as the number of samples
+    for i, limits in enumerate(limits_vector):
+        low, high = limits
+        if np.isnan(low):
+            low = -np.inf
+        if np.isnan(high):
+            high = np.inf
+        vals = array_of_param_vector[:, i]
+        mask &= (vals >= low) & (vals <= high)
+        # print(f"    -debug- {i} mask sum: {mask.sum()} after checking limits {limits} for parameter {par_names[i]}")
+        # print(f"         -debug- {vals} ")
+    return mask
+
+def sample_check_append(batch_size, sample_from_nf, model, dataset, parameter_limits, samples, return_probs, logqs, mean, cov):
+    # Ensure consistent tensor/ndarray types and explicit CPU placement.
+    if sample_from_nf and model is not None:
+        # draw a batch (model.sample returns torch tensors)
+        z_batch, lq_batch = model.sample(batch_size)
+        # move to CPU and detach from autograd
+        z_batch = z_batch.detach().to(dtype=torch.float32, device="cpu")
+        # make sure log-probs become a 1-D numpy array
+        lq_np = lq_batch.detach().to(dtype=torch.float32, device="cpu").cpu().numpy()
+        lq_np = np.asarray(lq_np).reshape(-1)
+        # transform entire batch to physical/data space using dataset helper (expects a torch.Tensor)
+        phys_batch = dataset.transform_eigen_space_to_data_space(z_batch)
+        phys_np = phys_batch.detach().cpu().numpy().astype(np.float32)
+    else:
+        # sample from covariance matrix -- coerce mean/cov to CPU torch tensors
+        mean_t = torch.as_tensor(mean, dtype=torch.float32, device="cpu")
+        cov_t = torch.as_tensor(cov, dtype=torch.float32, device="cpu")
+        const = mean_t.shape[0] * np.log(2.0 * np.pi)
+        z = torch.randn((batch_size, mean_t.shape[0]), dtype=torch.float32, device="cpu")
+        L_phys = torch.linalg.cholesky(cov_t)
+        phys_t = z @ L_phys.T + mean_t
+        phys_np = phys_t.detach().cpu().numpy().astype(np.float32)
+        if return_probs:
+            # compute log-probabilities in tensor space, then convert
+            std = torch.sqrt(torch.diag(cov_t))
+            Dinv = torch.diag(1.0 / std)
+            cov_std = Dinv @ cov_t @ Dinv
+            L_std = torch.linalg.cholesky(cov_std)
+            logdet_covstd = 2.0 * torch.log(torch.diag(L_std)).sum()
+            diff = phys_t - mean_t
+            # solve triangular system with cholesky of physical cov
+            y = torch.linalg.solve_triangular(L_phys, diff.T, upper=False)
+            quad = (y * y).sum(dim=0)
+            lq_np = (0.5 * (quad + const + logdet_covstd)).detach().cpu().numpy().astype(np.float32)
+
+    # mask is a numpy boolean array (check_parameters_array_limits expects numpy input)
+    mask = check_parameters_array_limits(phys_np, parameter_limits)
+
+    model_name = "NF" if sample_from_nf else "Gaussian"
+    print(f" Sampled batch of {batch_size} from {model_name}. Accepting {np.sum(mask)}/{batch_size} samples within physical limits.", flush=True)
+    accepted_idx = np.nonzero(mask)[0]
+    take = min(len(accepted_idx), batch_size)
+    # append accepted samples (up to needed)
+    for idx in accepted_idx[:take]:
+        samples.append(phys_np[idx])
+        if return_probs:
+            # lq_np should be a 1-D numpy array (handled above), guard indexing
+            logqs.append(float(np.asarray(lq_np).reshape(-1)[idx]))
+
+    return take
+            
 
 
 def index_mcmc_to_nf(mcmc_branch_name, translator_array, nf_names):
@@ -189,8 +263,9 @@ def main(cfg: DictConfig) -> None:
             override_files=cfg.experiment.dataset.llh_overrides,
             data_is_asimov=cfg.experiment.dataset.data_is_asimov,
             threads=cfg.experiment.sampler.threads,
-            llh_cwd=cfg.experiment.dataset.llh_cwd
-        ) # random seed not used in this mode (throwing outside gundam)
+            llh_cwd=cfg.experiment.dataset.llh_cwd,
+            light_mode=False
+        ) # random seed not used in this mode (throwing happens outside lh_sampler)
 
     print("Gundam likelihood interface initialized.",flush=True)
     bestfit_parameter_values = likelihood_sampler.postfit_parameter_values
@@ -205,7 +280,7 @@ def main(cfg: DictConfig) -> None:
         parameter_limits[name] = limits
         parameter_limits_vector.append(limits)
         print(f"  {name}: {limits} - {physical_limits}",flush=True)
-    print("Parameter limits obtained from likelihood sampler:",flush=True)
+    print("Parameter limits obtained from likelihood sampler.",flush=True)
 
 
     base = build_base(cfg.experiment.model.total_dim)
@@ -245,91 +320,105 @@ def main(cfg: DictConfig) -> None:
             need = need_total - len(samples_nf)
             b = min(int(cfg.batch_size), need)
             print(f" NF sampling. {need} throws to go. Sampling {b} now ...", flush=True)            
-            # draw a batch and move to CPU
-            z_batch, lq_batch = model.sample(b)
-            z_batch = z_batch.detach().cpu()
-            lq_np = lq_batch.detach().cpu().numpy() if isinstance(lq_batch, torch.Tensor) else np.asarray(lq_batch)
-
-            # transform entire batch to physical/data space using dataset helper
-            try:
-                phys_batch = dataset.transform_eigen_space_to_data_space(z_batch)
-                phys_np = phys_batch.detach().cpu().numpy()
-            except Exception:
-                # fallback: convert via numpy path if transform expects numpy input
-                phys_np = dataset.transform_eigen_space_to_data_space(torch.from_numpy(z_batch.numpy())).numpy()
-
-            # build low/high arrays from parameter_limits_vector (same order)
-            lows = np.asarray([lv[0] for lv in parameter_limits_vector], dtype=phys_np.dtype)
-            highs = np.asarray([lv[1] for lv in parameter_limits_vector], dtype=phys_np.dtype)
-
-            # vectorized mask: within [low, high] for all parameters and finite
-            within_low = phys_np >= lows
-            within_high = phys_np <= highs
-            finite_mask = np.isfinite(phys_np).all(axis=1)
-            mask = finite_mask & np.all(within_low & within_high, axis=1)
-
-            accepted_idx = np.nonzero(mask)[0]
-            take = min(len(accepted_idx), need)
-            # append accepted samples (up to needed)
-            for idx in accepted_idx[:take]:
-                samples_nf.append(phys_np[idx])
-                if cfg.return_probs:
-                    logqs.append(float(lq_np[idx]))
-
+            remain = b
+            while remain > 5:
+                take = sample_check_append(sample_from_nf=True, batch_size=remain, model=model, dataset=dataset, parameter_limits=parameter_limits, samples=samples_nf, return_probs=cfg.return_probs, logqs=logqs, mean=None, cov=None)
+                remain -= take
+                if take == 0:
+                    break  # avoid infinite loop if no samples accepted
             # for any remaining samples not accepted, fall back to single-sample retry
-            remain = need - take
-            for _ in range(remain):
-                while True:
+            if remain > 0:
+                print(f" Need {remain} more samples after batch filtering. Sampling individually...", flush=True)
+                for _ in range(remain):
                     z, logq = model.sample(1)
-                    zv = z.detach().cpu().numpy()[0]
-                    if check_parameters_physical(zv, parameter_limits):
-                        samples_nf.append(zv)
+                    z = z.to('cpu')
+                    phys_z = dataset.transform_eigen_space_to_data_space(z).detach().cpu().numpy()[0]
+                    if cfg.return_probs:
+                        logq_np = float(logq.detach().cpu().numpy()[0])
+                    else:
+                        logq_np = None
+                    while not check_parameters_limits(phys_z, parameter_limits):
+                        # print(f"  -debug- single sample not physical, resampling...", flush=True)
+                        z, logq = model.sample(1)
+                        z = z.to('cpu')
+                        phys_z = dataset.transform_eigen_space_to_data_space(z).detach().cpu().numpy()[0]
                         if cfg.return_probs:
-                            logqs.append(float(logq.detach().cpu().numpy()[0]))
-                        break
+                            logq_np = float(logq.detach().cpu().numpy()[0])
+                    samples_nf.append(phys_z)
+                    if cfg.return_probs:
+                        logqs.append(logq_np)
+                    print(f" Sampled individual throw. {_+1}/{remain}", flush=True)
+            print(f"Total samples collected: {len(samples_nf)}/{need_total}", flush=True)
 
     # samples_nf already contains physical-space numpy arrays (appended above);
     # just convert the list to a single NumPy array instead of transforming again.
     samples_nf = np.asarray(samples_nf)
 
     # Prepare optional weights for NF histogram
-    weights_nf = None
+    logq_nf = None
     if cfg.return_probs:
         w = np.asarray(logqs)
         if w.ndim > 1:
             w = w.reshape(-1)
         # Ensure weights length matches number of NF samples
-        weights_nf = w[: samples_nf.shape[0]]
+        logq_nf = w[: samples_nf.shape[0]]
 
 
     print(f"Sampled {len(samples_nf)} events from NF in {time.time()-start:.1f} seconds",flush=True)
 
-
-    # Sample from gaussian (postfit covariance matrix)
-
     # Sample from gaussian (postfit covariance matrix)
     print(f"Sampling from covariance matrix for {cfg.num_samples} samples...",flush=True)
     start_time = time.time()
-    gaus_throws = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=cfg.num_samples)
+
+    gaus_throws = []
+    gaus_logqs = []
+    while len(gaus_throws) < need_total:
+            need = need_total - len(gaus_throws)
+            b = min(int(cfg.batch_size), need)
+            print(f" Gaussian sampling. {need} throws to go. Sampling {b} now ...", flush=True)            
+            remain = b
+            while remain > 5:
+                take = sample_check_append(sample_from_nf=False, batch_size=remain, parameter_limits=parameter_limits, 
+                                           model=None, dataset=None, 
+                                           mean=bestfit_parameter_values, cov=postfit_covariance, 
+                                           samples=gaus_throws, return_probs=True, logqs=gaus_logqs)
+                remain -= take
+                if take == 0:
+                    break  # avoid infinite loop if no samples accepted
+            # for any remaining samples not accepted, fall back to single-sample retry
+            if remain > 0:
+                print(f" Need {remain} more samples after batch filtering. Sampling individually...", flush=True)
+                for _ in range(remain):
+                    phys_z = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=1)[0]
+                    while not check_parameters_limits(phys_z, parameter_limits):
+                        # print(f"  -debug- single sample not physical, resampling...", flush=True)
+                        phys_z = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance, size=1)[0]
+                    gaus_throws.append(phys_z)
+                    print(f" Sampled individual throw. {_+1}/{remain}", flush=True)
+            print(f"Total samples collected: {len(gaus_throws)}/{need_total}", flush=True)
+
+    
+    gaus_throws = np.asarray(gaus_throws)
     end_time = time.time()
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
-    # scan through the nf samples, compute the nll and compare it to the nf weight (weights_nf)
+    # scan through the nf samples, compute the nll and compare it to the nf weight (logq_nf)
     iter = 0
     reweight_nf_to_lh = []
-    # print("Computing reweighting factors from NF to LH...",flush=True)
-    #for nf_vector, weight in zip(samples_nf, weights_nf):
-    #    nll,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
-    #    # print(f"iter {iter} NLL: {nll}, (log q_nf): {weight}", flush=True)
-    #    iter += 1
-    #    reweight_nf_to_lh.append(weight - nll)
-    # print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
+    print("Computing reweighting factors from NF to LH...",flush=True)
+    for nf_vector, logq in zip(samples_nf, logq_nf):
+       logp,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
+       if (iter % max(1, cfg.num_samples // 100) == 0):
+            print(f"iter {iter} NLL: {logp}, log_q_nf: {logq}", flush=True)
+       iter += 1
+       reweight_nf_to_lh.append(logq - logp)
+    print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
     # Normalize reweighting factors
-    if reweight_nf_to_lh:
-        median_reweight = np.median(reweight_nf_to_lh)
-        reweight_nf_to_lh = (np.array(reweight_nf_to_lh)-median_reweight)
-        print(f"Reweighting factors (NF to LH): {reweight_nf_to_lh}")
+    # if reweight_nf_to_lh:
+    #     median_reweight = np.median(reweight_nf_to_lh)
+    #     reweight_nf_to_lh = (np.array(reweight_nf_to_lh)-median_reweight)
+    print(f"Reweighting factors (NF to LH): {reweight_nf_to_lh}")
 
     # Sample from MCMC chain
     if cfg.mcmc_chain is not None:
@@ -357,6 +446,7 @@ def main(cfg: DictConfig) -> None:
             tree.SetBranchStatus(b, 1)
 
         if cfg.randomize_mcmc:
+            print(f"Taking {n_take} random unique entries from MCMC chain.", flush=True)
             # Sample unique entry indices once
             rng = np.random.default_rng(cfg.seed)
             indices = rng.choice(mcmc_entries, size=n_take, replace=False)
@@ -379,6 +469,15 @@ def main(cfg: DictConfig) -> None:
                 print(f"  {i + 1}/{n_take} entries read", flush=True)
         print(f"Done reading in {time.time() - t0:.2f}s", flush=True)
 
+        # NF samples:
+        ## samples_nf[:, index_nf]
+        # NF weights:
+        ## reweight_nf_to_lh
+        # Gaussian samples:
+        ## gaus_throws[:, index_nf]
+        # MCMC samples:
+        ## mcmc_data[branch_name]
+
         # Plotting function
         print("Finally, plotting marginals...", flush=True)
         def plot_one(branch_name: str):
@@ -393,8 +492,8 @@ def main(cfg: DictConfig) -> None:
             bins = np.arange(min(mcmc_values.min(), nf_values.min(), gaus_values.min()), max(mcmc_values.max(), nf_values.max(), gaus_values.max()) + bin_width, bin_width)
             plt.hist(mcmc_values, bins=bins, histtype='step', label='MCMC', color='blue')
             # Plot weighted NF only if weights are available and correctly shaped
-            # if (weights_nf is not None) and (np.size(weights_nf) == nf_values.shape[0]):
-            #     w = weights_nf
+            # if (logq_nf is not None) and (np.size(logq_nf) == nf_values.shape[0]):
+            #     w = logq_nf
             #     if hasattr(w, "ndim") and w.ndim > 1:
             #         w = w.reshape(-1)
             #     plt.hist(nf_values, bins=bins, histtype='step', color='red', weights=w, label='NF (weighted)')
