@@ -207,7 +207,7 @@ def main(cfg: DictConfig) -> None:
     else:
         save_dir = cfg.save_dir
     out_dir = Path(save_dir).expanduser()
-    img_dir = out_dir / "img"
+    img_dir = out_dir
     img_dir.mkdir(parents=True, exist_ok=True)
 
     # # dummy img to test the output folder
@@ -402,23 +402,61 @@ def main(cfg: DictConfig) -> None:
     end_time = time.time()
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
-    # scan through the nf samples, compute the nll and compare it to the nf weight (logq_nf)
-    iter = 0
-    reweight_nf_to_lh = []
-    print("Computing reweighting factors from NF to LH...",flush=True)
-    for nf_vector, logq in zip(samples_nf, logq_nf):
-       logp,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
-       if (iter % max(1, cfg.num_samples // 100) == 0):
-            print(f"iter {iter} NLL: {logp}, log_q_nf: {logq}", flush=True)
-       iter += 1
-       reweight_nf_to_lh.append(logq - logp)
-    print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
+    compute_likelihoods = F
+    if compute_likelihoods:
+        # scan through the nf samples, compute the nll and compare it to the nf weight (logq_nf)
+        iter = 0
+        reweight_nf_to_lh = []
+        lh_values = []
+        start = time.time()
+        print("Computing reweighting factors from NF to LH...",flush=True)
+        for nf_vector, logq in zip(samples_nf, logq_nf):
+            logp,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
+            if (iter % max(1, cfg.num_samples // 100) == 0):
+                    print(f"iter {iter} NLL/2: {logp}, log_q_nf: {logq}", flush=True)
+            iter += 1
+            reweight_nf_to_lh.append(logq + logp)
+            lh_values.append(-logp)
+        print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
-    # Normalize reweighting factors
-    # if reweight_nf_to_lh:
-    #     median_reweight = np.median(reweight_nf_to_lh)
-    #     reweight_nf_to_lh = (np.array(reweight_nf_to_lh)-median_reweight)
-    print(f"Reweighting factors (NF to LH): {reweight_nf_to_lh}")
+        # Normalize reweighting factors
+        if reweight_nf_to_lh:
+            median_reweight = np.median(reweight_nf_to_lh)
+            reweight_nf_to_lh = (np.array(reweight_nf_to_lh)-median_reweight)
+            # shift the median of the likelihood values and log_q_nf accordingly
+            median_lh = np.median(lh_values)
+            lh_values = np.array(lh_values) - median_lh
+            median_logq = np.median(logq_nf)
+            logq_nf = logq_nf - median_logq
+        # compute variance
+        variance_reweight = np.var(reweight_nf_to_lh)
+        # compute variance after removing 0.01 quantiles
+        lower_bound = np.quantile(reweight_nf_to_lh, 0.01)
+        upper_bound = np.quantile(reweight_nf_to_lh, 0.99)
+        filtered_reweights = reweight_nf_to_lh[(reweight_nf_to_lh >= lower_bound) & (reweight_nf_to_lh <= upper_bound)]
+        variance_filtered = np.var(filtered_reweights)
+        # compute effective sample size
+        weights = np.exp(reweight_nf_to_lh)
+        effective_sample_size = np.sum(weights) ** 2 / np.sum(weights ** 2)
+        filtered_weights = np.exp(filtered_reweights)
+        effective_sample_size_filtered = np.sum(filtered_weights) ** 2 / np.sum(filtered_weights ** 2)
+        print(f"Effective sample size (NF to LH): {effective_sample_size} / {len(reweight_nf_to_lh)}", flush=True)
+        print(f"Effective sample size (NF to LH, filtered): {effective_sample_size_filtered} / {len(filtered_reweights)}", flush=True)
+        # plot the reweighting factors histogram
+        plt.figure(figsize=(6,4))
+        plt.hist(reweight_nf_to_lh, bins=100, histtype='step', color='blue')
+        plt.hist(logq_nf, bins=100, histtype='step', color='red', alpha=0.5)
+        plt.hist(lh_values, bins=100, histtype='step', color='green', alpha=0.5)
+        plt.xlabel("Reweighting factor (logq_NF - logp_LH)")
+        plt.ylabel("Entries")
+        plt.title("Reweighting factors from NF to LH")
+        plt.grid()
+        out_path = img_dir / f"LogWeights_NF_to_LH.png"
+        plt.savefig(out_path)
+        plt.close()
+        print(f"Reweighting factors (NF to LH): variance: {variance_reweight}, variance (filtered 0.01 quantiles): {variance_filtered}", flush=True)
+
+        print(f"Done in {time.time()-start:.2f} seconds.",flush=True)
 
     # Sample from MCMC chain
     if cfg.mcmc_chain is not None:
@@ -504,6 +542,12 @@ def main(cfg: DictConfig) -> None:
             plt.ylabel("a.u.")
             plt.title(f"Marginal of {meaningful_name}    Entries: {len(mcmc_values)}")
             plt.grid()
+            if "FluxSyst" in meaningful_name:
+                img_dir = out_dir / "flux_systs"
+            elif "DetSyst" in meaningful_name:
+                img_dir = out_dir / "det_systs"
+            else:
+                img_dir = out_dir / "xsec_systs"
             out_path = img_dir / f"MCMC_marginal_{meaningful_name}.png"
             plt.savefig(out_path)
             plt.close(fig)
