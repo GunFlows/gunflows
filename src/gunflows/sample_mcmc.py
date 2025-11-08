@@ -402,7 +402,7 @@ def main(cfg: DictConfig) -> None:
     end_time = time.time()
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
-    compute_likelihoods = F
+    compute_likelihoods = False
     if compute_likelihoods:
         # scan through the nf samples, compute the nll and compare it to the nf weight (logq_nf)
         iter = 0
