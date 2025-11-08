@@ -544,10 +544,16 @@ def main(cfg: DictConfig) -> None:
             plt.grid()
             if "FluxSyst" in meaningful_name:
                 img_dir = out_dir / "flux_systs"
+                # create dir
+                img_dir.mkdir(parents=True, exist_ok=True)
             elif "DetSyst" in meaningful_name:
                 img_dir = out_dir / "det_systs"
+                # create dir
+                img_dir.mkdir(parents=True, exist_ok=True)
             else:
                 img_dir = out_dir / "xsec_systs"
+                # create dir
+                img_dir.mkdir(parents=True, exist_ok=True)
             out_path = img_dir / f"MCMC_marginal_{meaningful_name}.png"
             plt.savefig(out_path)
             plt.close(fig)
