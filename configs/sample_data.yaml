@@ -7,7 +7,7 @@ defaults:
 seed: 42
 device: cuda
 
-training_folder: /workspace/work/GuNFlows/outputs/2025-11-03/15-25-06/
+training_folder: /workspace/work/GuNFlows/outputs/2025-11-04/14-06-30/
 # ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
@@ -17,7 +17,7 @@ return_probs: true
 grid: 5
 # Number of parallel workers used for plotting (0 or null = auto)
 plot_workers: 1
-randomize_mcmc: true # if false, takes the last N points from the chain
+randomize_mcmc: false # if false, takes the last N points from the chain
                       # no need if sampling 10M points (all) from the chain
 
 # MCMC Chain
