@@ -27,7 +27,7 @@ def pushd(path: str):
         os.chdir(prev)
 
 class LikelihoodSampler:
-    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None, llh_cwd=None):
+    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None, llh_cwd=None, light_mode=False):
         """
         Initialize the LikelihoodSampler with the given configuration.
         Parameters:
@@ -55,17 +55,21 @@ class LikelihoodSampler:
 
         if llh_cwd is not None:
             with pushd(llh_cwd):
-                self._initialize(config_file, override_files, threads, data_is_asimov, seed)
+                self._initialize(config_file, override_files, threads, data_is_asimov, seed, light_mode=light_mode)
         else:
-            self._initialize(config_file, override_files, threads, data_is_asimov, seed)
+            self._initialize(config_file, override_files, threads, data_is_asimov, seed, light_mode=light_mode)
 
 
-    def _initialize(self, config_file, override_files, threads, data_is_asimov, seed):
+    def _initialize(self, config_file, override_files, threads, data_is_asimov, seed, light_mode):
 
         GUNDAM.setNumberOfThreads(threads)
         GUNDAM.setLightOutputMode(True)
         self.app = GUNDAM.GundamApp("GUNDAM: likelihood sampler")
 
+        if light_mode:
+            # use only one data file
+            self.override_files.append("override/onlyRun5.yaml")
+            print("LIGHT MODE: Using only one data file for faster initialization.", flush=True)
         # read config from config file (.yaml) or Fitter output file (.root)
         if config_file.endswith('.yaml'):
             self.configure_using_yaml()
@@ -73,6 +77,8 @@ class LikelihoodSampler:
             self.configure_using_root()
         else:
             raise ValueError("Unsupported config file format. Use .yaml or .root")
+
+
 
         # Set the seed for reproducibility
         if seed is not None:
@@ -139,12 +145,15 @@ class LikelihoodSampler:
         if self.likelihood_at_bestfit is None:
             raise RuntimeError("Likelihood at best fit not found in the root file.")
         if abs(self.likelihood_at_bestfit - 2*tot ) > 1.e-1:
-
-            raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
+            if light_mode:
+                print("WARNING: Likelihood at best fit does not match the computed likelihood. This is expected in light mode.")
+            else:
+                raise RuntimeError("Likelihood at best fit does not match the computed likelihood. Something is wrong.")
 
         for i, par_name in enumerate(self.get_parameter_names()):
             min_, max_ = self.get_parameter_physical_range(par_name)
-            print(f" Parameter {par_name}  prior: {self.prior_parameter_values[i]:.3f}  bestfit: {self.postfit_parameter_values[i]:.3f}  physical range: [{min_:.3f}, {max_:.3f}]")
+            min_lim, max_lim = self.get_parameter_limits(par_name)
+            print(f" Parameter {par_name}  prior: {self.prior_parameter_values[i]:.3f}  bestfit: {self.postfit_parameter_values[i]:.3f}  limits: [{min_lim:.3f}, {max_lim:.3f}]  physical range: [{min_:.3f}, {max_:.3f}]")
 
 
         # Reset the prior values to the postfit values
@@ -230,6 +239,20 @@ class LikelihoodSampler:
                 for par in par_set.getParameterList():
                     if par.isEnabled() and par.getFullTitle() == par_name:
                         return (par.getPhysicalLimits().min, par.getParameterLimits().max)
+        raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
+
+    def get_parameter_limits(self,par_name):
+        """
+        Get the parameter limits of the parameter with the given name.
+        Returns a tuple (min, max) of the parameter limits.
+        """
+        if self.propagator is None:
+            raise RuntimeError("The propagator object is not initialized.")
+        for par_set in self.propagator.getParametersManager().getParameterSetsList():
+            if par_set.isEnabled():
+                for par in par_set.getParameterList():
+                    if par.isEnabled() and par.getFullTitle() == par_name:
+                        return (par.getParameterLimits().min, par.getParameterLimits().max)
         raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
 
     def inject_params_and_compute_likelihood(self, values, extend_continue=True, verbose=False):

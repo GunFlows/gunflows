@@ -50,6 +50,19 @@ def build_model(
     n_context_flows: int = 12,
     n_hidden_layers: int = 2,
     hidden_dim: int = 64,
+    device=None,
 ) -> SystematicFlow:
-    model = SystematicFlow(base, flows, target, context_transform=context_transform, freeze_covflow=freeze_covflow, n_context_flows=n_context_flows, n_hidden_layers=n_hidden_layers, hidden_dim=hidden_dim)
+    # Pass an explicit device to SystematicFlow so callers can control where the
+    # model is instantiated (important to avoid allocating temporarily on GPU).
+    model = SystematicFlow(
+        base,
+        flows,
+        target,
+        context_transform=context_transform,
+        freeze_covflow=freeze_covflow,
+        n_context_flows=n_context_flows,
+        n_hidden_layers=n_hidden_layers,
+        hidden_dim=hidden_dim,
+        device=device,
+    )
     return model

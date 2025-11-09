@@ -7,21 +7,22 @@ defaults:
 seed: 42
 device: cuda
 
-training_folder: /workspace/work/GuNFlows/outputs/2025-10-21/11-17-40/
+training_folder: /workspace/work/GuNFlows/outputs/2025-11-04/14-06-30/
 # ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
 num_samples: 100000
-batch_size: 100000
+batch_size:  10000
 return_probs: true
 grid: 5
 # Number of parallel workers used for plotting (0 or null = auto)
 plot_workers: 1
-randomize_mcmc: true # no need if sampling 10M points (all) from the chain
+randomize_mcmc: false # if false, takes the last N points from the chain
+                      # no need if sampling 10M points (all) from the chain
 
 # MCMC Chain
 # mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_Asimov_Uniform_2DEb.root
-mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/FDS_Fits/FDS_PhotonProton_Martini1pi.root
+mcmc_chain: /workspace/data/OA2021/ND280/MaCh3/MaCh3_DataFit_Uniform_2DEb.root
 mcmc_translator: /workspace/data/OA2021/ND280/MaCh3/xsec_2021a_flux_21bv2_v15.root
 
 # reweight:

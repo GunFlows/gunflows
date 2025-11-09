@@ -197,7 +197,9 @@ class NFSamplerProcess(mp.Process):
         t.cov = S
         t.true_cov = S
 
-        return build_model(base, flows, t, ctx_tr, freeze_cf, n_ctx_flows, n_hidden, hidden_dim)
+        # Force model construction on CPU here to avoid temporary GPU allocations
+        # that can cause OOM when many sampler processes are created.
+        return build_model(base, flows, t, ctx_tr, freeze_cf, n_ctx_flows, n_hidden, hidden_dim, device=torch.device("cpu"))
 
     def _resolve_callable(self, target: str):
         try:

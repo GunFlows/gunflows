@@ -1,11 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=sample_and_compare
-#SBATCH --partition=private-dpnc-cpu,shared-cpu
+#SBATCH --partition=private-dpnc-gpu,shared-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
-#SBATCH --time=8:00:00
+#SBATCH --cpus-per-task=10
+#SBATCH --mem-per-cpu=4G
+#SBATCH --time=12:00:00
+#SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --output=logs/sample_and_compare_%j.out
 #SBATCH --error=logs/sample_and_compare_%j.err
 #SBATCH --mail-type=ALL

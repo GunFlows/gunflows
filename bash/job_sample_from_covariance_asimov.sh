@@ -5,8 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
-#SBATCH --constraint=COMPUTE_TYPE_AMPERE
+#SBATCH --mem=160G
 #SBATCH --output=logs/sample_from_cov_asimov_%A_%a.out
 #SBATCH --error=logs/sample_from_cov_asimov_%A_%a.err
 #SBATCH --mail-type=ALL
@@ -14,15 +13,16 @@
 index=${SLURM_ARRAY_TASK_ID}
 time=$(date +%s%N)
 seed=$(($index + $time))
-CONFIG_FILE="output/Fitter/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root"
+CONFIG_FILE="output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_shiftedOPPB_Asimov.root"
+CONFIG_FOLDER_LOCAL="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021"
 
 OUTPUT_FOLDER="oa2022_asimov"
-mkdir -p ${OUTPUT_FOLDER}
+mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
-N=100
+N=1000
 
 
-SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -a -n ${N} -t 16 " #-s ${seed}
+SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -a -n ${N} -t 16 -of override/shiftedOPPB.yaml" #-s ${seed}
 
 APPTAINER_OPTIONS="--nv --cleanenv \
   --env PYTHONNOUSERSITE=1 \

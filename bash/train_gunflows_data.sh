@@ -1,15 +1,16 @@
 #!/bin/bash
-#SBATCH --job-name=gunflows-train-fds
+#SBATCH --job-name=gunflows-train-data
 #SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
+#SBATCH --mem=240G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --time=168:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+#SBATCH --mail-type=ALL
 
 set -euo pipefail
 
@@ -30,6 +31,9 @@ if [ "$#" -gt 0 ]; then
   EXTRA_ARGS="$(printf ' %q' "$@")"
 fi
 
+echo "Job started at $(date)"
+
+
 srun --ntasks=1 apptainer exec --nv \
   --env PYTHONNOUSERSITE=1 \
   --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
@@ -38,4 +42,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=oa2022_pygundam_toy ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=oa2022_data ${EXTRA_ARGS}"

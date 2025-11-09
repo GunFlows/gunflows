@@ -1,23 +1,24 @@
 #!/bin/env bash
-#SBATCH --job-name=sample_toy
+#SBATCH --job-name=sample_data
 #SBATCH --partition=private-dpnc-cpu,shared-cpu
 #SBATCH --time=8:00:00
 #SBATCH --cpus-per-task=16
 #SBATCH --mem-per-cpu=16GB
-#SBATCH --output=logs/sample_toy_%A_%a.out
-#SBATCH --error=logs/sample_toy_%A_%a.err
+#SBATCH --output=logs/sample_data_%A_%a.out
+#SBATCH --error=logs/sample_data_%A_%a.err
 #SBATCH --mail-type=ALL
 
 index=${SLURM_ARRAY_TASK_ID}
 time=$(date +%s%N)
 seed=$(($index + $time))
-CONFIG_FILE="output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov_ToyFit.root"
+CONFIG_FILE="output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_shiftedOPPB.root"
 # CONFIG_FILE="output/FDSOA2021/fdsFit_Martini1pi.root"
 CONFIG_FOLDER_LOCAL="/srv/beegfs/scratch/groups/dpnc/neutrinos/GundamInputOA2021"
 
-OUTPUT_FOLDER="oa2022_fds_martini"
+OUTPUT_FOLDER="oa2022_data_allowEigenDecompWithBounds"
 mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
+# throws per batch
 N=10000
 
 

@@ -17,10 +17,15 @@ from .context_flow import ContextFlow
 
 class SystematicFlow(NormalizingFlow):
     def __init__(self, base, flows, target, context_transform=True, n_context_flows=12,
-                 n_hidden_layers=2, hidden_dim=64, freeze_covflow=False):
+                 n_hidden_layers=2, hidden_dim=64, freeze_covflow=False, device=None):
         super().__init__(base, flows, target)
         self.context_transform = context_transform
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Allow caller to force the construction device to avoid temporary GPU
+        # allocations. If device is provided, use it; otherwise fall back to the
+        # usual auto-detection.
+        self.device = torch.device(device) if device is not None else torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         d_ctx = len(target.list_dim_conditionnal)
         self.log_norm = nn.Parameter(torch.tensor(0.0))
         self.CovFlow = CovFlow(target, self.device)

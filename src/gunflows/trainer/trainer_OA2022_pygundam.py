@@ -153,7 +153,7 @@ class OA2022TrainerPyGundam(BaseTrainer):
             self._next_trigger = self.warmup_k + self._stage * self.stage_len
 
     def _maybe_refresh_dataset(self) -> None:
-        if hasattr(self.dataset, "refresh_if_ready") and self.dataset.refresh_if_ready(plot_grid=False):
+        if hasattr(self.dataset, "refresh_if_ready") and self.dataset.refresh_if_ready(plot_grid=True):
             n = len(self.dataset)
             nv = min(int(getattr(self.cfg.trainer, "num_val")), max(1, n - 1))
             self._reset_split(n, nv)
