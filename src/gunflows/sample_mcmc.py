@@ -415,7 +415,7 @@ def main(cfg: DictConfig) -> None:
             if (iter % max(1, cfg.num_samples // 100) == 0):
                     print(f"iter {iter} NLL/2: {logp}, log_q_nf: {logq}", flush=True)
             iter += 1
-            reweight_nf_to_lh.append(logq + logp)
+            reweight_nf_to_lh.append(-logq - logp)
             lh_values.append(-logp)
         print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
@@ -430,10 +430,11 @@ def main(cfg: DictConfig) -> None:
             logq_nf = logq_nf - median_logq
         # compute variance
         variance_reweight = np.var(reweight_nf_to_lh)
-        # compute variance after removing 0.01 quantiles
-        lower_bound = np.quantile(reweight_nf_to_lh, 0.01)
-        upper_bound = np.quantile(reweight_nf_to_lh, 0.99)
-        filtered_reweights = reweight_nf_to_lh[(reweight_nf_to_lh >= lower_bound) & (reweight_nf_to_lh <= upper_bound)]
+        # compute variance after removing 0.001 quantiles
+        lower_bound = np.quantile(reweight_nf_to_lh, 0.001)
+        upper_bound = np.quantile(reweight_nf_to_lh, 0.999)
+        outlier_mask = (reweight_nf_to_lh >= lower_bound) & (reweight_nf_to_lh <= upper_bound)
+        filtered_reweights = reweight_nf_to_lh[outlier_mask]
         variance_filtered = np.var(filtered_reweights)
         # compute effective sample size
         weights = np.exp(reweight_nf_to_lh)
@@ -454,7 +455,7 @@ def main(cfg: DictConfig) -> None:
         out_path = img_dir / f"LogWeights_NF_to_LH.png"
         plt.savefig(out_path)
         plt.close()
-        print(f"Reweighting factors (NF to LH): variance: {variance_reweight}, variance (filtered 0.01 quantiles): {variance_filtered}", flush=True)
+        print(f"Reweighting factors (NF to LH): variance: {variance_reweight}, variance (filtered 0.001 quantiles): {variance_filtered}", flush=True)
 
         print(f"Done in {time.time()-start:.2f} seconds.",flush=True)
 
@@ -523,20 +524,24 @@ def main(cfg: DictConfig) -> None:
             mcmc_values = mcmc_data[branch_name]
             nf_values = samples_nf[:, index_nf]
             gaus_values = gaus_throws[:, index_nf]
+            nf_filtered_value = nf_values[outlier_mask] if compute_likelihoods else nf_values
 
             fig = plt.figure(figsize=(6, 4))
             # unify bin width for the three histograms
-            bin_width =  (max(mcmc_values.max(), nf_values.max(), gaus_values.max()) - min(mcmc_values.min(), nf_values.min(), gaus_values.min())) / 50
-            bins = np.arange(min(mcmc_values.min(), nf_values.min(), gaus_values.min()), max(mcmc_values.max(), nf_values.max(), gaus_values.max()) + bin_width, bin_width)
-            plt.hist(mcmc_values, bins=bins, histtype='step', label='MCMC', color='blue')
+            bin_width =  (max(mcmc_values.max(), nf_filtered_value.max(), gaus_values.max()) - min(mcmc_values.min(), nf_filtered_value.min(), gaus_values.min())) / 50
+            bins = np.arange(min(mcmc_values.min(), nf_filtered_value.min(), gaus_values.min()), max(mcmc_values.max(), nf_filtered_value.max(), gaus_values.max()) + bin_width, bin_width)
+            plt.hist(mcmc_values, bins=bins, histtype='step', label='MCMC', density=True, color='blue')
             # Plot weighted NF only if weights are available and correctly shaped
             # if (logq_nf is not None) and (np.size(logq_nf) == nf_values.shape[0]):
             #     w = logq_nf
             #     if hasattr(w, "ndim") and w.ndim > 1:
             #         w = w.reshape(-1)
             #     plt.hist(nf_values, bins=bins, histtype='step', color='red', weights=w, label='NF (weighted)')
-            plt.hist(nf_values, bins=bins, histtype='step', color='black', label='NF (unweighted)', alpha=0.5)
-            plt.hist(gaus_values, bins=bins, histtype='step', color='green', label='Gaussian', alpha=0.7)
+            if not compute_likelihoods:
+                plt.hist(nf_values, bins=bins, histtype='step', color='black', label='NF', density=True, alpha=0.7)
+            else:
+                plt.hist(nf_filtered_value, bins=bins, weights=np.exp(reweight_nf_to_lh[outlier_mask]), histtype='step', color='black', density=True, label='NF (reweighted)', alpha=0.5)
+            plt.hist(gaus_values, bins=bins, histtype='step', color='green', label='Gaussian', alpha=0.7, density=True)
             plt.legend()
             plt.xlabel(meaningful_name)
             plt.ylabel("a.u.")

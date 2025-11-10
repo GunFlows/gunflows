@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=sample_and_compare
-#SBATCH --partition=private-dpnc-gpu,shared-gpu
+#SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem-per-cpu=4G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --output=logs/sample_and_compare_%j.out
 #SBATCH --error=logs/sample_and_compare_%j.err
@@ -17,7 +17,7 @@ module load apptainer 2>/dev/null || true
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
 HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos"
 HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
@@ -34,7 +34,7 @@ echo "Job started at $(date)"
 
 srun --ntasks=1 apptainer exec --nv \
   --env PYTHONNOUSERSITE=1 \
-  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows_dev/src/normalizing-flows" \
+  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
   --bind "${HOST_CONFIG}:/workspace/config" \
   --bind "${HOST_DATA}:/workspace/data" \

@@ -11,7 +11,7 @@ training_folder: /workspace/work/GuNFlows/outputs/2025-11-04/14-06-30/
 # ckpt: /workspace/work/GuNFlows/outputs/2025-09-12/18-52-56/checkpoints/sampler_epoch09500.pt
 save_dir: null 
 
-num_samples: 100000
+num_samples: 200000
 batch_size:  10000
 return_probs: true
 grid: 5
