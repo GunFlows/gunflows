@@ -402,7 +402,7 @@ def main(cfg: DictConfig) -> None:
     end_time = time.time()
     print(f"Done sampling from covariance matrix in {end_time - start_time:.2f} seconds.",flush=True)
 
-    compute_likelihoods = False
+    compute_likelihoods = cfg.compute_likelihoods if "compute_likelihoods" in cfg else False
     if compute_likelihoods:
         # scan through the nf samples, compute the nll and compare it to the nf weight (logq_nf)
         iter = 0
@@ -412,10 +412,10 @@ def main(cfg: DictConfig) -> None:
         print("Computing reweighting factors from NF to LH...",flush=True)
         for nf_vector, logq in zip(samples_nf, logq_nf):
             logp,nll_stat,nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(nf_vector,extend_continue=False)
-            if (iter % max(1, cfg.num_samples // 100) == 0):
-                    print(f"iter {iter} NLL/2: {logp}, log_q_nf: {logq}", flush=True)
+            # if (iter % max(1, cfg.num_samples // 100) == 0):
+            print(f"iter {iter} NLL/2: {logp}, log_q_nf: {logq}", flush=True)
             iter += 1
-            reweight_nf_to_lh.append(logq + logp)
+            reweight_nf_to_lh.append(-logq - logp)
             lh_values.append(-logp)
         print(f"Computed reweighting factors for {len(reweight_nf_to_lh)} NF samples.",flush=True)
 
@@ -536,6 +536,7 @@ def main(cfg: DictConfig) -> None:
             #         w = w.reshape(-1)
             #     plt.hist(nf_values, bins=bins, histtype='step', color='red', weights=w, label='NF (weighted)')
             plt.hist(nf_values, bins=bins, histtype='step', color='black', label='NF (unweighted)', alpha=0.5)
+            plt.hist(nf_values, bins=bins, weights=weights, histtype='step', color='red', label='NF (weighted)', alpha=0.5)
             plt.hist(gaus_values, bins=bins, histtype='step', color='green', label='Gaussian', alpha=0.7)
             plt.legend()
             plt.xlabel(meaningful_name)
