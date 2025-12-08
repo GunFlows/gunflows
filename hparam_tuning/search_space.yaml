@@ -1,0 +1,14 @@
+# search_space.yaml
+parameters:
+
+  experiment.optim.lr:           
+    type: float             
+    min: 5.0e-6
+    max: 2.0e-3
+    log: true 
+
+  experiment.model.nflows:
+    type: int
+    min: 8
+    max: 12
+    step: 1

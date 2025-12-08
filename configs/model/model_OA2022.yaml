@@ -6,8 +6,8 @@ dim_spline: ${len:${experiment.dataset.phase_space_dim}}
 nflows: 15
 hidden: 256
 nlayers: 1
-nbins: 21
-tail_bound: 7.0
+nbins: 25
+tail_bound: 11.0
 
 # Cov Flow
 freeze_covflow: false

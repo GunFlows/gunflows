@@ -1,5 +1,6 @@
 env/
 *.pyc
+*.db
 __pycache__/
 outputs/
 software/
@@ -17,3 +18,7 @@ bash/train_gunflows.sh
 fds_check/
 src/normalizing-flows
 .vscode/
+hparam_tuning/configs/
+hparam_tuning/logs/
+hparam_tuning/tmp_dbs/
+hparam_tuning/databases/
