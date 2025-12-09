@@ -7,33 +7,49 @@
 #SBATCH --output=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/loop_%j.log
 #SBATCH --error=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/loop_%j.log
 
-STUDY=$1
-STAGES=$2
-JOBS=$3
-TRIALS=$4
-MAXP=$5
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+    echo "Usage: $0 STUDY STAGES NWORKERS" >&2
+    exit 1
+fi
+
+STUDY=$1        # study name
+STAGES=$2       # number of stages
+NWORKERS=$3     # number of workers in parallel per stage
 
 DIR=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning
 cd "$DIR" || exit 1
 
-# Per-study DB base directory
+# Per-study DB/working directory
 DB_BASE="$DIR/databases/$STUDY"
 
 mkdir -p "$DIR/logs" "$DB_BASE/tmp_dbs"
+TRIALS_PER_JOB=1   
 
 for ((s=1; s<=STAGES; s++)); do
     STAGE="s${s}"
-    ARRAY="0-$(($JOBS-1))%$MAXP"
+
+    JOBS=$NWORKERS
+    MAXP=$NWORKERS
+    ARRAY="0-$((JOBS-1))%$MAXP"
+
+    echo "Launching stage ${STAGE}: STUDY=${STUDY}, JOBS=${JOBS}, TRIALS_PER_JOB=${TRIALS_PER_JOB}, MAXP=${MAXP}"
 
     JOBID=$(sbatch --array="$ARRAY" \
-          --export=STUDY=$STUDY,STAGE=$STAGE,TRIALS_PER_JOB=$TRIALS \
-          "$DIR/run_array.sh" | awk '{print $4}')
+        --export=STUDY="$STUDY",STAGE="$STAGE",TRIALS_PER_JOB="$TRIALS_PER_JOB" \
+        "$DIR/run_array.sh" | awk '{print $4}')
 
-    # Wait for all array tasks of this stage to drop their flag in DB_BASE/tmp_dbs
-    while [ $(ls "$DB_BASE"/tmp_dbs/done_${STUDY}_${STAGE}_*.flag 2>/dev/null | wc -l) -lt $JOBS ]; do
+    echo "Stage ${STAGE}: submitted array job ${JOBID}"
+
+    # Wait for all workers of this stage to drop their flag in DB_BASE/tmp_dbs
+    while [ "$(ls "$DB_BASE"/tmp_dbs/done_${STUDY}_${STAGE}_*.flag 2>/dev/null | wc -l)" -lt "$JOBS" ]; do
         sleep 20
     done
 
+    # Merge stage DBs into master DB and run diagnostics (called inside merge_stage.py)
     flock "$DB_BASE/tmp_dbs/.merge.lock" python merge_stage.py "$STUDY" "$STAGE"
+
+    # Clean flags for this stage
     rm -f "$DB_BASE"/tmp_dbs/done_${STUDY}_${STAGE}_*.flag
 done

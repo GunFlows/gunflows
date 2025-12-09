@@ -12,3 +12,9 @@ parameters:
     min: 8
     max: 12
     step: 1
+
+  experiment.model.nbins:
+    type: int
+    min: 11
+    max: 25
+    step: 2

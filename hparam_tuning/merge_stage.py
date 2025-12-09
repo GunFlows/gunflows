@@ -59,3 +59,6 @@ for db in stage_dbs:
     os.remove(db)
 
 print(f"stage {stage} merged, total unique trials {len(dst.trials)}")
+os.system(
+    f"python diagnostics.py {study_name} {master_path} {stage}"
+)
