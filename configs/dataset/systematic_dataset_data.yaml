@@ -13,7 +13,7 @@ with_sampler: true
 nf_ckpt: null
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000
-max_batches: 50
+max_batches: 200
 num_samplers: 20
 
 llh_config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_shiftedOPPB.root

@@ -15,8 +15,8 @@ early_stop:
 loss:
   name_train: kl_symmetric
   name_val:   kl_symmetric
-  cap_f: 100000
-  cap_r: 100000
+  cap_f: 100000000
+  cap_r: 100000000
   kwargs:
     a: 1.0
     b: 1.0

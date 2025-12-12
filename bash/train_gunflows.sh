@@ -33,7 +33,7 @@ fi
 #   --env DATA_DIR="/workspace/data/DatasetNFlowsOA2022/Asimov/allParameters" \
 srun --ntasks=1 apptainer exec --nv \
   --env PYTHONNOUSERSITE=1 \
-  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows_dev/src/normalizing-flows" \
+  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
   --bind "${HOST_CONFIG}:/workspace/config" \
   --bind "${HOST_DATA}:/workspace/data" \

@@ -115,6 +115,7 @@ class OA2022TrainerPyGundam(BaseTrainer):
         improved = loss_val < self.best_loss + self.min_delta
         if improved:
             self.best_loss = float(loss_val); self.wait = 0; self._checkpoint(best=True)
+            print(f"Best loss: {self.best_loss:.6e}")
         else:
             self.wait += 1
         self._checkpoint(best=False)
