@@ -40,7 +40,7 @@ __all__ = ["SystematicDatasetOA2022"]
 def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims=None, stage=0):
     n_total = samples.shape[1]
     n = min(int(n), n_total)
-
+    
     if weights is None or not np.all(np.isfinite(weights)):
         weights = np.ones(samples.shape[0])
     w = weights / np.clip(np.sum(weights), 1e-12, None)
@@ -116,7 +116,7 @@ class SystematicDatasetOA2022(Dataset):
         out_dir="plots",
         timeout=6000.0,
         data_dir=None,
-        threads=6,
+        threads=10,
         num_samplers=1,
         data_is_asimov=True,
         model_cfg=None,
@@ -389,14 +389,14 @@ class SystematicDatasetOA2022(Dataset):
                 mean_phys,
                 weights_np,
                 cov_phys,
-                self.titles, 10, self.out_dir, self.phase_space_dim, self.stage,
+                self.titles, min(10,len(self.phase_space_dim)), self.out_dir, self.phase_space_dim, self.stage,
             )
             _plot_grid(
                 samples_phys,
                 mean_phys,
                 np.ones_like(weights_np),
                 cov_phys,
-                self.titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
+                self.titles, min(10,len(self.phase_space_dim)), self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
             )
 
             if latest_samples_phys is not None:
@@ -410,14 +410,14 @@ class SystematicDatasetOA2022(Dataset):
                     latest_mean_phys,
                     np.exp(lw),
                     latest_cov_phys,
-                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
+                    latest_titles, min(10,len(self.phase_space_dim)), self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
                 )
                 _plot_grid(
                     latest_samples_phys[m_last, :],
                     latest_mean_phys,
                     np.ones_like(lw),
                     latest_cov_phys,
-                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
+                    latest_titles, min(10,len(self.phase_space_dim)), self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
                 )
 
     def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None, num_samplers=1):
