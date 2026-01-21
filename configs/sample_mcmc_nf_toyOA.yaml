@@ -1,0 +1,23 @@
+training_folder: /workspace/work/GuNFlows/outputs/2026-01-19/11-04-56
+mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+save_dir: /workspace/work/GuNFlows/outputs/nf_vs_mcmc/${now:%Y-%m-%d_%H-%M-%S}
+
+num_samples: 400000
+batch_size: 4096
+bins: 200
+plot_workers: 0
+
+mcmc_burnin_frac: 0.2
+mcmc_thin: 1
+mcmc_max_steps: null
+
+select_regex: ""
+
+device: cuda
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true

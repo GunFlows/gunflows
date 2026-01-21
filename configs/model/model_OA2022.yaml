@@ -1,5 +1,5 @@
 _target_: gunflows.flows.systematic_flow
-total_dim: 711
+total_dim: 25
 dim_spline: ${len:${experiment.dataset.phase_space_dim}}
 
 # RQ-NSF

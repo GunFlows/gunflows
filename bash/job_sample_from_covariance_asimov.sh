@@ -4,7 +4,7 @@
 #SBATCH --time=8:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=160G
 #SBATCH --output=logs/sample_from_cov_asimov_%A_%a.out
 #SBATCH --error=logs/sample_from_cov_asimov_%A_%a.err
