@@ -389,14 +389,14 @@ class SystematicDatasetOA2022(Dataset):
                 mean_phys,
                 weights_np,
                 cov_phys,
-                self.titles, 10, self.out_dir, self.phase_space_dim, self.stage,
+                self.titles, min(5, samples_phys.shape[0]), self.out_dir, self.phase_space_dim, self.stage,
             )
             _plot_grid(
                 samples_phys,
                 mean_phys,
                 np.ones_like(weights_np),
                 cov_phys,
-                self.titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
+                self.titles, min(5, samples_phys.shape[0]), self.out_dir, self.phase_space_dim, f"{self.stage}_unweighted",
             )
 
             if latest_samples_phys is not None:
@@ -410,14 +410,14 @@ class SystematicDatasetOA2022(Dataset):
                     latest_mean_phys,
                     np.exp(lw),
                     latest_cov_phys,
-                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
+                    latest_titles, min(5, latest_samples_phys[m_last, :].shape[0]), self.out_dir, self.phase_space_dim, f"{self.stage}_latest",
                 )
                 _plot_grid(
                     latest_samples_phys[m_last, :],
                     latest_mean_phys,
                     np.ones_like(lw),
                     latest_cov_phys,
-                    latest_titles, 10, self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
+                    latest_titles, min(5, latest_samples_phys[m_last, :].shape[0]), self.out_dir, self.phase_space_dim, f"{self.stage}_latest_unweighted",
                 )
 
     def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None, num_samplers=1):
