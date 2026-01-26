@@ -59,7 +59,8 @@ srun --ntasks=1 apptainer exec \
     gundamFitter \
       -c '${IN_CONFIG}/${BASE_CONFIG}' \
       -of '${IN_CONFIG}/${MCMC_OVERRIDE}' \
-      -a \
+      --toy \
+      -s 42 \
       -t 10 \
       -o '${IN_OUT}/${OUTROOT}' \
       ${EXTRA_ARGS} \
