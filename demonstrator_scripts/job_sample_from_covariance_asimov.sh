@@ -14,17 +14,17 @@ index=${SLURM_ARRAY_TASK_ID}
 time=$(date +%s%N)
 seed=$(($index + $time))
 
-INPUT_IDENTIFIER="configToyOA_60plus6_ToyFit" 
+INPUT_IDENTIFIER="configToyOA_60plus6_Asimov" 
 # this is the second part of the Gundam fitter output filename, without extension:
 # gundamFitter_configToyOA_60plus6_Asimov.root -> configToyOA_60plus6_Asimov
 
 CONFIG_FILE="output/gundamFitter_${INPUT_IDENTIFIER}.root"
 CONFIG_FOLDER_LOCAL="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/GundamWorkspace"
 
-OUTPUT_FOLDER="datasets_${INPUT_IDENTIFIER}"
+OUTPUT_FOLDER="datasets_sb_${INPUT_IDENTIFIER}"
 mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
-N=100000
+N=10000
 
 
 SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -n ${N} -t 16 "

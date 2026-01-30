@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=gunflows-train-toy
-#SBATCH --partition=private-dpnc-gpu,shared-gpu
+#SBATCH --job-name=train-demo-asimov
+#SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=120G
-#SBATCH --gres=gpu:1
-#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=240G
+#SBATCH --gres=gpu:1,VramPerGpu:24G
+#SBATCH --time=72:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -42,4 +42,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=demonstrator_60plus6_toy ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=demonstrator_60plus6_asimov ${EXTRA_ARGS}"

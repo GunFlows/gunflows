@@ -33,7 +33,9 @@ IN_SETUP="${IN_GUNFLOWS}/setup_nosubshell.sh"
 BASE_CONFIG="configToyOA_60plus6.yaml"
 MCMC_OVERRIDE="configMcmcToy.yaml"
 
-OUTROOT="asimov_mcmc_${SLURM_JOB_ID}.root"
+SEED="6"
+
+OUTROOT="Demo_mcmc_ToySeed_${SEED}_${SLURM_JOB_ID}.root"
 #OUTROOT="asimov_mcmc_local.root"
 
 EXTRA_ARGS=""
@@ -60,7 +62,7 @@ srun --ntasks=1 apptainer exec \
       -c '${IN_CONFIG}/${BASE_CONFIG}' \
       -of '${IN_CONFIG}/${MCMC_OVERRIDE}' \
       --toy \
-      -s 42 \
+      -s 6 \
       -t 10 \
       -o '${IN_OUT}/${OUTROOT}' \
       ${EXTRA_ARGS} \
