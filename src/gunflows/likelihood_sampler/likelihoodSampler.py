@@ -255,7 +255,7 @@ class LikelihoodSampler:
                         return (par.getParameterLimits().min, par.getParameterLimits().max)
         raise ValueError(f"Parameter '{par_name}' not found in the propagator.")
 
-    def inject_params_and_compute_likelihood(self, values, extend_continue=True, verbose=False):
+    def inject_params_and_compute_likelihood(self, values, extend_continue=True, verbose=0):
         """
         Inject the given vector of parameter values into the propagator and compute the likelihood.
         Returns the negative log likelihood.
@@ -302,7 +302,8 @@ class LikelihoodSampler:
         if n != len(values):
             # If the number of values does not match, reset to previous values
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
-        # print(f"DEBUG| Injected: {big_vector_summary(values)}")
+        if verbose >= 2:
+            print(f"DEBUG| Injected: {big_vector_summary(values)}")
         # print(f"DEBUG| Current : {big_vector_summary(self.get_current_parameter_values())}")
 
         # Now compute the likelihood
@@ -311,7 +312,8 @@ class LikelihoodSampler:
         NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood / 2.
         NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood / 2.
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
-        # print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
+        if verbose >= 2:
+           print(f"DEBUG| NLL: {NLL_stat} (stat) + {NLL_syst} (syst) + {out_of_domain_penalty} (OOD) = {NLL_tot}")
         # print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
 
         # # HEAVY DEBUGGING INFO
