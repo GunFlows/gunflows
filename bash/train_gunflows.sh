@@ -3,8 +3,8 @@
 #SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=180G
+#SBATCH --cpus-per-task=26
+#SBATCH --mem=250G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --time=168:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
@@ -33,7 +33,7 @@ fi
 #   --env DATA_DIR="/workspace/data/DatasetNFlowsOA2022/Asimov/allParameters" \
 srun --ntasks=1 apptainer exec --nv \
   --env PYTHONNOUSERSITE=1 \
-  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows_dev/src/normalizing-flows" \
+  --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
   --bind "${HOST_CONFIG}:/workspace/config" \
   --bind "${HOST_DATA}:/workspace/data" \

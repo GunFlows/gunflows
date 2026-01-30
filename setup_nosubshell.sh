@@ -15,8 +15,9 @@ export PYTHONPATH=/workspace/work/GuNFlows/src/gunflows:$GUNDAM_HOME/lib:$PYTHON
 export OA_INPUT_FOLDER="/workspace/data"
 export DATASET_FOLDER="/workspace/data"
 # path to config folder
-export CONFIG_FOLDER="/workspace/config/GundamInputOA2021/"
-export GUNFLOW_SRC="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev/src/gunflows"
+export CONFIG_FOLDER="/workspace/config/GundamWorkspace/"
+export GUNFLOW_SRC="/home/shares/sanchezf/gundam_n_flow/GuNFlows/src/gunflows"
+export DATASET_FOLDER="/workspace/data"
 
 source /opt/root/bin/thisroot.sh
 echo "Environment variables set for Gundam and ROOT."

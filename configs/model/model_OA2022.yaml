@@ -1,16 +1,16 @@
 _target_: gunflows.flows.systematic_flow
-total_dim: 711
+total_dim: 25
 dim_spline: ${len:${experiment.dataset.phase_space_dim}}
 
 # RQ-NSF
-nflows: 25
+nflows: 15
 hidden: 256
 nlayers: 1
-nbins: 12
-tail_bound: 7.0
+nbins: 25
+tail_bound: 11.0
 
 # Cov Flow
-freeze_covflow: true
+freeze_covflow: false
 
 # Context Flow
 context_transform: true

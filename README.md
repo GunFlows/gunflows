@@ -40,6 +40,39 @@ python -m gunflows.train trainer.device=cpu optim.lr=1e-4
   - `trainer/` – training loops
   - `utils/` – helpers to build the model
 
+---
+
+## Hyperparameter tuning (Optuna + Slurm)
+
+There is an Optuna-based hyperparameter tuning pipeline under `hparam_tuning/` that launches many training runs on the cluster via Slurm and collects them into a single Optuna study.
+
+### Layout
+
+Inside `hparam_tuning/` you will find:
+
+- `launch_tuning.sh` – top-level Slurm job that drives the whole tuning campaign (CPU node).
+- `run_array.sh` – GPU Slurm array job; each task runs one Optuna worker (one trial per task).
+- `worker.py` – Python worker that:
+  - samples hyperparameters from `search_space.yaml` via Optuna,
+  - launches training inside the Apptainer container (calling `gunflows.train`),
+  - parses the validation loss from the logs and reports it back to Optuna.
+- `search_space.yaml` – definition of the hyperparameter search space (keys like `experiment.optim.lr`, `experiment.model.nflows`, etc.).
+- `merge_stage.py` – merges per-job SQLite databases into a single master Optuna database, deduplicating trials and running diagnostics.
+- `diagnostics.py` – generates diagnostic plots (contour plots + manual importance scores) from the merged study.
+- `databases/<STUDY>/` – per-study data:
+  - `databases/<STUDY>/<STUDY>.db` – master Optuna SQLite DB.
+  - `databases/<STUDY>/tmp_dbs/` – temporary DBs and flag files for each stage and worker.
+  - `databases/<STUDY>/figs/` – diagnostic plots for that study.
+
+### Dependencies for tuning
+
+In addition to the dependencies needed for training, the tuning pipeline requires:
+
+- Python packages (installed in the environment where you run `python worker.py` / `python diagnostics.py`):
+  ```bash
+  pip install --user optuna pyyaml matplotlib scipy numpy
+
+
 ## License
 
 This project is distributed without a specific license file.
