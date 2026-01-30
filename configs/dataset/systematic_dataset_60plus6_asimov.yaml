@@ -4,12 +4,12 @@ phase_space_dim:
     [60,61,62,63,64,65]
 
   # starting_folder is where the initial samples are saved
-starting_folder: /workspace/config/GundamWorkspace/datasets_configToyOA_60plus6_Asimov
+starting_folder: /workspace/config/GundamWorkspace/datasets_sb_configToyOA_60plus6_Asimov
 with_sampler: true
 nf_ckpt: null                     # path to NF checkpoint if available
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000
-max_batches: 100
+max_batches: 200
 num_samplers: 10
 
 llh_config: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_60plus6_Asimov.root
