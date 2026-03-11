@@ -14,7 +14,7 @@ index=${SLURM_ARRAY_TASK_ID}
 time=$(date +%s%N)
 seed=$(($index + $time))
 
-INPUT_IDENTIFIER="configToyOA_60plus6_Asimov" 
+INPUT_IDENTIFIER="configToyOA_100plus0_Asimov" 
 # this is the second part of the Gundam fitter output filename, without extension:
 # gundamFitter_configToyOA_60plus6_Asimov.root -> configToyOA_60plus6_Asimov
 
@@ -24,10 +24,10 @@ CONFIG_FOLDER_LOCAL="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/GundamWorkspac
 OUTPUT_FOLDER="datasets_sb_${INPUT_IDENTIFIER}"
 mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
-N=10000
+N=15000
 
 
-SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -n ${N} -t 16 "
+SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -n ${N} -t 16 -a"
 
 APPTAINER_OPTIONS="--nv --cleanenv \
   --env PYTHONNOUSERSITE=1 \

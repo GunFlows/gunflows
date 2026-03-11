@@ -12,14 +12,14 @@
 #SBATCH --error=logs/sample_nf_mcmc_toy_%j.err
 #SBATCH --mail-type=ALL
 
-set -euo pipefail
+#set -euo pipefail
 
 module load apptainer 2>/dev/null || true
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
-HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev/DATA"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit"
+HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"

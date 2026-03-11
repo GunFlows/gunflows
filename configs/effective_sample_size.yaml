@@ -1,10 +1,10 @@
-training_folder: /workspace/work/GuNFlows/outputs/2026-01-27/22-35-17
-save_dir:        /workspace/work/GuNFlows/outputs/2026-01-27/22-35-17/nf_vs_mcmc_ess
+training_folder: /workspace/work/GuNFlows_M/outputs/2026-01-26/16-28-56
+save_dir:        /workspace/work/GuNFlows/outputs/2026-01-26/16-28-56/nf_vs_mcmc_ess
 
 mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 
-num_samples: 10000
-batch_size: 2500
+num_samples: 100000
+batch_size: 10000
 bins: 200
 plot_workers: 0
 llh_workers: 16 # if 0, do not use multiprocessing for llh computation

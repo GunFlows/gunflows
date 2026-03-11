@@ -26,8 +26,8 @@ IN_CONTAINER_SETUP="${IN_CONTAINER_WORKDIR}/demonstrator_scripts/setup.sh"
 # data
 srun --ntasks=1 apptainer exec ${APPTAINER_OPTIONS} ${IMAGE_PATH} bash -lc "source '${IN_CONTAINER_SETUP}' && \
                      HYDRA_FULL_ERROR=1 python3 -m gunflows.likelihood_sampler.lh_profiles \
-                     -c /workspace/config/output/gundamFitter_configToyOA_60plus6_Asimov.root \
-                     -o /workspace/config/profiles_60plus6 \
+                     -c /workspace/config/output/gundamFitter_configToyOA_100plus10_Asimov.root \
+                     -o /workspace/config/profiles_100plus10 \
                      -s 5 \
                      -n 30"
 

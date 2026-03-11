@@ -1,8 +1,18 @@
-#!/bin/bash
+#!/bin/env bash
+#SBATCH --job-name=fit
+#SBATCH --partition=private-dpnc-cpu,shared-cpu
+#SBATCH --time=8:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=160G
+#SBATCH --output=logs/fit_%A.out
+#SBATCH --error=logs/fit_%A.err
+#SBATCH --mail-type=ALL
 
 
 # ARGUMENTS TO PASS TO gundamFitter
-SCRIPTARGS="-c configToyOA_60plus6.yaml -a -t 10 -s 42"
+SCRIPTARGS="-c configToyOA_100plus0.yaml -a -t 10 "
 echo "Running Gundam Fit with arguments: ${SCRIPTARGS}" 
 
 # CHECK AVAILABLE FITTER CONFIGS AT: 
