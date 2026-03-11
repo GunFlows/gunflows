@@ -74,6 +74,7 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     A = np.mean(log_p - bestfit_nll)
     B = np.mean(log_q)
     log_p = log_p + (B-A)
+    print(f"mean of log_p - bestfit_nll: {A:.2f}, mean of log_q: {B:.2f}, bestfit_nll: {bestfit_nll:.2f}")
 
     plt.figure(figsize=(8, 6))
     plt.hist(log_p[log_p<5000] , alpha=0.7, density=True,
