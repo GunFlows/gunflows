@@ -304,11 +304,12 @@ class LikelihoodSampler:
             raise ValueError(f"inject_parameter_values: Number of values provided ({len(values)}) does not match the number of parameters ({n}).")
         if verbose >= 2:
             print(f"DEBUG| Injected: {big_vector_summary(values)}")
-        # print(f"DEBUG| Current : {big_vector_summary(self.get_current_parameter_values())}")
+            print(f"DEBUG| Current : {big_vector_summary(self.get_current_parameter_values())}")
 
         # Now compute the likelihood
         self.likelihood_interface.propagateAndEvalLikelihood()
-        # print(f"computing LH at: {big_vector_summary(self.get_current_parameter_values(), 10)}")
+        if verbose >= 2:
+            print(f"computing LH at: {big_vector_summary(self.get_current_parameter_values(), 10)}")
         NLL_stat = self.fitter.getLikelihoodInterface().getBuffer().statLikelihood / 2.
         NLL_syst = self.fitter.getLikelihoodInterface().getBuffer().penaltyLikelihood / 2.
         NLL_tot = NLL_stat + NLL_syst + out_of_domain_penalty
