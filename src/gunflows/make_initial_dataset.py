@@ -139,7 +139,7 @@ while len(throws) < n:
         syst_NLL_list_batch.append(penalty_NLL)
         print(f"Throw {i_global}: log_q = {logq}")
         print(f"                  log_p = {NLL}", flush=True)
-        if (i_global == 42):
+        if (i_global >= 42 or i_global <= 72):
             print("42 is the answer to life, the universe and everything.")
             print(likelihood_sampler.likelihood_interface.getSummary())
     #test
