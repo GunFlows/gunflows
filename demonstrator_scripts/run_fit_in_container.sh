@@ -12,7 +12,7 @@
 
 
 # ARGUMENTS TO PASS TO gundamFitter
-SCRIPTARGS="-c configToyOA_100plus0.yaml -a -t 10 "
+SCRIPTARGS="-c configToyOA_60plus0.yaml -a -t 10 "
 echo "Running Gundam Fit with arguments: ${SCRIPTARGS}" 
 
 # CHECK AVAILABLE FITTER CONFIGS AT: 
