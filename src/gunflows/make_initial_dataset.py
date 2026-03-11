@@ -77,6 +77,19 @@ prefit_cov = likelihood_sampler.prefit_covariance_matrix
 log_det = np.linalg.slogdet(prefit_cov)[1]  # log determinant of the prefit covariance matrix
 print(f"Log determinant of the prefit covariance matrix: {log_det}")
 
+
+print("Best-fit parameter values:")
+for name, value in zip(parameter_names, bestfit_parameter_values):
+    print(f"  {name}: {value:.4f}")
+# print out covariance matrix
+print("Postfit covariance matrix:")
+for i in range(len(parameter_names)):
+    row = ""
+    for j in range(len(parameter_names)):
+        row += f"{postfit_covariance[i][j]:.2e} "
+    print(row)
+
+
 n = int(args.n)
 b = int(args.b) if args.b else n
 if b > n:
