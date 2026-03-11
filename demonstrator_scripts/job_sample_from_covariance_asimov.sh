@@ -24,7 +24,7 @@ CONFIG_FOLDER_LOCAL="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/GundamWorkspac
 OUTPUT_FOLDER="datasets_sb_${INPUT_IDENTIFIER}"
 mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
-N=1000
+N=5000
 
 
 SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -n ${N} -t 16 -a"
