@@ -5,7 +5,7 @@
 #  Author: Mathias El Baz (adapted version of sample_mcmc.py for the Toy OA configuration)
 #  Date: 21/01/2026
 #  Description:
-#    Sample from a trained Normalizing Flow model and compare MCMC samples.
+#    Sample from a trained Normalizing Flow model and optionally compare MCMC samples.
 #    This uses GUNDAM format for the MCMC output.
 # =============================================================================
 
@@ -16,7 +16,7 @@ import sys
 import re
 import time
 from pathlib import Path
-from typing import List, Optional
+import multiprocessing as mp
 
 import hydra
 import torch
@@ -33,6 +33,9 @@ sys.path.append(os.path.abspath(NF_LOCAL))
 
 from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
 from gunflows.likelihood_sampler import LikelihoodSampler
+
+
+_REWEIGHT_LIKELIHOOD_SAMPLER = None
 
 
 def _abspath(p: str) -> str:
@@ -101,6 +104,82 @@ def sample_nf_physical(model, dataset, parameter_limits: dict[str, tuple[float, 
     return np.asarray(samples_nf[:need_total], dtype=np.float32)
 
 
+def sample_nf_physical_with_logq(
+    model,
+    dataset,
+    parameter_limits: dict[str, tuple[float, float]],
+    num_samples: int,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sample from NF and return:
+      - samples in physical/data space (N, D)
+      - logq from model.sample corresponding to the accepted samples (N,)
+    This mirrors the "return_probs" pathway of sample_mcmc.py.
+    """
+    samples_nf: list[np.ndarray] = []
+    logqs_nf: list[float] = []
+
+    need_total = int(num_samples)
+
+    with torch.no_grad():
+        while len(samples_nf) < need_total:
+            need = need_total - len(samples_nf)
+            b = min(int(batch_size), need)
+
+            z_batch, lq_batch = model.sample(b)
+            lq_np = lq_batch.detach().to(dtype=torch.float32, device="cpu").cpu().numpy()
+            lq_np = np.asarray(lq_np).reshape(-1)
+
+            z_batch = z_batch.detach().to(dtype=torch.float32, device="cpu")
+            phys_batch = dataset.transform_eigen_space_to_data_space(z_batch)
+            phys_np = phys_batch.detach().cpu().numpy().astype(np.float32)
+
+            mask = check_parameters_array_limits(phys_np, parameter_limits)
+            acc_idx = np.nonzero(mask)[0]
+
+            for idx in acc_idx:
+                samples_nf.append(phys_np[idx])
+                logqs_nf.append(float(lq_np[idx]))
+
+            print(f" NF: accepted {int(mask.sum())}/{b}  -> total {len(samples_nf)}/{need_total}", flush=True)
+
+            if int(mask.sum()) == 0 and b <= 16:
+                for _ in range(128):
+                    if len(samples_nf) >= need_total:
+                        break
+                    z1, lq1 = model.sample(1)
+                    z1 = z1.detach().to(dtype=torch.float32, device="cpu")
+                    phys1 = dataset.transform_eigen_space_to_data_space(z1).detach().cpu().numpy()[0].astype(np.float32)
+                    m1 = check_parameters_array_limits(phys1[None, :], parameter_limits)[0]
+                    if m1:
+                        samples_nf.append(phys1)
+                        logqs_nf.append(float(lq1.detach().to(device="cpu").cpu().numpy().reshape(-1)[0]))
+
+    s = np.asarray(samples_nf[:need_total], dtype=np.float32)
+    lq = np.asarray(logqs_nf[:need_total], dtype=np.float32).reshape(-1)
+    return s, lq
+
+
+def _init_reweight_worker(llh_config, llh_overrides, data_is_asimov, threads, llh_cwd):
+    global _REWEIGHT_LIKELIHOOD_SAMPLER
+    _REWEIGHT_LIKELIHOOD_SAMPLER = LikelihoodSampler(
+        config_file=llh_config,
+        override_files=llh_overrides,
+        data_is_asimov=data_is_asimov,
+        threads=threads,
+        llh_cwd=llh_cwd,
+        light_mode=False,
+    )
+
+
+def _compute_single_reweight(args):
+    global _REWEIGHT_LIKELIHOOD_SAMPLER
+    it, nf_vector, logq = args
+    logp, nll_stat, nll_syst = _REWEIGHT_LIKELIHOOD_SAMPLER.inject_params_and_compute_likelihood(
+        nf_vector, extend_continue=False
+    )
+    return it, -float(logq) - float(logp), -float(logp), float(logq), float(logp)
 class SamplingDatasetTarget:
     """Lightweight target for sampling-only workflows.
 
@@ -315,8 +394,16 @@ def gaussian_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * z * z) / (sigma * np.sqrt(2.0 * np.pi))
 
 
-def plot_2d_hist_side_by_side(x_nf: np.ndarray, y_nf: np.ndarray, x_mc: np.ndarray, y_mc: np.ndarray,
-                              xlabel: str, ylabel: str, outpath: Path, bins: int = 60) -> None:
+def plot_2d_hist_side_by_side(
+    x_nf: np.ndarray,
+    y_nf: np.ndarray,
+    x_mc: np.ndarray,
+    y_mc: np.ndarray,
+    xlabel: str,
+    ylabel: str,
+    outpath: Path,
+    bins: int = 60,
+) -> None:
     xmin = float(min(np.min(x_nf), np.min(x_mc)))
     xmax = float(max(np.max(x_nf), np.max(x_mc)))
     ymin = float(min(np.min(y_nf), np.min(y_mc)))
@@ -372,20 +459,28 @@ def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel
 @hydra.main(config_path="/workspace/work/GuNFlows/configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
-    run_without_mcmc = bool(getattr(cfg, "run_without_mcmc", False))
-    mcmc_chain_cfg = getattr(cfg, "mcmc_chain", None)
-    mcmc_root = None
-    if mcmc_chain_cfg is not None and str(mcmc_chain_cfg).strip() != "":
-        mcmc_root = _abspath(str(mcmc_chain_cfg))
-    if not run_without_mcmc and mcmc_root is None:
-        raise RuntimeError("mcmc_chain must be provided when run_without_mcmc is false.")
     save_dir = _abspath(str(cfg.save_dir))
+
+    do_plot_mcmc = bool(getattr(cfg, "do_plot_mcmc", True))
+    do_reweight_nf = bool(getattr(cfg, "do_reweight_nf", False))
+    reweight_num_workers = int(getattr(cfg, "reweight_num_workers", 1))
+
+    if do_plot_mcmc:
+        mcmc_root = _abspath(str(cfg.mcmc_chain))
+        print(f"Is MCMC file here ? {os.path.isfile(mcmc_root)}", flush=True)
+    else:
+        mcmc_root = None
 
     print(f"PWD (hydra chdir): {os.getcwd()}", flush=True)
     print(f"training_folder: {training_folder}", flush=True)
-    print(f"run_without_mcmc: {run_without_mcmc}", flush=True)
-    print(f"mcmc_chain: {mcmc_root}", flush=True)
+    if do_plot_mcmc:
+        print(f"mcmc_chain: {mcmc_root}", flush=True)
+    else:
+        print("mcmc_chain: <disabled>", flush=True)
     print(f"save_dir: {save_dir}", flush=True)
+    print(f"do_plot_mcmc: {do_plot_mcmc}", flush=True)
+    print(f"do_reweight_nf: {do_reweight_nf}", flush=True)
+    print(f"reweight_num_workers: {reweight_num_workers}", flush=True)
 
     train_cfg_path = os.path.join(training_folder, ".hydra", "config.yaml")
     if not os.path.isfile(train_cfg_path):
@@ -474,68 +569,195 @@ def main(cfg: DictConfig) -> None:
 
     print(f"Sampling {num_samples} events from NF (physical space)...", flush=True)
     t0 = time.time()
-    samples_nf = sample_nf_physical(model, dataset, parameter_limits, num_samples, batch_size)
-    print(f"NF sampling done: {samples_nf.shape} in {time.time()-t0:.1f}s", flush=True)
-
-    mcmc_max_steps = cfg.mcmc_max_steps if cfg.mcmc_max_steps is not None else None
-    mcmc_burnin_frac = float(cfg.mcmc_burnin_frac)
-    mcmc_thin = int(cfg.mcmc_thin)
-
-    base_dir = None
-    mcmc_pts_raw = None
-    mcmc_post = None
-    meta = {}
-    burn = 0
-    if run_without_mcmc:
-        print("Skipping MCMC loading (run_without_mcmc=true).", flush=True)
+    if do_reweight_nf:
+        samples_nf, logq_nf = sample_nf_physical_with_logq(
+            model=model,
+            dataset=dataset,
+            parameter_limits=parameter_limits,
+            num_samples=num_samples,
+            batch_size=batch_size,
+        )
+        print(f"NF sampling done: {samples_nf.shape} (+logq) in {time.time()-t0:.1f}s", flush=True)
     else:
+        samples_nf = sample_nf_physical(model, dataset, parameter_limits, num_samples, batch_size)
+        logq_nf = None
+        print(f"NF sampling done: {samples_nf.shape} in {time.time()-t0:.1f}s", flush=True)
+
+    # Optional MCMC loading (ONLY if do_plot_mcmc=True)
+    if do_plot_mcmc:
         print(f"Loading ToyNDFit MCMC from: {mcmc_root}", flush=True)
-        base_dir, _, mcmc_pts_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
+        mcmc_max_steps = cfg.mcmc_max_steps if cfg.mcmc_max_steps is not None else None
+        mcmc_burnin_frac = float(cfg.mcmc_burnin_frac)
+        mcmc_thin = int(cfg.mcmc_thin)
+
+        base_dir, mcmc_names, mcmc_pts_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
         mcmc_post, burn = apply_burnin_thin(mcmc_pts_raw, mcmc_burnin_frac, mcmc_thin)
         print(f"MCMC loaded: raw {mcmc_pts_raw.shape} -> post {mcmc_post.shape} (burn={burn}, thin={mcmc_thin})", flush=True)
         print(f"MCMC base_dir: {base_dir}  meta: {meta}", flush=True)
+    else:
+        base_dir, mcmc_names, mcmc_pts_raw, meta = None, None, None, None
+        mcmc_post, burn = None, None
+        mcmc_burnin_frac, mcmc_thin = None, None
 
+    # Resolve comparison dimension
     d_nf = int(samples_nf.shape[1])
     d_fit = int(bestfit_parameter_values.shape[0])
     d_cov = int(postfit_covariance.shape[0])
     d_names = len(nf_param_names_short)
-    if run_without_mcmc:
-        d = min(d_nf, d_fit, d_cov, d_names)
-    else:
+
+    if do_plot_mcmc:
         d_mcmc = int(mcmc_post.shape[1])
         d = min(d_nf, d_mcmc, d_fit, d_cov, d_names)
+    else:
+        d = min(d_nf, d_fit, d_cov, d_names)
+
     if d == 0:
-        raise RuntimeError("Cannot plot: zero dimension after resolving available NF/MCMC/postfit shapes.")
+        raise RuntimeError("Cannot proceed: zero dimension after resolving NF/postfit shapes (and MCMC if enabled).")
 
     samples_nf_c = samples_nf[:, :d]
-    samples_mcmc_c = mcmc_post[:, :d] if mcmc_post is not None else None
     mu_vec = bestfit_parameter_values[:d]
     cov_mat = postfit_covariance[:d, :d]
     sig_vec = np.sqrt(np.clip(np.diag(cov_mat), 0.0, np.inf))
     labels = nf_param_names_short[:d]
 
+    if do_plot_mcmc:
+        samples_mcmc_c = mcmc_post[:, :d]
+    else:
+        samples_mcmc_c = None
+
+    if do_reweight_nf:
+        if logq_nf is None or logq_nf.shape[0] != samples_nf.shape[0]:
+            raise RuntimeError("do_reweight_nf=True but logq_nf is missing or mis-shaped.")
+        logq_nf = np.asarray(logq_nf).reshape(-1)[: samples_nf.shape[0]]
+
+    # -------------------------
+    # NF -> LH reweighting (EXACTLY like sample_mcmc.py)
+    # -------------------------
+    reweight_nf_to_lh = None
+    outlier_mask = None
+    if do_reweight_nf:
+        print("Computing reweighting factors from NF to LH (Toy OA)...", flush=True)
+        t_rw = time.time()
+        reweight_nf_to_lh_list = []
+        lh_values = []
+
+        if reweight_num_workers <= 1:
+            for it, (nf_vector, logq) in enumerate(zip(samples_nf_c, logq_nf)):
+                logp, nll_stat, nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(
+                    nf_vector, extend_continue=False
+                )
+                if (it % max(1, int(num_samples // 100)) == 0):
+                    print(f"iter {it} NLL/2: {logp}, log_q_nf: {float(logq)}", flush=True)
+                reweight_nf_to_lh_list.append(-float(logq) - float(logp))
+                lh_values.append(-float(logp))
+        else:
+            worker_args = [
+                (
+                    int(it),
+                    np.asarray(nf_vector, dtype=np.float64),
+                    float(logq),
+                )
+                for it, (nf_vector, logq) in enumerate(zip(samples_nf_c, logq_nf))
+            ]
+
+            ctx = mp.get_context("spawn")
+            chunksize = max(1, len(worker_args) // (reweight_num_workers * 20))
+
+            with ctx.Pool(
+                processes=reweight_num_workers,
+                initializer=_init_reweight_worker,
+                initargs=(
+                    cfg.experiment.dataset.llh_config,
+                    cfg.experiment.dataset.llh_overrides,
+                    cfg.experiment.dataset.data_is_asimov,
+                    cfg.experiment.sampler.threads,
+                    cfg.experiment.dataset.llh_cwd,
+                ),
+            ) as pool:
+                for it, rw_val, lh_val, logq_val, logp_val in pool.imap(_compute_single_reweight, worker_args, chunksize=chunksize):
+                    if (it % max(1, int(num_samples // 100)) == 0):
+                        print(f"iter {it} NLL/2: {logp_val}, log_q_nf: {float(logq_val)}", flush=True)
+                    reweight_nf_to_lh_list.append(rw_val)
+                    lh_values.append(lh_val)
+
+        reweight_nf_to_lh = np.asarray(reweight_nf_to_lh_list, dtype=np.float64).reshape(-1)
+        lh_values = np.asarray(lh_values, dtype=np.float64).reshape(-1)
+
+        if reweight_nf_to_lh.size > 0:
+            median_reweight = np.median(reweight_nf_to_lh)
+            reweight_nf_to_lh = reweight_nf_to_lh - median_reweight
+
+            median_lh = np.median(lh_values)
+            lh_values = lh_values - median_lh
+
+            median_logq = np.median(logq_nf)
+            logq_nf = logq_nf - median_logq
+
+        lower_bound = np.quantile(reweight_nf_to_lh, 0.001)
+        upper_bound = np.quantile(reweight_nf_to_lh, 0.999)
+        outlier_mask = (reweight_nf_to_lh >= lower_bound) & (reweight_nf_to_lh <= upper_bound)
+
+        filtered_reweights = reweight_nf_to_lh[outlier_mask]
+        variance_reweight = float(np.var(reweight_nf_to_lh))
+        variance_filtered = float(np.var(filtered_reweights)) if filtered_reweights.size > 0 else float("nan")
+
+        weights = np.exp(reweight_nf_to_lh)
+        eff = float((np.sum(weights) ** 2) / np.sum(weights ** 2)) if np.sum(weights ** 2) > 0 else 0.0
+        filt_w = np.exp(filtered_reweights)
+        eff_f = float((np.sum(filt_w) ** 2) / np.sum(filt_w ** 2)) if np.sum(filt_w ** 2) > 0 else 0.0
+
+        print(f"Effective sample size (NF to LH): {eff:.1f} / {len(reweight_nf_to_lh)}", flush=True)
+        print(f"Effective sample size (NF to LH, filtered): {eff_f:.1f} / {int(outlier_mask.sum())}", flush=True)
+
+        fig = plt.figure(figsize=(6, 4))
+        plt.hist(reweight_nf_to_lh, bins=100, histtype="step", alpha=1.0, label="reweight_nf_to_lh")
+        plt.hist(np.asarray(logq_nf).reshape(-1), bins=100, histtype="step", alpha=0.7, label="logq_nf (shifted)")
+        plt.hist(lh_values, bins=100, histtype="step", alpha=0.7, label="lh_values (shifted)")
+        plt.xlabel("Reweighting factor (logq_NF - logp_LH)")
+        plt.ylabel("Entries")
+        plt.title("Reweighting factors from NF to LH")
+        plt.grid(True, alpha=0.3)
+        plt.legend(fontsize=8)
+        out_path = out_dir / "LogWeights_NF_to_LH.png"
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=150)
+        plt.close(fig)
+
+        print(
+            f"Reweighting stats: var={variance_reweight:.6g}, var(filtered 0.001-0.999)={variance_filtered:.6g}",
+            flush=True,
+        )
+        print(f"Reweighting done in {time.time() - t_rw:.1f}s", flush=True)
+
+    # -------------------------
+    # Report
+    # -------------------------
     with open(out_dir / "report.txt", "w") as f:
         f.write(f"pwd: {os.getcwd()}\n")
         f.write(f"training_folder: {training_folder}\n")
         f.write(f"checkpoint: {str(ckpt_path)}\n")
-        f.write(f"run_without_mcmc: {run_without_mcmc}\n")
-        f.write(f"mcmc_root: {mcmc_root}\n")
-        if not run_without_mcmc:
+        f.write(f"do_plot_mcmc: {do_plot_mcmc}\n")
+        if do_plot_mcmc:
+            f.write(f"mcmc_root: {mcmc_root}\n")
             f.write(f"mcmc_base_dir: {base_dir}\n")
             f.write(f"mcmc_meta: {meta}\n")
-        f.write(f"nf_samples: {samples_nf.shape}\n")
-        if not run_without_mcmc:
             f.write(f"mcmc_raw: {mcmc_pts_raw.shape}\n")
             f.write(f"mcmc_post: {mcmc_post.shape}\n")
             f.write(f"burnin_frac: {mcmc_burnin_frac}\n")
             f.write(f"thin: {mcmc_thin}\n")
-            f.write("matching_mode: index_order_only\n")
-            f.write(f"compared_dims: {d}\n")
-        else:
-            f.write(f"plotted_dims: {d}\n")
+        f.write(f"nf_samples: {samples_nf.shape}\n")
+        f.write(f"matching_mode: index_order_only\n")
+        f.write(f"compared_dims: {d}\n")
+        f.write(f"do_reweight_nf: {do_reweight_nf}\n")
+        if do_reweight_nf:
+            f.write(f"reweight_num_workers: {reweight_num_workers}\n")
+            f.write(f"reweight_outlier_keep: {int(outlier_mask.sum())}/{len(outlier_mask)}\n")
         for i in range(d):
             f.write(f"  {i:03d} {labels[i]}\n")
 
+    # -------------------------
+    # Marginals
+    # -------------------------
     bins_n = int(cfg.bins)
     if run_without_mcmc:
         print(f"Plotting {d} NF-only parameter marginals.", flush=True)
@@ -570,14 +792,48 @@ def main(cfg: DictConfig) -> None:
         x_n = samples_nf_c[:, k]
         mu = float(mu_vec[k])
         sig = float(sig_vec[k])
-        edges = common_edges
-        xgrid = common_xgrid
+
+        if do_plot_mcmc:
+            x_m = samples_mcmc_c[:, k]
+            xmin = float(min(np.min(x_m), np.min(x_n), mu))
+            xmax = float(max(np.max(x_m), np.max(x_n), mu))
+        else:
+            xmin = float(min(np.min(x_n), mu))
+            xmax = float(max(np.max(x_n), mu))
+
+        if np.isfinite(sig) and sig > 0:
+            xmin = min(xmin, mu - 5.0 * sig)
+            xmax = max(xmax, mu + 5.0 * sig)
+
+        if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax <= xmin:
+            xmin, xmax = 0.0, 1.0
+
+        span = xmax - xmin
+        xmin -= 0.02 * span
+        xmax += 0.02 * span
+
+        edges = np.linspace(xmin, xmax, bins_n + 1)
+        xgrid = np.linspace(xmin, xmax, 400)
 
         fig = plt.figure(figsize=(6, 4))
-        if samples_mcmc_c is not None:
-            x_m = samples_mcmc_c[:, k]
+
+        if do_plot_mcmc:
             plt.hist(x_m, bins=edges, histtype="step", density=True, label=f"MCMC (n={len(x_m)})")
+
         plt.hist(x_n, bins=edges, histtype="step", density=True, label=f"NF (n={len(x_n)})")
+
+        if do_reweight_nf:
+            nf_filtered = x_n[outlier_mask] if outlier_mask is not None else x_n
+            w = np.exp(reweight_nf_to_lh[outlier_mask]) if (outlier_mask is not None) else np.exp(reweight_nf_to_lh)
+            plt.hist(
+                nf_filtered,
+                bins=edges,
+                weights=w,
+                histtype="step",
+                density=True,
+                label="NF (reweighted)",
+                alpha=0.8,
+            )
 
         pdf = gaussian_pdf(xgrid, mu, sig)
         if pdf.max() > 0:
@@ -599,22 +855,22 @@ def main(cfg: DictConfig) -> None:
         if (k + 1) % 10 == 0 or (k + 1) == d:
             print(f"  Plotted {k+1}/{d}", flush=True)
 
-    corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
-    dims_cfg = getattr(cfg, "corr2d_dims", None)
+    if do_plot_mcmc:
+        corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
+        dims_cfg = getattr(cfg, "corr2d_dims", None)
 
-    if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and dims_cfg.strip() == ""):
-        dims = list(range(max(0, d - 5), d))
-    else:
-        dims = parse_dim_list(dims_cfg, d)
+        if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and dims_cfg.strip() == ""):
+            dims = list(range(max(0, d - 6), d))
+        else:
+            dims = parse_dim_list(dims_cfg, d)
 
-    if len(dims) >= 2:
-        print(f"Plotting 2D correlations for dims: {dims}", flush=True)
-        for i in range(len(dims)):
-            for j in range(i + 1, len(dims)):
-                a = dims[i]
-                b = dims[j]
-                outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
-                if samples_mcmc_c is not None:
+        if len(dims) >= 2:
+            print(f"Plotting 2D correlations for dims: {dims}", flush=True)
+            for i in range(len(dims)):
+                for j in range(i + 1, len(dims)):
+                    a = dims[i]
+                    b = dims[j]
+                    outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
                     plot_2d_hist_side_by_side(
                         samples_nf_c[:, a], samples_nf_c[:, b],
                         samples_mcmc_c[:, a], samples_mcmc_c[:, b],
@@ -622,15 +878,10 @@ def main(cfg: DictConfig) -> None:
                         outp,
                         bins=corr2d_bins
                     )
-                else:
-                    plot_2d_hist_nf_only(
-                        samples_nf_c[:, a], samples_nf_c[:, b],
-                        labels[a], labels[b],
-                        outp,
-                        bins=corr2d_bins
-                    )
+        else:
+            print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
     else:
-        print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
+        print("do_plot_mcmc=False, skipping 2D NF-vs-MCMC plots.", flush=True)
 
     print(f"Done. Outputs in: {str(out_dir)}", flush=True)
 
