@@ -25,7 +25,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
-from hydra.utils import instantiate
 
 import ROOT
 
@@ -100,6 +99,56 @@ def sample_nf_physical(model, dataset, parameter_limits: dict[str, tuple[float, 
                         samples_nf.append(phys1)
 
     return np.asarray(samples_nf[:need_total], dtype=np.float32)
+
+
+class SamplingDatasetTarget:
+    """Lightweight target for sampling-only workflows.
+
+    This mirrors the attributes used by CovFlow/SystematicFlow and the
+    eigen-to-physical transform used in this script, without loading
+    batch*.npz files from a dataset folder.
+    """
+
+    def __init__(self, phase_space_dim, mean_vec: np.ndarray, cov_mat: np.ndarray):
+        mean = torch.as_tensor(mean_vec, dtype=torch.float32).reshape(-1)
+        cov = torch.as_tensor(cov_mat, dtype=torch.float32)
+        if cov.ndim != 2 or cov.shape[0] != cov.shape[1]:
+            raise RuntimeError(f"postfit covariance must be square, got shape={tuple(cov.shape)}")
+
+        ndim = int(mean.shape[0])
+        if int(cov.shape[0]) != ndim:
+            raise RuntimeError(
+                f"postfit mean/covariance mismatch: mean has {ndim} dims, covariance is {tuple(cov.shape)}"
+            )
+
+        phase_dims = [int(i) for i in phase_space_dim]
+        phase_set = set(phase_dims)
+        if any((i < 0 or i >= ndim) for i in phase_dims):
+            raise RuntimeError(
+                f"phase_space_dim has out-of-range indices for ndim={ndim}: {phase_dims}"
+            )
+
+        self.phase_space_dim = phase_dims
+        self.list_dim_conditionnal = [i for i in range(ndim) if i not in phase_set]
+
+        std = torch.sqrt(torch.clamp(torch.diag(cov), min=1e-12))
+        dinv = torch.diag(1.0 / std)
+        cov_std = dinv @ cov @ dinv
+        chol_std = torch.linalg.cholesky(cov_std + 1e-6 * torch.eye(ndim, dtype=cov.dtype))
+
+        self.mean = mean
+        self.std_per_dim = std
+        self.cholesky = chol_std
+
+    def transform_eigen_space_to_data_space(self, x: torch.Tensor) -> torch.Tensor:
+        std = self.std_per_dim.to(device=x.device, dtype=x.dtype)
+        mean = self.mean.to(device=x.device, dtype=x.dtype)
+        return x * std + mean
+
+
+def build_sampling_dataset_target(cfg: DictConfig, mean_vec: np.ndarray, cov_mat: np.ndarray) -> SamplingDatasetTarget:
+    phase_space_dim = list(cfg.experiment.dataset.phase_space_dim)
+    return SamplingDatasetTarget(phase_space_dim, mean_vec, cov_mat)
 
 
 def walk_dirs(tfile: ROOT.TFile) -> list[str]:
@@ -297,14 +346,44 @@ def plot_2d_hist_side_by_side(x_nf: np.ndarray, y_nf: np.ndarray, x_mc: np.ndarr
     plt.close(fig)
 
 
-@hydra.main(config_path="../../configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
+def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel: str, outpath: Path, bins: int = 60) -> None:
+    xmin = float(np.min(x_nf))
+    xmax = float(np.max(x_nf))
+    ymin = float(np.min(y_nf))
+    ymax = float(np.max(y_nf))
+
+    if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax <= xmin:
+        xmin, xmax = 0.0, 1.0
+    if not np.isfinite(ymin) or not np.isfinite(ymax) or ymax <= ymin:
+        ymin, ymax = 0.0, 1.0
+
+    fig = plt.figure(figsize=(6, 5))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.hist2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    ax.set_title("NF")
+    ax.set_xlabel(_short(xlabel, 45))
+    ax.set_ylabel(_short(ylabel, 45))
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+@hydra.main(config_path="/workspace/work/GuNFlows/configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
-    mcmc_root = _abspath(str(cfg.mcmc_chain))
+    run_without_mcmc = bool(getattr(cfg, "run_without_mcmc", False))
+    mcmc_chain_cfg = getattr(cfg, "mcmc_chain", None)
+    mcmc_root = None
+    if mcmc_chain_cfg is not None and str(mcmc_chain_cfg).strip() != "":
+        mcmc_root = _abspath(str(mcmc_chain_cfg))
+    if not run_without_mcmc and mcmc_root is None:
+        raise RuntimeError("mcmc_chain must be provided when run_without_mcmc is false.")
     save_dir = _abspath(str(cfg.save_dir))
 
     print(f"PWD (hydra chdir): {os.getcwd()}", flush=True)
     print(f"training_folder: {training_folder}", flush=True)
+    print(f"run_without_mcmc: {run_without_mcmc}", flush=True)
     print(f"mcmc_chain: {mcmc_root}", flush=True)
     print(f"save_dir: {save_dir}", flush=True)
 
@@ -362,7 +441,7 @@ def main(cfg: DictConfig) -> None:
     bestfit_parameter_values = np.asarray(likelihood_sampler.postfit_parameter_values, dtype=np.float64).reshape(-1)
     postfit_covariance = np.asarray(likelihood_sampler.postfit_covariance_matrix, dtype=np.float64)
 
-    dataset = instantiate(cfg.experiment.dataset)
+    dataset = build_sampling_dataset_target(cfg, bestfit_parameter_values, postfit_covariance)
     dim_spline = len(dataset.phase_space_dim)
 
     base = build_base(cfg.experiment.model.total_dim)
@@ -398,27 +477,38 @@ def main(cfg: DictConfig) -> None:
     samples_nf = sample_nf_physical(model, dataset, parameter_limits, num_samples, batch_size)
     print(f"NF sampling done: {samples_nf.shape} in {time.time()-t0:.1f}s", flush=True)
 
-    print(f"Loading ToyNDFit MCMC from: {mcmc_root}", flush=True)
     mcmc_max_steps = cfg.mcmc_max_steps if cfg.mcmc_max_steps is not None else None
     mcmc_burnin_frac = float(cfg.mcmc_burnin_frac)
     mcmc_thin = int(cfg.mcmc_thin)
 
-    base_dir, mcmc_names, mcmc_pts_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
-    mcmc_post, burn = apply_burnin_thin(mcmc_pts_raw, mcmc_burnin_frac, mcmc_thin)
-    print(f"MCMC loaded: raw {mcmc_pts_raw.shape} -> post {mcmc_post.shape} (burn={burn}, thin={mcmc_thin})", flush=True)
-    print(f"MCMC base_dir: {base_dir}  meta: {meta}", flush=True)
+    base_dir = None
+    mcmc_pts_raw = None
+    mcmc_post = None
+    meta = {}
+    burn = 0
+    if run_without_mcmc:
+        print("Skipping MCMC loading (run_without_mcmc=true).", flush=True)
+    else:
+        print(f"Loading ToyNDFit MCMC from: {mcmc_root}", flush=True)
+        base_dir, _, mcmc_pts_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
+        mcmc_post, burn = apply_burnin_thin(mcmc_pts_raw, mcmc_burnin_frac, mcmc_thin)
+        print(f"MCMC loaded: raw {mcmc_pts_raw.shape} -> post {mcmc_post.shape} (burn={burn}, thin={mcmc_thin})", flush=True)
+        print(f"MCMC base_dir: {base_dir}  meta: {meta}", flush=True)
 
     d_nf = int(samples_nf.shape[1])
-    d_mcmc = int(mcmc_post.shape[1])
     d_fit = int(bestfit_parameter_values.shape[0])
     d_cov = int(postfit_covariance.shape[0])
     d_names = len(nf_param_names_short)
-    d = min(d_nf, d_mcmc, d_fit, d_cov, d_names)
+    if run_without_mcmc:
+        d = min(d_nf, d_fit, d_cov, d_names)
+    else:
+        d_mcmc = int(mcmc_post.shape[1])
+        d = min(d_nf, d_mcmc, d_fit, d_cov, d_names)
     if d == 0:
-        raise RuntimeError("Cannot compare: zero dimension after resolving NF/MCMC/postfit shapes.")
+        raise RuntimeError("Cannot plot: zero dimension after resolving available NF/MCMC/postfit shapes.")
 
     samples_nf_c = samples_nf[:, :d]
-    samples_mcmc_c = mcmc_post[:, :d]
+    samples_mcmc_c = mcmc_post[:, :d] if mcmc_post is not None else None
     mu_vec = bestfit_parameter_values[:d]
     cov_mat = postfit_covariance[:d, :d]
     sig_vec = np.sqrt(np.clip(np.diag(cov_mat), 0.0, np.inf))
@@ -428,49 +518,65 @@ def main(cfg: DictConfig) -> None:
         f.write(f"pwd: {os.getcwd()}\n")
         f.write(f"training_folder: {training_folder}\n")
         f.write(f"checkpoint: {str(ckpt_path)}\n")
+        f.write(f"run_without_mcmc: {run_without_mcmc}\n")
         f.write(f"mcmc_root: {mcmc_root}\n")
-        f.write(f"mcmc_base_dir: {base_dir}\n")
-        f.write(f"mcmc_meta: {meta}\n")
+        if not run_without_mcmc:
+            f.write(f"mcmc_base_dir: {base_dir}\n")
+            f.write(f"mcmc_meta: {meta}\n")
         f.write(f"nf_samples: {samples_nf.shape}\n")
-        f.write(f"mcmc_raw: {mcmc_pts_raw.shape}\n")
-        f.write(f"mcmc_post: {mcmc_post.shape}\n")
-        f.write(f"burnin_frac: {mcmc_burnin_frac}\n")
-        f.write(f"thin: {mcmc_thin}\n")
-        f.write(f"matching_mode: index_order_only\n")
-        f.write(f"compared_dims: {d}\n")
+        if not run_without_mcmc:
+            f.write(f"mcmc_raw: {mcmc_pts_raw.shape}\n")
+            f.write(f"mcmc_post: {mcmc_post.shape}\n")
+            f.write(f"burnin_frac: {mcmc_burnin_frac}\n")
+            f.write(f"thin: {mcmc_thin}\n")
+            f.write("matching_mode: index_order_only\n")
+            f.write(f"compared_dims: {d}\n")
+        else:
+            f.write(f"plotted_dims: {d}\n")
         for i in range(d):
             f.write(f"  {i:03d} {labels[i]}\n")
 
     bins_n = int(cfg.bins)
-    print(f"Comparing {d} parameters.", flush=True)
+    if run_without_mcmc:
+        print(f"Plotting {d} NF-only parameter marginals.", flush=True)
+    else:
+        print(f"Comparing {d} parameters.", flush=True)
     print("Plotting marginals sequentially.", flush=True)
+
+    global_xmin = float(np.min(samples_nf_c))
+    global_xmax = float(np.max(samples_nf_c))
+    if samples_mcmc_c is not None:
+        global_xmin = float(min(global_xmin, np.min(samples_mcmc_c)))
+        global_xmax = float(max(global_xmax, np.max(samples_mcmc_c)))
+    if np.isfinite(mu_vec).all():
+        global_xmin = float(min(global_xmin, np.min(mu_vec)))
+        global_xmax = float(max(global_xmax, np.max(mu_vec)))
+    finite_sig_mask = np.isfinite(sig_vec) & (sig_vec > 0)
+    if finite_sig_mask.any():
+        global_xmin = float(min(global_xmin, np.min(mu_vec[finite_sig_mask] - 5.0 * sig_vec[finite_sig_mask])))
+        global_xmax = float(max(global_xmax, np.max(mu_vec[finite_sig_mask] + 5.0 * sig_vec[finite_sig_mask])))
+
+    if not np.isfinite(global_xmin) or not np.isfinite(global_xmax) or global_xmax <= global_xmin:
+        global_xmin, global_xmax = 0.0, 1.0
+
+    global_span = global_xmax - global_xmin
+    global_xmin -= 0.02 * global_span
+    global_xmax += 0.02 * global_span
+    common_edges = np.linspace(global_xmin, global_xmax, bins_n + 1)
+    common_xgrid = np.linspace(global_xmin, global_xmax, 400)
 
     for k in range(d):
         name = labels[k]
-        x_m = samples_mcmc_c[:, k]
         x_n = samples_nf_c[:, k]
         mu = float(mu_vec[k])
         sig = float(sig_vec[k])
-
-        xmin = float(min(np.min(x_m), np.min(x_n), mu))
-        xmax = float(max(np.max(x_m), np.max(x_n), mu))
-        if np.isfinite(sig) and sig > 0:
-            xmin = min(xmin, mu - 5.0 * sig)
-            xmax = max(xmax, mu + 5.0 * sig)
-
-        if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax <= xmin:
-            xmin, xmax = 0.0, 1.0
-
-        span = xmax - xmin
-        xmin -= 0.02 * span
-        xmax += 0.02 * span
-
-        edges = np.linspace(xmin, xmax, bins_n + 1)
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        xgrid = np.linspace(xmin, xmax, 400)
+        edges = common_edges
+        xgrid = common_xgrid
 
         fig = plt.figure(figsize=(6, 4))
-        plt.hist(x_m, bins=edges, histtype="step", density=True, label=f"MCMC (n={len(x_m)})")
+        if samples_mcmc_c is not None:
+            x_m = samples_mcmc_c[:, k]
+            plt.hist(x_m, bins=edges, histtype="step", density=True, label=f"MCMC (n={len(x_m)})")
         plt.hist(x_n, bins=edges, histtype="step", density=True, label=f"NF (n={len(x_n)})")
 
         pdf = gaussian_pdf(xgrid, mu, sig)
@@ -508,13 +614,21 @@ def main(cfg: DictConfig) -> None:
                 a = dims[i]
                 b = dims[j]
                 outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
-                plot_2d_hist_side_by_side(
-                    samples_nf_c[:, a], samples_nf_c[:, b],
-                    samples_mcmc_c[:, a], samples_mcmc_c[:, b],
-                    labels[a], labels[b],
-                    outp,
-                    bins=corr2d_bins
-                )
+                if samples_mcmc_c is not None:
+                    plot_2d_hist_side_by_side(
+                        samples_nf_c[:, a], samples_nf_c[:, b],
+                        samples_mcmc_c[:, a], samples_mcmc_c[:, b],
+                        labels[a], labels[b],
+                        outp,
+                        bins=corr2d_bins
+                    )
+                else:
+                    plot_2d_hist_nf_only(
+                        samples_nf_c[:, a], samples_nf_c[:, b],
+                        labels[a], labels[b],
+                        outp,
+                        bins=corr2d_bins
+                    )
     else:
         print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
 
