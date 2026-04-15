@@ -1,9 +1,19 @@
-training_folder: /workspace/work/GuNFlows/outputs/2026-01-19/11-04-56
-mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
-save_dir: /workspace/work/GuNFlows/outputs/nf_vs_mcmc/${now:%Y-%m-%d_%H-%M-%S}
+# training_folder: /workspace/work/GuNFlows/outputs/demo_60p6_asimov/2026-01-20/17-57-28/
+# training_folder: /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/19-46-28/
+# training_folder: /workspace/work/GuNFlows/outputs/2026-03-30/16-10-28/
 
-num_samples: 4000
-batch_size: 4096
+# mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+
+training_folder: /home/shares/sanchezf/gundam_n_flow/trained_models/NF_100p10_Toy50_tailbound_5/05-07-51/
+mcmc_chain: /home/shares/sanchezf/gundam_n_flow/trained_models/MCMC_100p10_Toy50.root
+
+run_without_mcmc: false
+
+# save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
+save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Toy50
+
+num_samples: 80
+batch_size: 80
 bins: 200
 plot_workers: 0
 

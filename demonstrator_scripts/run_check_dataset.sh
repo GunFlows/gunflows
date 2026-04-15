@@ -26,6 +26,6 @@ IN_CONTAINER_SETUP="${IN_CONTAINER_WORKDIR}/demonstrator_scripts/setup.sh"
 
 srun --ntasks=1 apptainer exec ${APPTAINER_OPTIONS} ${IMAGE_PATH} bash -lc "source '${IN_CONTAINER_SETUP}' && \
                      HYDRA_FULL_ERROR=1 python3 -m gunflows.check_initial_dataset \
-                     -f /workspace/config/datasets_sb_configToyOA_100plus0_Asimov/batch.npz \
-                     -o /workspace/config/datasets_sb_configToyOA_100plus0_Asimov/check_plots_batch" 
+                     -f /workspace/config/datasets_sb_configToyOA_100plus10_Asimov/batch.npz \
+                     -o /workspace/config/datasets_sb_configToyOA_100plus10_Asimov/check_plots_batch" 
               
