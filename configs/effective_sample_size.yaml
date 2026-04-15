@@ -1,0 +1,25 @@
+training_folder: /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/17-01-39
+save_dir:        /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/17-01-39/ess
+run_without_mcmc: true
+mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+
+num_samples: 100000
+batch_size: 10000
+bins: 200
+plot_workers: 0
+llh_workers: 16 # if 0, do not use multiprocessing for llh computation
+
+verbose: 0
+
+#3: print also NLL status every 40 iterations
+
+select_regex: ""
+
+device: cuda
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true

@@ -68,12 +68,13 @@ def convert_to_eigenspace(x, mean, cov):
 
 
 
+
 def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
 
     # shift for visualization
     A = np.mean(log_p - bestfit_nll)
     B = np.mean(log_q)
-    log_p = log_p + (B-A)
+    print(f"mean of log_p - bestfit_nll: {A:.2f}, mean of log_q: {B:.2f}, bestfit_nll: {bestfit_nll:.2f}")
 
     plt.figure(figsize=(8, 6))
     plt.hist(log_p[log_p<5000] , alpha=0.7, density=True,
@@ -81,8 +82,18 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     plt.xlabel('NLL')
     plt.ylabel('Density')
     plt.title('NLL Distribution')
+    mu, std = np.mean(log_p), np.std(log_p)
+    if std == 0:
+        std = 1e-6  # avoid division by zero in case of constant values
+    # write mu and std on the canvas
+    plt.axvline(mu, color='red', linestyle='--', label=f'Mean: {mu:.2f}')
+    plt.axvline(mu + std, color='green', linestyle='--', label=f'Std: {std:.2f}')
+    plt.axvline(mu - std, color='green', linestyle='--')
+    plt.legend()
     plt.savefig(out_dir+'/NLL_distribution.png', dpi=100, bbox_inches='tight')
     plt.close()
+    log_p = log_p + (B-A)
+
 
     plt.hist(log_q, alpha=0.7, density=True,
              color='orange', bins=100,  label='-log q')
@@ -93,7 +104,7 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     x = np.linspace(mu - 4*std, mu + 4*std, 1000)
     p = (1 / (std * np.sqrt(2 * np.pi))) * np.exp(-0.5 * ((x - mu) / std) ** 2)
     plt.plot(x, p, color='red', linewidth=2, label='Gaussian Fit')
-    plt.plot([], [], ' ', label='$\mu$ = {:.2f}, $\sigma$ = {:.2f}'.format(mu, std))
+    plt.plot([], [], ' ', label='$\\mu$ = {:.2f}, $\\sigma$ = {:.2f}'.format(mu, std))
     plt.legend()
     plt.xlabel('NLL')
     plt.ylabel('Density')
@@ -121,15 +132,37 @@ def draw_logp_logq(log_p, log_q, bestfit_nll, out_dir):
     plt.close()
     # NLL and gNLL overlaid
     plt.figure(figsize=(8, 6))
-    plt.hist(log_q, alpha=0.7, density=True,
-             color='lightblue', bins=100,  label='-log q')
-    plt.hist(log_p - bestfit_nll, alpha=0.7, density=True,
-             color='orange', bins=100, label='-log p - bestfit_nll')
+    # Compute common bins for equal bin width when overlaying the two histograms
+    arr_q = np.asarray(log_q)
+    arr_p = np.asarray(log_p - bestfit_nll)
+    # filter non-finite values
+    arr_q = arr_q[np.isfinite(arr_q)]
+    arr_p = arr_p[np.isfinite(arr_p)]
+    # fall back if one of the arrays is empty
+    if arr_q.size == 0 and arr_p.size == 0:
+        common_bins = 100
+    else:
+        combined_min = np.min(arr_q) if arr_q.size > 0 else np.min(arr_p)
+        combined_max = np.max(arr_q) if arr_q.size > 0 else np.max(arr_p)
+        if arr_p.size > 0:
+            combined_min = min(combined_min, np.min(arr_p))
+            combined_max = max(combined_max, np.max(arr_p))
+        # if range is zero (constant values), expand a bit
+        if combined_max == combined_min:
+            combined_min -= 0.5
+            combined_max += 0.5
+        n_bins = 100
+        common_bins = np.linspace(combined_min, combined_max, n_bins + 1)
+
+    plt.hist(arr_q, bins=common_bins, alpha=0.7, density=True,
+             color='lightblue', label='-log q')
+    plt.hist(arr_p, bins=common_bins, alpha=0.5, density=True,
+             color='orange', label=f'-log p - bestfit_nll (shifted by {B-A:.1f})')
     plt.xlabel('NLL')
     plt.ylabel('Density')
     plt.title('NLL and gNLL Distribution')
     # overlay line at best fit NLL
-    plt.axvline(bestfit_nll, color='red', linestyle='--', label='Best Fit NLL')
+    # plt.axvline(bestfit_nll, color='red', linestyle='--', label='Best Fit NLL')
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     # save the plot

@@ -1,0 +1,14 @@
+# Streaming training: covariance first, then NF-refresh each stage
+defaults:
+  - /dataset: systematic_dataset_100plus10_asimov
+  - /sampler: llhsampler
+  - /model: model_demonstrator_100plus10.yaml
+  - /optim: adam
+  - /scheduler: exponential
+  - /trainer: oa2022_pygundam
+  - _self_
+
+seed: 42
+
+paths:
+  checkpoints_dir: ${hydra:runtime.output_dir}/checkpoints

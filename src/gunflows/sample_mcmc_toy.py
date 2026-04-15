@@ -25,7 +25,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
-from hydra.utils import instantiate
 
 import ROOT
 
@@ -181,6 +180,54 @@ def _compute_single_reweight(args):
         nf_vector, extend_continue=False
     )
     return it, -float(logq) - float(logp), -float(logp), float(logq), float(logp)
+class SamplingDatasetTarget:
+    """Lightweight target for sampling-only workflows.
+
+    This mirrors the attributes used by CovFlow/SystematicFlow and the
+    eigen-to-physical transform used in this script, without loading
+    batch*.npz files from a dataset folder.
+    """
+
+    def __init__(self, phase_space_dim, mean_vec: np.ndarray, cov_mat: np.ndarray):
+        mean = torch.as_tensor(mean_vec, dtype=torch.float32).reshape(-1)
+        cov = torch.as_tensor(cov_mat, dtype=torch.float32)
+        if cov.ndim != 2 or cov.shape[0] != cov.shape[1]:
+            raise RuntimeError(f"postfit covariance must be square, got shape={tuple(cov.shape)}")
+
+        ndim = int(mean.shape[0])
+        if int(cov.shape[0]) != ndim:
+            raise RuntimeError(
+                f"postfit mean/covariance mismatch: mean has {ndim} dims, covariance is {tuple(cov.shape)}"
+            )
+
+        phase_dims = [int(i) for i in phase_space_dim]
+        phase_set = set(phase_dims)
+        if any((i < 0 or i >= ndim) for i in phase_dims):
+            raise RuntimeError(
+                f"phase_space_dim has out-of-range indices for ndim={ndim}: {phase_dims}"
+            )
+
+        self.phase_space_dim = phase_dims
+        self.list_dim_conditionnal = [i for i in range(ndim) if i not in phase_set]
+
+        std = torch.sqrt(torch.clamp(torch.diag(cov), min=1e-12))
+        dinv = torch.diag(1.0 / std)
+        cov_std = dinv @ cov @ dinv
+        chol_std = torch.linalg.cholesky(cov_std + 1e-6 * torch.eye(ndim, dtype=cov.dtype))
+
+        self.mean = mean
+        self.std_per_dim = std
+        self.cholesky = chol_std
+
+    def transform_eigen_space_to_data_space(self, x: torch.Tensor) -> torch.Tensor:
+        std = self.std_per_dim.to(device=x.device, dtype=x.dtype)
+        mean = self.mean.to(device=x.device, dtype=x.dtype)
+        return x * std + mean
+
+
+def build_sampling_dataset_target(cfg: DictConfig, mean_vec: np.ndarray, cov_mat: np.ndarray) -> SamplingDatasetTarget:
+    phase_space_dim = list(cfg.experiment.dataset.phase_space_dim)
+    return SamplingDatasetTarget(phase_space_dim, mean_vec, cov_mat)
 
 
 def walk_dirs(tfile: ROOT.TFile) -> list[str]:
@@ -386,7 +433,30 @@ def plot_2d_hist_side_by_side(
     plt.close(fig)
 
 
-@hydra.main(config_path="../../configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
+def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel: str, outpath: Path, bins: int = 60) -> None:
+    xmin = float(np.min(x_nf))
+    xmax = float(np.max(x_nf))
+    ymin = float(np.min(y_nf))
+    ymax = float(np.max(y_nf))
+
+    if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax <= xmin:
+        xmin, xmax = 0.0, 1.0
+    if not np.isfinite(ymin) or not np.isfinite(ymax) or ymax <= ymin:
+        ymin, ymax = 0.0, 1.0
+
+    fig = plt.figure(figsize=(6, 5))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.hist2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    ax.set_title("NF")
+    ax.set_xlabel(_short(xlabel, 45))
+    ax.set_ylabel(_short(ylabel, 45))
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+@hydra.main(config_path="/workspace/work/GuNFlows/configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
     save_dir = _abspath(str(cfg.save_dir))
@@ -466,7 +536,7 @@ def main(cfg: DictConfig) -> None:
     bestfit_parameter_values = np.asarray(likelihood_sampler.postfit_parameter_values, dtype=np.float64).reshape(-1)
     postfit_covariance = np.asarray(likelihood_sampler.postfit_covariance_matrix, dtype=np.float64)
 
-    dataset = instantiate(cfg.experiment.dataset)
+    dataset = build_sampling_dataset_target(cfg, bestfit_parameter_values, postfit_covariance)
     dim_spline = len(dataset.phase_space_dim)
 
     base = build_base(cfg.experiment.model.total_dim)
@@ -689,8 +759,33 @@ def main(cfg: DictConfig) -> None:
     # Marginals
     # -------------------------
     bins_n = int(cfg.bins)
-    print(f"Comparing {d} parameters.", flush=True)
+    if run_without_mcmc:
+        print(f"Plotting {d} NF-only parameter marginals.", flush=True)
+    else:
+        print(f"Comparing {d} parameters.", flush=True)
     print("Plotting marginals sequentially.", flush=True)
+
+    global_xmin = float(np.min(samples_nf_c))
+    global_xmax = float(np.max(samples_nf_c))
+    if samples_mcmc_c is not None:
+        global_xmin = float(min(global_xmin, np.min(samples_mcmc_c)))
+        global_xmax = float(max(global_xmax, np.max(samples_mcmc_c)))
+    if np.isfinite(mu_vec).all():
+        global_xmin = float(min(global_xmin, np.min(mu_vec)))
+        global_xmax = float(max(global_xmax, np.max(mu_vec)))
+    finite_sig_mask = np.isfinite(sig_vec) & (sig_vec > 0)
+    if finite_sig_mask.any():
+        global_xmin = float(min(global_xmin, np.min(mu_vec[finite_sig_mask] - 5.0 * sig_vec[finite_sig_mask])))
+        global_xmax = float(max(global_xmax, np.max(mu_vec[finite_sig_mask] + 5.0 * sig_vec[finite_sig_mask])))
+
+    if not np.isfinite(global_xmin) or not np.isfinite(global_xmax) or global_xmax <= global_xmin:
+        global_xmin, global_xmax = 0.0, 1.0
+
+    global_span = global_xmax - global_xmin
+    global_xmin -= 0.02 * global_span
+    global_xmax += 0.02 * global_span
+    common_edges = np.linspace(global_xmin, global_xmax, bins_n + 1)
+    common_xgrid = np.linspace(global_xmin, global_xmax, 400)
 
     for k in range(d):
         name = labels[k]

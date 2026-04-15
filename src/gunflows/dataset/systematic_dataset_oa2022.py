@@ -40,7 +40,7 @@ __all__ = ["SystematicDatasetOA2022"]
 def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims=None, stage=0):
     n_total = samples.shape[1]
     n = min(int(n), n_total)
-
+    
     if weights is None or not np.all(np.isfinite(weights)):
         weights = np.ones(samples.shape[0])
     w = weights / np.clip(np.sum(weights), 1e-12, None)
@@ -116,7 +116,7 @@ class SystematicDatasetOA2022(Dataset):
         out_dir="plots",
         timeout=6000.0,
         data_dir=None,
-        threads=6,
+        threads=10,
         num_samplers=1,
         data_is_asimov=True,
         model_cfg=None,
