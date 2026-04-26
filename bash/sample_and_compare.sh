@@ -17,9 +17,12 @@ module load apptainer 2>/dev/null || true
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
-HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos"
-HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
+# HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos" # belong to OA config
+# HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud" # belong to OA config
+# HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
+HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"
@@ -40,6 +43,9 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.sample_mcmc ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.sample_mcmc_toy \
+                     --config-path ${IN_CONTAINER_WORKDIR}/configs \
+                     --config-name sample_mcmc_nf_toyOA \
+                     ${EXTRA_ARGS}"
 
 echo "Job ended at $(date)"

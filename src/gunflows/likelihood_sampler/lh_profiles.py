@@ -142,4 +142,7 @@ for i, parameter_name in enumerate(parameter_names):
     elif "Cross-Section" in parameter_name:
         plt.savefig(os.path.join(output_folder, "xsec", f'{stripped_parameter_name}.png'))
         print(f" -> {output_folder}/xsec/{stripped_parameter_name}.png")
+    else:
+        plt.savefig(os.path.join(output_folder, f'{stripped_parameter_name}.png'))
+        print(f" -> {output_folder}/{stripped_parameter_name}.png")
     plt.close()
