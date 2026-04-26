@@ -77,6 +77,19 @@ prefit_cov = likelihood_sampler.prefit_covariance_matrix
 log_det = np.linalg.slogdet(prefit_cov)[1]  # log determinant of the prefit covariance matrix
 print(f"Log determinant of the prefit covariance matrix: {log_det}")
 
+
+# print("Best-fit parameter values:")
+# for name, value in zip(parameter_names, bestfit_parameter_values):
+#     print(f"  {name}: {value:.4f}")
+# # print out covariance matrix
+# print("Postfit covariance matrix:")
+# for i in range(len(parameter_names)):
+#     row = ""
+#     for j in range(len(parameter_names)):
+#         row += f"{postfit_covariance[i][j]:.2e} "
+#     print(row)
+
+
 n = int(args.n)
 b = int(args.b) if args.b else n
 if b > n:
@@ -121,13 +134,13 @@ while len(throws) < n:
     for i, throw in enumerate(throws_batch):
         i_global = len(throws) + i
         # print(f"first throw: {pygundam_utils.big_vector_summary(throw, 10)}")
-        tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False)
+        tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(throw, extend_continue=False, verbose=0)
         NLL = penalty_NLL + stat_NLL
         while tot == -1:
             # I need to re-throw and replace the throw in the batch
             rethrow = np.random.multivariate_normal(mean=bestfit_parameter_values, cov=postfit_covariance)
-            # print(f"re-throw: {pygundam_utils.big_vector_summary(rethrow, 10)}")
-            tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False)
+            print(f"re-throw: {pygundam_utils.big_vector_summary(rethrow, 10)}")
+            tot, stat_NLL, penalty_NLL = likelihood_sampler.inject_params_and_compute_likelihood(rethrow, extend_continue=False, verbose=0)
             NLL = penalty_NLL + stat_NLL
 
             throw = rethrow
