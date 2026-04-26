@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=gunflows-train-toy
-#SBATCH --partition=private-dpnc-gpu,shared-gpu
+#SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=240G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --time=12:00:00
+#SBATCH --time=168:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
@@ -18,8 +18,8 @@ module load apptainer 2>/dev/null || true
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
-HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev/DATA"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2/"
+HOST_DATA="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2/DATA"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"
@@ -41,4 +41,4 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=toyOA_60p6_asimov ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.train experiment=toyOA_100p10_asimov ${EXTRA_ARGS}"
