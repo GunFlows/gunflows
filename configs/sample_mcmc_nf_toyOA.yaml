@@ -1,15 +1,19 @@
-training_folder: /workspace/work/GuNFlows/outputs/2026-01-19/11-04-56
-mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+training_folder: /workspace/work/GuNFlows/outputs/2026-04-04/07-07-37
+mcmc_chain: /workspace/config/output/asimov_mcmc_toyfit_100p10_7340254.root
 save_dir: /workspace/work/GuNFlows/outputs/nf_vs_mcmc/${now:%Y-%m-%d_%H-%M-%S}
 
-num_samples: 400000
+num_samples: 20000
 batch_size: 4096
 bins: 200
 plot_workers: 0
+do_reweight_nf: true
+do_plot_mcmc: true
 
 mcmc_burnin_frac: 0.2
-mcmc_thin: 1
+mcmc_thin: 200
 mcmc_max_steps: null
+
+reweight_num_workers: 20
 
 select_regex: ""
 
