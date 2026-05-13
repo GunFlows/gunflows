@@ -318,9 +318,9 @@ class LikelihoodSampler:
         # print(f"DEBUG| tot NLL: {NLL_tot:.1f}")
 
         # # HEAVY DEBUGGING INFO
-        if (NLL_tot>700):
-            print("disclaimer: real NLL is this divided by 2.")
-            print(self.likelihood_interface.getSummary())
+        # if (NLL_tot>700):
+        #    print("disclaimer: real NLL is this divided by 2.")
+        #    print(self.likelihood_interface.getSummary())
 
         return NLL_tot, NLL_stat, NLL_syst
 

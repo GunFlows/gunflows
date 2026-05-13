@@ -1,6 +1,6 @@
-training_folder: /workspace/work/GuNFlows_M/outputs/2026-01-26/16-28-56
-save_dir:        /workspace/work/GuNFlows/outputs/2026-01-26/16-28-56/nf_vs_mcmc_ess
-
+training_folder: /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/17-01-39
+save_dir:        /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/17-01-39/ess
+run_without_mcmc: true
 mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 
 num_samples: 100000
