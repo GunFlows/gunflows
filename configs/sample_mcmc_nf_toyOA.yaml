@@ -4,22 +4,34 @@
 
 # mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 
-training_folder: /home/shares/sanchezf/gundam_n_flow/trained_models/NF_100p10_Toy50_tailbound_5/05-07-51/
-mcmc_chain: /home/shares/sanchezf/gundam_n_flow/trained_models/MCMC_100p10_Toy50.root
+training_folder: /workspace/trained_models/NF_100p10_Toy50_tailbound_5/05-07-51/
+mcmc_chain: /workspace/trained_models/MCMC_100p10_Toy50.root
 
-run_without_mcmc: false
 
 # save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
-save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Toy50
+save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10Toy50
 
-num_samples: 80
-batch_size: 80
+num_samples: 200000
+batch_size: 4098
 bins: 200
 plot_workers: 0
 
-mcmc_burnin_frac: 0.2
+do_reweight_nf: true
+do_plot_mcmc: true
+
+mcmc_burnin_frac: 0. # no need if I take only the last 200k steps
 mcmc_thin: 1
-mcmc_max_steps: null
+mcmc_max_steps: 200000
+
+reweight_num_workers: 2
+
+do_mcmc_step_lh_nf_eval: true
+mcmc_delta_lh_p_3sigma: 0.95
+ # 1 sigma: 0.682689492
+ # 2 sigma: 0.9544997361
+ # 3 sigma: 0.9973002039
+mcmc_nf_eval_batch_size: 2048
+
 
 select_regex: ""
 

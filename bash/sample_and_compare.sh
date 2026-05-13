@@ -1,14 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=sample_and_compare
-#SBATCH --partition=private-dpnc-gpu
+#SBATCH --job-name=sample_nf_mcmc_toy
+#SBATCH --partition=shared-gpu,private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=10
-#SBATCH --mem-per-cpu=4G
+#SBATCH --cpus-per-task=24
+#SBATCH --mem-per-cpu=16G
 #SBATCH --time=24:00:00
-#SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --output=logs/sample_and_compare_%j.out
-#SBATCH --error=logs/sample_and_compare_%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=COMPUTE_TYPE_AMPERE
+#SBATCH --output=logs/sample_nf_mcmc_toy_%j.out
+#SBATCH --error=logs/sample_nf_mcmc_toy_%j.err
 #SBATCH --mail-type=ALL
 
 set -euo pipefail
@@ -23,6 +24,7 @@ HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 # HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
 HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
+trained_models="/home/shares/sanchezf/gundam_n_flow/trained_models"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"
@@ -41,6 +43,7 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
   --bind "${HOST_CONFIG}:/workspace/config" \
   --bind "${HOST_DATA}:/workspace/data" \
+  --bind "${trained_models}:/workspace/trained_models" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
                      HYDRA_FULL_ERROR=1 python -s -m gunflows.sample_mcmc_toy \
