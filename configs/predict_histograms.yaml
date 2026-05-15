@@ -1,0 +1,37 @@
+# training_folder: /workspace/work/GuNFlows/outputs/demo_60p6_asimov/2026-01-20/17-57-28/
+# training_folder: /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/19-46-28/
+# training_folder: /workspace/work/GuNFlows/outputs/2026-03-30/16-10-28/
+
+# mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+
+training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
+# mcmc_chain: /workspace/trained_models/MCMC_100p10_Toy50.root
+
+# save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
+# save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10Toy50
+save_dir: ${training_folder}/predict_histograms
+
+
+num_samples: 20
+batch_size: 4098
+# plot_workers: 0
+
+# do_reweight_nf: true
+
+# mcmc_burnin_frac: 0. # no need if I take only the last 200k steps
+# mcmc_thin: 1
+# mcmc_max_steps: 200000
+
+# reweight_num_workers: 2
+
+
+# select_regex: ""
+
+device: cuda
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true

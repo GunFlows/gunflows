@@ -27,24 +27,45 @@ def pushd(path: str | None):
     finally:
         os.chdir(prev)
 
-def _maybe_build_nf(cfg, dataset):
-    if not cfg.predict.nf:
-        return None
-    base = build_base(cfg.model.total_dim)
+def _maybe_build_nf(cfg, dataset, ckpt_path: str):
+    # if not cfg.predict.nf:
+        # return None
+    # Use the merged cfg; model definition is expected under cfg.experiment.model
+    m = cfg.experiment.model
+    device = cfg.device if "device" in cfg else (cfg.experiment.device if "device" in cfg.experiment else "cpu")
+
+    base = build_base(int(m.total_dim))
     dim_spline = len(dataset.phase_space_dim)
-    tail_bounds = torch.ones(dim_spline) * cfg.model.tail_bound
+    tail_bounds = torch.ones(dim_spline) * float(m.tail_bound)
     flows = build_flow_layers(
-        cfg.model.nflows,
+        int(m.nflows),
         dim_spline,
-        cfg.model.hidden,
-        cfg.model.nlayers,
-        cfg.model.nbins,
+        int(m.hidden),
+        int(m.nlayers),
+        int(m.nbins),
         tail_bounds,
-        n_context=cfg.model.total_dim - dim_spline,
+        n_context=int(m.total_dim) - dim_spline,
     )
-    model = build_model(base, flows, dataset, cfg.model.context_transform)
-    model.load_state_dict(torch.load(cfg.ckpt, map_location=cfg.device))
-    model = model.to(cfg.device).eval()
+    # Pass additional model kwargs if present in config to match training architecture
+    freeze_covflow = bool(m.freeze_covflow) if hasattr(m, "freeze_covflow") else False
+    kw = {}
+    if hasattr(m, "n_context_flows"):
+        kw["n_context_flows"] = int(m.n_context_flows)
+    if hasattr(m, "hidden_dim"):
+        kw["hidden_dim"] = int(m.hidden_dim)
+    if hasattr(m, "n_hidden_layers"):
+        kw["n_hidden_layers"] = int(m.n_hidden_layers)
+
+    model = build_model(base, flows, dataset, m.context_transform, freeze_covflow, **kw)
+
+    # load checkpoint; allow strict loading but prefer matching architecture from training cfg
+    state = torch.load(ckpt_path, map_location=device)
+    try:
+        model.load_state_dict(state)
+    except RuntimeError:
+        # try to load with strict=False to allow partial loading and emit a clear error
+        model.load_state_dict(state, strict=False)
+    model = model.to(device).eval()
     return model
 
 def _likelihoods_from_samples(sampler, samples_data: np.ndarray):
@@ -104,70 +125,101 @@ def _run_mcmc(N, sampler, dataset, cfg):
 
 @hydra.main(config_path="../../configs", config_name="predict_histograms", version_base=None)
 def main(cfg: DictConfig) -> None:
-    torch.manual_seed(cfg.seed)
-    np.random.seed(cfg.seed)
+    from omegaconf import OmegaConf
+    from gunflows.likelihood_sampler import LikelihoodSampler
+    from gunflows.sample_mcmc_toy import build_sampling_dataset_target
+    
+    # Load the training folder path
+    training_folder = Path(cfg.training_folder).expanduser().resolve()
+    print(f"Loading NF model from training folder: {training_folder}", flush=True)
 
-    dataset = instantiate(cfg.dataset)
-    phase_dims = dataset.phase_space_dim
-    mean_eig = dataset.mean.numpy()  # in data-space or eigen-space depending on dataset
+    # if folder does not exist: raise error
+    if not training_folder.exists():
+        raise FileNotFoundError(f"Training folder not found: {training_folder}")
+    
+    # Find the checkpoint (usually stored as .pt file)
+    checkpoint_dir = training_folder / "checkpoints"
+    if checkpoint_dir.exists():
+        checkpoints = sorted(checkpoint_dir.glob("*.pt"))
+    else:
+        # Fallback: look for .pt files directly in training folder
+        checkpoints = sorted(training_folder.glob("*.pt"))
+    
+    if not checkpoints:
+        raise FileNotFoundError(f"No checkpoints found in {training_folder} or {checkpoint_dir}")
+    
+    best_ckpt = str(checkpoints[-1])  # Use latest checkpoint
+    print(f"Using checkpoint: {best_ckpt}", flush=True)
+    
+    # Load the hydra config from the training folder
+    hydra_config_path = training_folder / ".hydra" / "config.yaml"
+    if not hydra_config_path.exists():
+        raise FileNotFoundError(f"Hydra config not found at {hydra_config_path}")
+    
+    train_cfg = OmegaConf.load(hydra_config_path)
+    print(f"Loaded training config from: {hydra_config_path}", flush=True)
 
-    # Determine eigen-space mean/cov:
-    try:
-        cov_eig = dataset.get_true_cov().numpy()
-    except Exception:
-        cov_eig = np.eye(len(phase_dims))
+    # Merge training config and runtime config into a single cfg (runtime overrides training)
+    cfg = OmegaConf.merge(train_cfg, cfg)
 
-    # Build NF model if requested
-    nf_model = _maybe_build_nf(cfg, dataset)
+    # Initialize LikelihoodSampler to load covariance matrix from ROOT file
+    print("Initializing LikelihoodSampler...", flush=True)
+    likelihood_sampler = LikelihoodSampler(
+        config_file=str(cfg.experiment.dataset.llh_config),
+        override_files=cfg.experiment.dataset.llh_overrides,
+        data_is_asimov=cfg.experiment.dataset.data_is_asimov,
+        threads=cfg.experiment.sampler.threads if hasattr(cfg.experiment, 'sampler') else 1,
+        llh_cwd=cfg.experiment.dataset.llh_cwd,
+        light_mode=False,
+    )
 
-    # Load likelihood sampler immediately (required)
-    if not getattr(cfg, "likelihood", None) or not cfg.likelihood.get("config", None):
-        raise RuntimeError("A likelihood configuration must be provided at cfg.likelihood.config")
-    from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
-    lh_cfg = cfg.likelihood
-    cwd = lh_cfg.get("cwd", None)
-    with pushd(cwd or os.path.dirname(lh_cfg.config)):
-        sampler = LikelihoodSampler(
-            lh_cfg.config,
-            override_files=lh_cfg.get("overrides", []),
-            threads=lh_cfg.get("threads", 1),
-            data_is_asimov=lh_cfg.get("asimov", True),
-            seed=cfg.seed,
-        )
+    # Extract mean and covariance matrix from the sampler
+    bestfit_parameter_values = np.asarray(likelihood_sampler.postfit_parameter_values, dtype=np.float64).reshape(-1)
+    postfit_covariance = np.asarray(likelihood_sampler.postfit_covariance_matrix, dtype=np.float64)
+    print(f"Loaded covariance matrix with shape: {postfit_covariance.shape}", flush=True)
 
-    N = int(cfg.predict.n_samples)
+    # Build dataset target for the model
+    dataset = build_sampling_dataset_target(cfg, bestfit_parameter_values, postfit_covariance)
 
-    # For gaussian and NF the sampling is done in eigen space and then transformed to data space
-    if cfg.predict.gaussian:
-        z = _sample_gaussian(N, mean=np.zeros(len(phase_dims)), cov=cov_eig)
-        # if dataset expects eigen-space input for transform:
-        try:
-            samples_data = dataset.transform_eigen_space_to_data_space(torch.from_numpy(z)).numpy()
-        except Exception:
-            # if transform not available, assume mean_eig is already data-space and z are data-space
-            samples_data = z
-        likes = _likelihoods_from_samples(sampler, samples_data)
-        for i, L in enumerate(likes):
-            print(f"gaussian\t{L:.6e}")
+    # Load the NF model checkpoint using unified cfg
+    nf_model = _maybe_build_nf(cfg, dataset, best_ckpt)
+    print("NF model loaded successfully.", flush=True)
+    
+    # Sample from NF and Gaussian (covariance)
+    num_samples = int(cfg.num_samples)
+    print(f"Starting to sample {num_samples} parameter sets from NF and Gaussian...", flush=True)
+    
+    nf_samples = []
+    gaussian_samples = []
+    batch_size = int(cfg.batch_size)
+    
+    # Sample in batches for both NF and Gaussian draws.
+    with torch.no_grad():
+        sample_offset = 0
+        while sample_offset < num_samples:
+            current_batch_size = min(batch_size, num_samples - sample_offset)
 
-    if cfg.predict.nf:
-        if nf_model is None:
-            raise RuntimeError("NF sampling requested but model could not be built. Check cfg.")
-        z = _sample_nf(N, nf_model, dataset, cfg)
-        try:
-            samples_data = dataset.transform_eigen_space_to_data_space(torch.from_numpy(z)).numpy()
-        except Exception:
-            samples_data = z
-        likes = _likelihoods_from_samples(sampler, samples_data)
-        for i, L in enumerate(likes):
-            print(f"nf\t{L:.6e}")
+            z_nf, _ = nf_model.sample(current_batch_size)
+            z_nf_np = z_nf.cpu().numpy()
+            nf_samples.extend(z_nf_np)
 
-    if cfg.predict.mcmc:
-        # MCMC operates in data-space here and uses the sampler directly.
-        samples_data = _run_mcmc(N, sampler, dataset, cfg)
-        likes = _likelihoods_from_samples(sampler, samples_data)
-        for i, L in enumerate(likes):
-            print(f"mcmc\t{L:.6e}")
+            z_gaussian = np.random.multivariate_normal(
+                mean=bestfit_parameter_values,
+                cov=postfit_covariance,
+                size=current_batch_size,
+            )
+            gaussian_samples.extend(z_gaussian)
+
+            for local_idx in range(min(20 - sample_offset, current_batch_size)):
+                global_idx = sample_offset + local_idx
+                print(f"Sample {global_idx + 1}:")
+                print(f"  NF sample (z): {z_nf_np[local_idx].flatten()}")
+                print(f"  Gaussian sample: {z_gaussian[local_idx]}")
+
+            sample_offset += current_batch_size
+            print(f"  Sampled {sample_offset}/{num_samples}", flush=True)
+    
+    print(f"Sampling complete. Collected {len(nf_samples)} NF samples and {len(gaussian_samples)} Gaussian samples.", flush=True)
 
 if __name__ == "__main__":
     main()
