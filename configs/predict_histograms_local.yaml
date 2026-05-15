@@ -1,0 +1,34 @@
+# Gaussian-only run — no NF model needed.
+# LikelihoodSampler reads config + postfit cov + bestfit from the ROOT file.
+# Works both locally (mac) and on the cluster (container paths below).
+
+use_nf: false
+use_gaussian: true
+
+# --- cluster (container) paths ---
+llh_config: /workspace/config/output/gundamFitter_configToyOA_100plus10_Asimov.root
+llh_cwd: /workspace/config
+data_is_asimov: true
+threads: 1
+
+# --- mac local paths (comment cluster lines above, uncomment these) ---
+# llh_config: /Users/lorenzo/T2K-uniGe/NDFit_Gunflows/ToyNDFit/GundamWorkspace/output/gundamFitter_configToyOANoMirrorFakeData_100plus10_Asimov.root
+# llh_cwd: /Users/lorenzo/T2K-uniGe/NDFit_Gunflows/ToyNDFit/GundamWorkspace
+
+save_dir: /tmp/predict_histograms_local
+
+num_samples: 3
+batch_size: 5
+seed: 42
+
+n_bins: 8
+enu_min: 0.0
+enu_max: 5.0
+enu_var: "Enu"
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true

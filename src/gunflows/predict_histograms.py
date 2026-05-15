@@ -21,7 +21,6 @@ from omegaconf import DictConfig, OmegaConf
 
 NF_LOCAL = os.path.join(os.path.dirname(__file__), "normalizing-flows")
 sys.path.append(os.path.abspath(NF_LOCAL))
-from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
 
 
 @contextmanager
@@ -40,6 +39,7 @@ def pushd(path: str | None):
 # ---------------------------------------------------------------------------
 
 def _maybe_build_nf(cfg, dataset, ckpt_path: str):
+    from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
     m = cfg.experiment.model
     device = cfg.device if "device" in cfg else (
         cfg.experiment.device if "device" in cfg.experiment else "cpu"
@@ -160,41 +160,63 @@ def main(cfg: DictConfig) -> None:
     from gunflows.likelihood_sampler import LikelihoodSampler
     from gunflows.sample_mcmc_toy import build_sampling_dataset_target
 
-    # ------------------------------------------------------------------
-    # 1. Load checkpoint and training config
-    # ------------------------------------------------------------------
-    training_folder = Path(cfg.training_folder).expanduser().resolve()
-    print(f"Loading NF model from: {training_folder}", flush=True)
-    if not training_folder.exists():
-        raise FileNotFoundError(f"Training folder not found: {training_folder}")
-
-    checkpoint_dir = training_folder / "checkpoints"
-    checkpoints = sorted(checkpoint_dir.glob("*.pt")) if checkpoint_dir.exists() \
-        else sorted(training_folder.glob("*.pt"))
-    if not checkpoints:
-        raise FileNotFoundError(f"No checkpoints found in {training_folder}")
-    best_ckpt = str(checkpoints[-1])
-    print(f"Using checkpoint: {best_ckpt}", flush=True)
-
-    hydra_config_path = training_folder / ".hydra" / "config.yaml"
-    if not hydra_config_path.exists():
-        raise FileNotFoundError(f"Hydra config not found at {hydra_config_path}")
-    train_cfg = OmegaConf.load(hydra_config_path)
-    cfg = OmegaConf.merge(train_cfg, cfg)
-    print(f"Loaded training config from: {hydra_config_path}", flush=True)
+    use_nf      = bool(cfg.get("use_nf", True))
+    use_gaussian = bool(cfg.get("use_gaussian", True))
+    if not use_nf and not use_gaussian:
+        raise ValueError("At least one of use_nf or use_gaussian must be True.")
 
     # ------------------------------------------------------------------
-    # 1. Initialise LikelihoodSampler (GUNDAM interface)
+    # 1a. Load checkpoint + training config (only needed when use_nf=True)
     # ------------------------------------------------------------------
+    best_ckpt = None
+    if use_nf:
+        training_folder = Path(cfg.training_folder).expanduser().resolve()
+        print(f"Loading NF model from: {training_folder}", flush=True)
+        if not training_folder.exists():
+            raise FileNotFoundError(f"Training folder not found: {training_folder}")
+
+        checkpoint_dir = training_folder / "checkpoints"
+        checkpoints = sorted(checkpoint_dir.glob("*.pt")) if checkpoint_dir.exists() \
+            else sorted(training_folder.glob("*.pt"))
+        if not checkpoints:
+            raise FileNotFoundError(f"No checkpoints found in {training_folder}")
+        best_ckpt = str(checkpoints[-1])
+        print(f"Using checkpoint: {best_ckpt}", flush=True)
+
+        hydra_config_path = training_folder / ".hydra" / "config.yaml"
+        if not hydra_config_path.exists():
+            raise FileNotFoundError(f"Hydra config not found at {hydra_config_path}")
+        train_cfg = OmegaConf.load(hydra_config_path)
+        cfg = OmegaConf.merge(train_cfg, cfg)
+        print(f"Loaded training config from: {hydra_config_path}", flush=True)
+
+    # ------------------------------------------------------------------
+    # 1b. Initialise LikelihoodSampler (GUNDAM interface)
+    #     Direct keys (llh_config, llh_cwd, …) take priority over the
+    #     experiment.dataset sub-tree loaded from the training config.
+    # ------------------------------------------------------------------
+    if "llh_config" in cfg:
+        llh_config    = str(cfg.llh_config)
+        llh_overrides = list(cfg.get("llh_overrides", []))
+        data_is_asimov = bool(cfg.get("data_is_asimov", True))
+        llh_cwd       = str(cfg.get("llh_cwd", ".")) if cfg.get("llh_cwd") else None
+        threads       = int(cfg.get("threads", 1))
+    else:
+        llh_config    = str(cfg.experiment.dataset.llh_config)
+        llh_overrides = list(cfg.experiment.dataset.llh_overrides)
+        data_is_asimov = bool(cfg.experiment.dataset.data_is_asimov)
+        llh_cwd       = str(cfg.experiment.dataset.llh_cwd)
+        threads       = int(cfg.experiment.sampler.threads) if hasattr(cfg.experiment, "sampler") else 1
+
+    llh_overrides += list(cfg.get("llh_extra_overrides", []))
+
     print("Initializing LikelihoodSampler...", flush=True)
-    override_files = list(cfg.experiment.dataset.llh_overrides)
-    override_files += list(cfg.get("llh_extra_overrides", []))
     likelihood_sampler = LikelihoodSampler(
-        config_file=str(cfg.experiment.dataset.llh_config),
-        override_files=override_files,
-        data_is_asimov=bool(cfg.experiment.dataset.data_is_asimov),
-        threads=int(cfg.experiment.sampler.threads) if hasattr(cfg.experiment, "sampler") else 1,
-        llh_cwd=str(cfg.experiment.dataset.llh_cwd),
+        config_file=llh_config,
+        override_files=llh_overrides,
+        data_is_asimov=data_is_asimov,
+        threads=threads,
+        llh_cwd=llh_cwd,
         light_mode=False,
     )
 
@@ -202,9 +224,15 @@ def main(cfg: DictConfig) -> None:
     cov     = np.asarray(likelihood_sampler.postfit_covariance_matrix,  dtype=np.float64)
     print(f"Covariance matrix shape: {cov.shape}", flush=True)
 
-    dataset  = build_sampling_dataset_target(cfg, bestfit, cov)
-    nf_model = _maybe_build_nf(cfg, dataset, best_ckpt)
-    print("NF model loaded.", flush=True)
+    # ------------------------------------------------------------------
+    # 1c. Build NF model (only when use_nf=True)
+    # ------------------------------------------------------------------
+    nf_model = None
+    dataset  = None
+    if use_nf:
+        dataset  = build_sampling_dataset_target(cfg, bestfit, cov)
+        nf_model = _maybe_build_nf(cfg, dataset, best_ckpt)
+        print("NF model loaded.", flush=True)
 
     # ------------------------------------------------------------------
     # E_nu binning (configurable, defaults to 8 bins 0–5 GeV)
@@ -226,16 +254,20 @@ def main(cfg: DictConfig) -> None:
     nf_histograms:       list[np.ndarray] = []
     gaussian_histograms: list[np.ndarray] = []
 
-    print(f"\nStarting sampling loop: {num_samples} throws each (NF + Gaussian)", flush=True)
+    active = ("NF + Gaussian" if use_nf and use_gaussian
+              else "NF only" if use_nf else "Gaussian only")
+    print(f"\nStarting sampling loop: {num_samples} throws  [{active}]", flush=True)
+
+    def _nf_done():      return (not use_nf)      or len(nf_histograms)       >= num_samples
+    def _gauss_done():   return (not use_gaussian) or len(gaussian_histograms) >= num_samples
 
     with torch.no_grad():
-        while len(nf_histograms) < num_samples or len(gaussian_histograms) < num_samples:
+        while not _nf_done() or not _gauss_done():
 
             # --- NF batch ---
-            if len(nf_histograms) < num_samples:
+            if not _nf_done():
                 need = min(batch_size, num_samples - len(nf_histograms))
                 z_nf, _ = nf_model.sample(need)
-                # NF samples are in standardised (eigen) space → convert to physical
                 x_nf = dataset.transform_eigen_space_to_data_space(z_nf).cpu().numpy()
                 new_hists = _histograms_from_params(
                     likelihood_sampler, x_nf, bin_edges, enu_var,
@@ -245,7 +277,7 @@ def main(cfg: DictConfig) -> None:
                 print(f"NF:    {len(nf_histograms)}/{num_samples} valid throws", flush=True)
 
             # --- Gaussian batch ---
-            if len(gaussian_histograms) < num_samples:
+            if not _gauss_done():
                 need = min(batch_size, num_samples - len(gaussian_histograms))
                 x_g = rng.multivariate_normal(bestfit, cov, size=need)
                 new_hists = _histograms_from_params(
@@ -255,10 +287,6 @@ def main(cfg: DictConfig) -> None:
                 gaussian_histograms.extend(new_hists)
                 print(f"Gauss: {len(gaussian_histograms)}/{num_samples} valid throws", flush=True)
 
-    # Trim to exactly num_samples
-    nf_histograms       = nf_histograms[:num_samples]
-    gaussian_histograms = gaussian_histograms[:num_samples]
-
     # ------------------------------------------------------------------
     # 4. Summary: mean ± std per bin; save to disk
     # ------------------------------------------------------------------
@@ -267,8 +295,12 @@ def main(cfg: DictConfig) -> None:
 
     np.save(save_dir / "bin_edges.npy", bin_edges)
 
-    for label, histograms in [("NF", nf_histograms), ("Gaussian", gaussian_histograms)]:
-        hists_arr = np.array(histograms, dtype=np.float64)   # [N, n_bins]
+    results = []
+    if use_nf:       results.append(("NF",       nf_histograms[:num_samples]))
+    if use_gaussian: results.append(("Gaussian", gaussian_histograms[:num_samples]))
+
+    for label, histograms in results:
+        hists_arr = np.array(histograms, dtype=np.float64)
         mean_hist = hists_arr.mean(axis=0)
         std_hist  = hists_arr.std(axis=0)
 
@@ -279,9 +311,9 @@ def main(cfg: DictConfig) -> None:
             print(f"  [{lo:.2f}, {hi:.2f}) GeV:  {mean_hist[i]:.4f} ± {std_hist[i]:.4f}")
 
         tag = label.lower()
-        np.save(save_dir / f"enu_histograms_{tag}.npy", hists_arr)   # [N, n_bins]
-        np.save(save_dir / f"enu_mean_{tag}.npy",       mean_hist)    # [n_bins]
-        np.save(save_dir / f"enu_std_{tag}.npy",        std_hist)     # [n_bins]
+        np.save(save_dir / f"enu_histograms_{tag}.npy", hists_arr)
+        np.save(save_dir / f"enu_mean_{tag}.npy",       mean_hist)
+        np.save(save_dir / f"enu_std_{tag}.npy",        std_hist)
 
     print(f"\nResults saved to {save_dir}", flush=True)
 

@@ -25,7 +25,7 @@ seed: 0
 # Extra GUNDAM override files appended on top of the training-config overrides.
 # Use this to inject mc additionalLeavesStorage: ["Enu"] without editing the training config.
 llh_extra_overrides:
-  - "/workspace/config/GundamInputOA2021/override/mcEnuStorage.yaml"
+  - "override/mcEnuStorage.yaml"
 
 # do_reweight_nf: true
 
