@@ -125,6 +125,44 @@ def fill_enu_histogram(
 
 
 # ---------------------------------------------------------------------------
+# MCMC chain reader
+# ---------------------------------------------------------------------------
+
+def load_mcmc_throws(
+    mcmc_chain: str,
+    n_samples: int,
+    burnin_frac: float = 0.0,
+    max_steps: int | None = None,
+    thin: int | None = None,
+) -> np.ndarray:
+    """
+    Read parameter throws from a GUNDAM MCMC ROOT file.
+    Returns array of shape (n_samples, n_params).
+
+    Thinning: every m-th entry is kept, where m = n_available // n_samples
+    (or the user-supplied thin override). This gives approximately independent
+    draws spanning the full post-burnin chain.
+    """
+    import uproot
+    f = uproot.open(mcmc_chain)
+    tree = f["FitterEngine/fit/MCMC"]   # uproot picks latest cycle
+    n_total = tree.num_entries
+
+    start = int(n_total * burnin_frac)
+    stop  = min(n_total, start + max_steps) if max_steps is not None else n_total
+    n_available = stop - start
+
+    m = thin if thin is not None else max(1, n_available // n_samples)
+    n_out = len(range(0, n_available, m)[:n_samples])
+    print(f"  MCMC: {n_total} total steps, using [{start}:{stop}], "
+          f"thin={m} → {n_out} throws", flush=True)
+
+    pts_jagged = tree["Points"].array(library="np", entry_start=start, entry_stop=stop)
+    pts_2d = np.stack(pts_jagged)       # (n_available, n_params)
+    return pts_2d[::m][:n_samples]
+
+
+# ---------------------------------------------------------------------------
 # Per-sample inject + histogram
 # ---------------------------------------------------------------------------
 
@@ -163,8 +201,10 @@ def _checkpoint(
     bin_edges: np.ndarray,
     nf_histograms: list,
     gaussian_histograms: list,
+    mcmc_histograms: list,
     use_nf: bool,
     use_gaussian: bool,
+    use_mcmc: bool,
 ) -> None:
     """Save intermediate npy arrays and regenerate plots."""
     label_hists = []
@@ -172,6 +212,8 @@ def _checkpoint(
         label_hists.append(("NF", nf_histograms))
     if use_gaussian and gaussian_histograms:
         label_hists.append(("Gaussian", gaussian_histograms))
+    if use_mcmc and mcmc_histograms:
+        label_hists.append(("MCMC", mcmc_histograms))
 
     combined_means: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     combined_n:     dict[str, int] = {}
@@ -230,6 +272,7 @@ def plot_enu_combined(
 
     C_GAUSS = "#d62728"
     C_NF    = "#1f77b4"
+    C_MCMC  = "#2ca02c"
 
     def _step_xy(edges, vals):
         x = np.concatenate([[edges[0]], np.repeat(edges[1:-1], 2), [edges[-1]]])
@@ -276,6 +319,27 @@ def plot_enu_combined(
         rel = np.where(mean_raw > 0, std_raw / mean_raw, 0.0)
         bx, by = _step_xy(bin_edges, rel)
         ax_bot.plot(bx, by, color=C_NF, linewidth=1.2, label="NF")
+
+    # ---- MCMC: hatched band (backslash) + step outline ----
+    if "MCMC" in results:
+        mean_raw, std_raw = results["MCMC"]
+        mean = mean_raw / widths
+        std  = std_raw  / widths
+        n    = n_throws.get("MCMC", "?")
+
+        sx, sy_lo = _step_xy(bin_edges, np.maximum(0.0, mean - std))
+        sx, sy_hi = _step_xy(bin_edges, mean + std)
+        sx, sy    = _step_xy(bin_edges, mean)
+
+        ax.fill_between(sx, sy_lo, sy_hi,
+                        facecolor="none", edgecolor=C_MCMC,
+                        hatch="\\\\", linewidth=0.6,
+                        label=f"MCMC ({n} throws)")
+        ax.plot(sx, sy, color=C_MCMC, linewidth=1.0)
+
+        rel = np.where(mean_raw > 0, std_raw / mean_raw, 0.0)
+        bx, by = _step_xy(bin_edges, rel)
+        ax_bot.plot(bx, by, color=C_MCMC, linewidth=1.2, label="MCMC")
 
     ax.set_ylabel(r"Event yield / bin width  [GeV$^{-1}$]", fontsize=13)
     ax.set_ylim(bottom=0)
@@ -356,10 +420,11 @@ def main(cfg: DictConfig) -> None:
     from gunflows.likelihood_sampler import LikelihoodSampler
     from gunflows.sample_mcmc_toy import build_sampling_dataset_target
 
-    use_nf      = bool(cfg.get("use_nf", True))
+    use_nf       = bool(cfg.get("use_nf", True))
     use_gaussian = bool(cfg.get("use_gaussian", True))
-    if not use_nf and not use_gaussian:
-        raise ValueError("At least one of use_nf or use_gaussian must be True.")
+    use_mcmc     = bool(cfg.get("use_mcmc", False))
+    if not use_nf and not use_gaussian and not use_mcmc:
+        raise ValueError("At least one of use_nf, use_gaussian, use_mcmc must be True.")
 
     # ------------------------------------------------------------------
     # 1a. Load checkpoint + training config (only needed when use_nf=True)
@@ -457,29 +522,50 @@ def main(cfg: DictConfig) -> None:
     rng = np.random.default_rng(int(cfg.get("seed", 0)))
 
     # ------------------------------------------------------------------
+    # Load MCMC throws up-front (all at once, no batching needed)
+    # ------------------------------------------------------------------
+    mcmc_throws: np.ndarray | None = None
+    if use_mcmc:
+        mcmc_chain = str(cfg.mcmc_chain)
+        mcmc_throws = load_mcmc_throws(
+            mcmc_chain,
+            n_samples    = num_samples,
+            burnin_frac  = float(cfg.get("mcmc_burnin_frac", 0.0)),
+            max_steps    = int(cfg.mcmc_max_steps) if "mcmc_max_steps" in cfg else None,
+            thin         = int(cfg.mcmc_thin)      if "mcmc_thin"      in cfg else None,
+        )
+        print(f"MCMC throws loaded: {mcmc_throws.shape}", flush=True)
+
+    # ------------------------------------------------------------------
     # 2+3. Sampling loop — draw batches, propagate, collect histograms
     # ------------------------------------------------------------------
     nf_histograms:       list[np.ndarray] = []
     gaussian_histograms: list[np.ndarray] = []
+    mcmc_histograms:     list[np.ndarray] = []
 
     save_dir = Path(cfg.save_dir).expanduser() if "save_dir" in cfg else Path(".")
     save_dir.mkdir(parents=True, exist_ok=True)
     np.save(save_dir / "bin_edges.npy", bin_edges)
 
-    active = ("NF + Gaussian" if use_nf and use_gaussian
-              else "NF only" if use_nf else "Gaussian only")
-    print(f"\nStarting sampling loop: {num_samples} throws  [{active}]", flush=True)
+    active_parts = (["NF"] if use_nf else []) + (["Gaussian"] if use_gaussian else []) + (["MCMC"] if use_mcmc else [])
+    print(f"\nStarting sampling loop: {num_samples} throws  [{' + '.join(active_parts)}]", flush=True)
 
-    def _nf_done():      return (not use_nf)      or len(nf_histograms)       >= num_samples
-    def _gauss_done():   return (not use_gaussian) or len(gaussian_histograms) >= num_samples
+    def _nf_done():    return (not use_nf)      or len(nf_histograms)       >= num_samples
+    def _gauss_done(): return (not use_gaussian) or len(gaussian_histograms) >= num_samples
+    def _mcmc_done():  return (not use_mcmc)     or len(mcmc_histograms)     >= num_samples
 
     def _should_checkpoint(old_count: int, new_count: int) -> bool:
         if save_every <= 0:
             return False
         return (new_count // save_every) > (old_count // save_every)
 
+    def _do_checkpoint():
+        _checkpoint(save_dir, bin_edges,
+                    nf_histograms, gaussian_histograms, mcmc_histograms,
+                    use_nf, use_gaussian, use_mcmc)
+
     with torch.no_grad():
-        while not _nf_done() or not _gauss_done():
+        while not _nf_done() or not _gauss_done() or not _mcmc_done():
 
             # --- NF batch ---
             if not _nf_done():
@@ -495,8 +581,7 @@ def main(cfg: DictConfig) -> None:
                 nf_histograms.extend(new_hists)
                 print(f"NF:    {len(nf_histograms)}/{num_samples} valid throws", flush=True)
                 if _should_checkpoint(prev, len(nf_histograms)):
-                    _checkpoint(save_dir, bin_edges, nf_histograms, gaussian_histograms,
-                                use_nf, use_gaussian)
+                    _do_checkpoint()
 
             # --- Gaussian batch ---
             if not _gauss_done():
@@ -511,8 +596,22 @@ def main(cfg: DictConfig) -> None:
                 gaussian_histograms.extend(new_hists)
                 print(f"Gauss: {len(gaussian_histograms)}/{num_samples} valid throws", flush=True)
                 if _should_checkpoint(prev, len(gaussian_histograms)):
-                    _checkpoint(save_dir, bin_edges, nf_histograms, gaussian_histograms,
-                                use_nf, use_gaussian)
+                    _do_checkpoint()
+
+            # --- MCMC batch ---
+            if not _mcmc_done():
+                prev = len(mcmc_histograms)
+                need = min(batch_size, num_samples - prev)
+                x_mc = mcmc_throws[prev:prev + need]
+                new_hists = _histograms_from_params(
+                    likelihood_sampler, x_mc,
+                    enu_events, enu_bin_indices, n_bins,
+                    f"MCMC {prev+1}–{prev+len(x_mc)}",
+                )
+                mcmc_histograms.extend(new_hists)
+                print(f"MCMC:  {len(mcmc_histograms)}/{num_samples} valid throws", flush=True)
+                if _should_checkpoint(prev, len(mcmc_histograms)):
+                    _do_checkpoint()
 
     # ------------------------------------------------------------------
     # 4. Summary: mean ± std per bin; save to disk
@@ -520,6 +619,7 @@ def main(cfg: DictConfig) -> None:
     label_hists = []
     if use_nf:       label_hists.append(("NF",       nf_histograms[:num_samples]))
     if use_gaussian: label_hists.append(("Gaussian", gaussian_histograms[:num_samples]))
+    if use_mcmc:     label_hists.append(("MCMC",     mcmc_histograms[:num_samples]))
 
     combined_means: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     combined_n:     dict[str, int] = {}
