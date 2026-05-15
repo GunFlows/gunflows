@@ -336,8 +336,8 @@ def plot_corner(
                 ax.hist(hists_arr[:, row], bins=12, color="steelblue", alpha=0.7)
                 ax.set_xlabel(labels[row], fontsize=6)
             else:
-                ax.scatter(hists_arr[:, col], hists_arr[:, row],
-                           s=10, alpha=0.6, color="steelblue")
+                ax.hist2d(hists_arr[:, col], hists_arr[:, row],
+                          bins=20, cmap="Blues")
                 ax.set_xlabel(labels[col], fontsize=6)
                 ax.set_ylabel(labels[row], fontsize=6)
             ax.tick_params(labelsize=5)
