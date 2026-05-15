@@ -12,13 +12,12 @@ training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
 save_dir: ${training_folder}/predict_histograms
 
 
-num_samples: 20
+num_samples: 20000
 batch_size: 4098
-# plot_workers: 0
 
-n_bins: 8
-enu_min: 0.0
-enu_max: 5.0
+# Custom bin edges (takes priority over n_bins/enu_min/enu_max).
+# Default: 200 MeV bins up to 0.4 GeV, 50 MeV bins 0.4–1 GeV, then [1,2] and [2,5] GeV.
+bin_edges_list: [0.0, 0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 2.0, 5.0]
 enu_var: "Enu"
 seed: 0
 

@@ -158,30 +158,75 @@ def _histograms_from_params(
 # Plotting helpers
 # ---------------------------------------------------------------------------
 
+_DEFAULT_BIN_EDGES = [
+    0.0, 0.2, 0.4,
+    0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0,
+    2.0, 5.0,
+]
+
 def _bin_labels(bin_edges: np.ndarray) -> list[str]:
     return [f"[{lo:.2f},{hi:.2f})" for lo, hi in zip(bin_edges[:-1], bin_edges[1:])]
 
 
-def plot_enu_histogram(
+def plot_enu_combined(
     bin_edges: np.ndarray,
-    mean_hist: np.ndarray,
-    std_hist: np.ndarray,
-    label: str,
+    results: dict[str, tuple[np.ndarray, np.ndarray]],  # label -> (mean, std)
+    n_throws: dict[str, int],
     save_dir: Path,
 ) -> None:
+    """
+    T2K-style overlay:
+      Gaussian → red hatched band (pre-fit style)
+      NF       → blue step + cross markers (post-fit style)
+    """
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths  = bin_edges[1:] - bin_edges[:-1]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(centers, mean_hist, width=widths * 0.85,
-           yerr=std_hist, capsize=4, color="steelblue", alpha=0.7,
-           error_kw=dict(elinewidth=1.2, ecolor="navy"))
-    ax.set_xlabel(r"$E_\nu$ [GeV]")
-    ax.set_ylabel("Event yield")
-    ax.set_title(f"E_nu histogram — {label}  (mean ± std, {len(mean_hist)} bins)")
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    style = {
+        "Gaussian": dict(color="#d62728", hatch="///", label_suffix="Gaussian"),
+        "NF":       dict(color="#1f77b4", label_suffix="NF"),
+    }
+
+    if "Gaussian" in results:
+        mean, std = results["Gaussian"]
+        c = style["Gaussian"]["color"]
+        n = n_throws["Gaussian"]
+        # hatched filled bars
+        ax.bar(centers, mean, width=widths, align="center",
+               color=c, alpha=0.25, edgecolor=c, linewidth=0.8,
+               hatch=style["Gaussian"]["hatch"],
+               label=f"Gaussian ({n} throws)")
+        # error caps on top
+        ax.errorbar(centers, mean, yerr=std,
+                    fmt="none", ecolor=c, elinewidth=1.2, capsize=3)
+
+    if "NF" in results:
+        mean, std = results["NF"]
+        c = style["NF"]["color"]
+        n = n_throws["NF"]
+        # step outline
+        step_x = np.concatenate([[bin_edges[0]],
+                                  np.repeat(bin_edges[1:-1], 2),
+                                  [bin_edges[-1]]])
+        step_y = np.repeat(mean, 2)
+        ax.plot(step_x, step_y, color=c, linewidth=1.5)
+        # cross markers: horizontal bar = half-bin-width, vertical = std
+        ax.errorbar(centers, mean,
+                    xerr=widths / 2, yerr=std,
+                    fmt="+", color=c, elinewidth=1.2, capsize=0,
+                    markersize=5, markeredgewidth=1.2,
+                    label=f"NF ({n} throws)")
+
+    ax.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
+    ax.set_ylabel("Event yield", fontsize=13)
     ax.set_xlim(bin_edges[0], bin_edges[-1])
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=11)
+    ax.tick_params(axis="both", labelsize=11)
     fig.tight_layout()
-    fig.savefig(save_dir / f"enu_histogram_{label.lower()}.png", dpi=150)
+    fig.savefig(save_dir / "enu_histogram_combined.png", dpi=150)
     plt.close(fig)
 
 
@@ -322,14 +367,21 @@ def main(cfg: DictConfig) -> None:
         print("NF model loaded.", flush=True)
 
     # ------------------------------------------------------------------
-    # E_nu binning (configurable, defaults to 8 bins 0–5 GeV)
+    # E_nu binning
+    # Priority: bin_edges_list in config > n_bins/enu_min/enu_max > default
     # ------------------------------------------------------------------
-    n_bins    = int(cfg.get("n_bins",   8))
-    enu_min   = float(cfg.get("enu_min", 0.0))
-    enu_max   = float(cfg.get("enu_max", 5.0))
-    enu_var   = str(cfg.get("enu_var",  "Enu"))
-    bin_edges = np.linspace(enu_min, enu_max, n_bins + 1)
-    print(f"E_nu binning: {n_bins} bins  [{enu_min}, {enu_max}] GeV", flush=True)
+    enu_var = str(cfg.get("enu_var", "Enu"))
+    if "bin_edges_list" in cfg and cfg.bin_edges_list is not None:
+        bin_edges = np.array(list(cfg.bin_edges_list), dtype=np.float64)
+    elif "n_bins" in cfg:
+        n_bins  = int(cfg.n_bins)
+        enu_min = float(cfg.get("enu_min", 0.0))
+        enu_max = float(cfg.get("enu_max", 5.0))
+        bin_edges = np.linspace(enu_min, enu_max, n_bins + 1)
+    else:
+        bin_edges = np.array(_DEFAULT_BIN_EDGES, dtype=np.float64)
+    n_bins = len(bin_edges) - 1
+    print(f"E_nu binning: {n_bins} bins, edges: {bin_edges}", flush=True)
 
     num_samples = int(cfg.num_samples)
     batch_size  = int(cfg.batch_size)
@@ -382,11 +434,14 @@ def main(cfg: DictConfig) -> None:
 
     np.save(save_dir / "bin_edges.npy", bin_edges)
 
-    results = []
-    if use_nf:       results.append(("NF",       nf_histograms[:num_samples]))
-    if use_gaussian: results.append(("Gaussian", gaussian_histograms[:num_samples]))
+    label_hists = []
+    if use_nf:       label_hists.append(("NF",       nf_histograms[:num_samples]))
+    if use_gaussian: label_hists.append(("Gaussian", gaussian_histograms[:num_samples]))
 
-    for label, histograms in results:
+    combined_means: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    combined_n:     dict[str, int] = {}
+
+    for label, histograms in label_hists:
         hists_arr = np.array(histograms, dtype=np.float64)
         mean_hist = hists_arr.mean(axis=0)
         std_hist  = hists_arr.std(axis=0)
@@ -402,10 +457,15 @@ def main(cfg: DictConfig) -> None:
         np.save(save_dir / f"enu_mean_{tag}.npy",       mean_hist)
         np.save(save_dir / f"enu_std_{tag}.npy",        std_hist)
 
-        plot_enu_histogram(bin_edges, mean_hist, std_hist, label, save_dir)
         plot_correlation_matrix(hists_arr, bin_edges, label, save_dir)
         plot_corner(hists_arr, bin_edges, label, save_dir)
-        print(f"  Plots saved for {label}", flush=True)
+        print(f"  Correlation + corner plots saved for {label}", flush=True)
+
+        combined_means[label] = (mean_hist, std_hist)
+        combined_n[label]     = len(histograms)
+
+    plot_enu_combined(bin_edges, combined_means, combined_n, save_dir)
+    print("  Combined E_nu histogram saved.", flush=True)
 
     print(f"\nResults saved to {save_dir}", flush=True)
 
