@@ -12,6 +12,7 @@ training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
 save_dir: ${training_folder}/predict_histograms
 
 
+threads: 24
 num_samples: 20000
 batch_size: 4098
 

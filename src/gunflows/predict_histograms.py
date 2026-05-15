@@ -76,40 +76,52 @@ def _maybe_build_nf(cfg, dataset, ckpt_path: str):
 
 
 # ---------------------------------------------------------------------------
-# E_nu histogram filler
+# E_nu histogram filler — with one-time cache to avoid per-throw Python overhead
 # ---------------------------------------------------------------------------
 
-def fill_enu_histogram(
+def build_enu_cache(
     sampler,
     bin_edges: np.ndarray,
     enu_var: str = "Enu",
-) -> np.ndarray:
+) -> tuple[list, np.ndarray]:
     """
-    After propagateAndEvalLikelihood() has been called, iterate over all enabled
-    MC model events and accumulate event weights into E_nu bins.
-
-    Returns ndarray of shape (n_bins,).
-
-    Requires GUNDAM Python bindings for:
-        Sample.getEventList(), Event.getEventWeight(),
-        Event.getVariables(), VariableCollection.fetchVariable(),
-        VariableHolder.getVarAsDouble()
+    Called once before the sampling loop.
+    Returns:
+        events     — flat list of Event objects for all in-range MC events
+        bin_indices — int32 array of pre-computed E_nu bin index per event
+    Enu values never change between throws, so this lookup is done only once.
     """
     n_bins = len(bin_edges) - 1
-    counts = np.zeros(n_bins, dtype=np.float64)
+    events: list = []
+    bin_indices: list[int] = []
 
     for sp in sampler.likelihood_interface.getSamplePairList():
         model_sample = sp.model
         if not model_sample.isEnabled():
             continue
         for event in model_sample.getEventList():
-            w = event.getEventWeight()
             enu = event.getVariables().fetchVariable(enu_var).getVarAsDouble()
             idx = int(np.digitize(enu, bin_edges)) - 1
             if 0 <= idx < n_bins:
-                counts[idx] += w
+                events.append(event)
+                bin_indices.append(idx)
 
-    return counts
+    print(f"  Enu cache built: {len(events)} in-range MC events", flush=True)
+    return events, np.array(bin_indices, dtype=np.int32)
+
+
+def fill_enu_histogram(
+    events: list,
+    bin_indices: np.ndarray,
+    n_bins: int,
+) -> np.ndarray:
+    """
+    Per-throw histogram fill. Only getEventWeight() is called here;
+    bin indices are pre-computed. Uses np.bincount for fast accumulation.
+    """
+    weights = np.fromiter((e.getEventWeight() for e in events),
+                          dtype=np.float64, count=len(events))
+    return np.bincount(bin_indices, weights=weights, minlength=n_bins)
 
 
 # ---------------------------------------------------------------------------
@@ -119,13 +131,16 @@ def fill_enu_histogram(
 def _histograms_from_params(
     likelihood_sampler,
     params_array: np.ndarray,
-    bin_edges: np.ndarray,
-    enu_var: str,
+    enu_events: list,
+    enu_bin_indices: np.ndarray,
+    n_bins: int,
     label: str,
 ) -> list[np.ndarray]:
     """
     Inject each row of params_array into GUNDAM, propagate, and collect
     E_nu histogram bin contents. Returns list of accepted histograms.
+    enu_events/enu_bin_indices come from build_enu_cache() and are reused
+    across throws to avoid re-fetching Enu values.
     """
     histograms = []
     for i, params in enumerate(params_array):
@@ -136,22 +151,45 @@ def _histograms_from_params(
             print(f"  [{label} {i}] out of domain — skipped", flush=True)
             continue
 
-        try:
-            hist = fill_enu_histogram(likelihood_sampler, bin_edges, enu_var)
-        except AttributeError as exc:
-            print(
-                f"\nERROR: event-level GUNDAM access failed ({exc}).\n"
-                "Ensure Sample.getEventList(), Event.getEventWeight(), "
-                "Event.getVariables(), VariableCollection.fetchVariable(), and "
-                "VariableHolder.getVarAsDouble() are compiled into the GUNDAM .so.",
-                flush=True,
-            )
-            sys.exit(1)
-
+        hist = fill_enu_histogram(enu_events, enu_bin_indices, n_bins)
         histograms.append(hist)
         print(f"  [{label} {len(histograms):4d}] NLL={nll:.4f}  hist={hist}", flush=True)
 
     return histograms
+
+
+def _checkpoint(
+    save_dir: Path,
+    bin_edges: np.ndarray,
+    nf_histograms: list,
+    gaussian_histograms: list,
+    use_nf: bool,
+    use_gaussian: bool,
+) -> None:
+    """Save intermediate npy arrays and regenerate plots."""
+    label_hists = []
+    if use_nf and nf_histograms:
+        label_hists.append(("NF", nf_histograms))
+    if use_gaussian and gaussian_histograms:
+        label_hists.append(("Gaussian", gaussian_histograms))
+
+    combined_means: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    combined_n:     dict[str, int] = {}
+
+    for label, histograms in label_hists:
+        hists_arr = np.array(histograms, dtype=np.float64)
+        mean_hist = hists_arr.mean(axis=0)
+        std_hist  = hists_arr.std(axis=0)
+        tag = label.lower()
+        np.save(save_dir / f"enu_histograms_{tag}.npy", hists_arr)
+        np.save(save_dir / f"enu_mean_{tag}.npy",       mean_hist)
+        np.save(save_dir / f"enu_std_{tag}.npy",        std_hist)
+        combined_means[label] = (mean_hist, std_hist)
+        combined_n[label]     = len(histograms)
+
+    if combined_means:
+        plot_enu_combined(bin_edges, combined_means, combined_n, save_dir)
+    print(f"  [checkpoint] saved {combined_n}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -383,8 +421,13 @@ def main(cfg: DictConfig) -> None:
     n_bins = len(bin_edges) - 1
     print(f"E_nu binning: {n_bins} bins, edges: {bin_edges}", flush=True)
 
+    # Build Enu cache once — bin indices are constant across throws
+    print("Building Enu cache...", flush=True)
+    enu_events, enu_bin_indices = build_enu_cache(likelihood_sampler, bin_edges, enu_var)
+
     num_samples = int(cfg.num_samples)
     batch_size  = int(cfg.batch_size)
+    save_every  = int(cfg.get("save_every", 1000))
     rng = np.random.default_rng(int(cfg.get("seed", 0)))
 
     # ------------------------------------------------------------------
@@ -393,6 +436,10 @@ def main(cfg: DictConfig) -> None:
     nf_histograms:       list[np.ndarray] = []
     gaussian_histograms: list[np.ndarray] = []
 
+    save_dir = Path(cfg.save_dir).expanduser() if "save_dir" in cfg else Path(".")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    np.save(save_dir / "bin_edges.npy", bin_edges)
+
     active = ("NF + Gaussian" if use_nf and use_gaussian
               else "NF only" if use_nf else "Gaussian only")
     print(f"\nStarting sampling loop: {num_samples} throws  [{active}]", flush=True)
@@ -400,40 +447,50 @@ def main(cfg: DictConfig) -> None:
     def _nf_done():      return (not use_nf)      or len(nf_histograms)       >= num_samples
     def _gauss_done():   return (not use_gaussian) or len(gaussian_histograms) >= num_samples
 
+    def _should_checkpoint(old_count: int, new_count: int) -> bool:
+        if save_every <= 0:
+            return False
+        return (new_count // save_every) > (old_count // save_every)
+
     with torch.no_grad():
         while not _nf_done() or not _gauss_done():
 
             # --- NF batch ---
             if not _nf_done():
-                need = min(batch_size, num_samples - len(nf_histograms))
+                prev = len(nf_histograms)
+                need = min(batch_size, num_samples - prev)
                 z_nf, _ = nf_model.sample(need)
                 x_nf = dataset.transform_eigen_space_to_data_space(z_nf).cpu().numpy()
                 new_hists = _histograms_from_params(
-                    likelihood_sampler, x_nf, bin_edges, enu_var,
-                    f"NF {len(nf_histograms)+1}–{len(nf_histograms)+len(x_nf)}",
+                    likelihood_sampler, x_nf,
+                    enu_events, enu_bin_indices, n_bins,
+                    f"NF {prev+1}–{prev+len(x_nf)}",
                 )
                 nf_histograms.extend(new_hists)
                 print(f"NF:    {len(nf_histograms)}/{num_samples} valid throws", flush=True)
+                if _should_checkpoint(prev, len(nf_histograms)):
+                    _checkpoint(save_dir, bin_edges, nf_histograms, gaussian_histograms,
+                                use_nf, use_gaussian)
 
             # --- Gaussian batch ---
             if not _gauss_done():
-                need = min(batch_size, num_samples - len(gaussian_histograms))
+                prev = len(gaussian_histograms)
+                need = min(batch_size, num_samples - prev)
                 x_g = rng.multivariate_normal(bestfit, cov, size=need)
                 new_hists = _histograms_from_params(
-                    likelihood_sampler, x_g, bin_edges, enu_var,
-                    f"Gauss {len(gaussian_histograms)+1}–{len(gaussian_histograms)+len(x_g)}",
+                    likelihood_sampler, x_g,
+                    enu_events, enu_bin_indices, n_bins,
+                    f"Gauss {prev+1}–{prev+len(x_g)}",
                 )
                 gaussian_histograms.extend(new_hists)
                 print(f"Gauss: {len(gaussian_histograms)}/{num_samples} valid throws", flush=True)
+                if _should_checkpoint(prev, len(gaussian_histograms)):
+                    _checkpoint(save_dir, bin_edges, nf_histograms, gaussian_histograms,
+                                use_nf, use_gaussian)
 
     # ------------------------------------------------------------------
     # 4. Summary: mean ± std per bin; save to disk
     # ------------------------------------------------------------------
-    save_dir = Path(cfg.save_dir).expanduser() if "save_dir" in cfg else Path(".")
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    np.save(save_dir / "bin_edges.npy", bin_edges)
-
     label_hists = []
     if use_nf:       label_hists.append(("NF",       nf_histograms[:num_samples]))
     if use_gaussian: label_hists.append(("Gaussian", gaussian_histograms[:num_samples]))
