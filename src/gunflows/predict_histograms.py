@@ -187,9 +187,11 @@ def main(cfg: DictConfig) -> None:
     # 1. Initialise LikelihoodSampler (GUNDAM interface)
     # ------------------------------------------------------------------
     print("Initializing LikelihoodSampler...", flush=True)
+    override_files = list(cfg.experiment.dataset.llh_overrides)
+    override_files += list(cfg.get("llh_extra_overrides", []))
     likelihood_sampler = LikelihoodSampler(
         config_file=str(cfg.experiment.dataset.llh_config),
-        override_files=list(cfg.experiment.dataset.llh_overrides),
+        override_files=override_files,
         data_is_asimov=bool(cfg.experiment.dataset.data_is_asimov),
         threads=int(cfg.experiment.sampler.threads) if hasattr(cfg.experiment, "sampler") else 1,
         llh_cwd=str(cfg.experiment.dataset.llh_cwd),
