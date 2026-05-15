@@ -228,47 +228,54 @@ def plot_enu_combined(
     )
     fig.subplots_adjust(hspace=0.05)
 
-    STYLES = {
-        "Gaussian": dict(color="#d62728", hatch="///"),
-        "NF":       dict(color="#1f77b4", hatch=""),
-    }
+    C_GAUSS = "#d62728"
+    C_NF    = "#1f77b4"
 
     def _step_xy(edges, vals):
         x = np.concatenate([[edges[0]], np.repeat(edges[1:-1], 2), [edges[-1]]])
         y = np.repeat(vals, 2)
         return x, y
 
-    for key in ("Gaussian", "NF"):
-        if key not in results:
-            continue
-        mean_raw, std_raw = results[key]
-        mean = mean_raw / widths          # normalize by bin width
+    # ---- Gaussian: hatched uncertainty band (mean±std) + step outline ----
+    if "Gaussian" in results:
+        mean_raw, std_raw = results["Gaussian"]
+        mean = mean_raw / widths
         std  = std_raw  / widths
-        c    = STYLES[key]["color"]
-        hatch = STYLES[key]["hatch"]
-        n    = n_throws[key]
+        n    = n_throws.get("Gaussian", "?")
 
-        # --- main histogram ---
-        sx, sy = _step_xy(bin_edges, mean)
-        ax.fill_between(sx, 0, sy,
-                        step="pre" if key == "NF" else None,
-                        color=c, alpha=0.18, linewidth=0)
-        ax.plot(sx, sy, color=c, linewidth=1.8,
-                label=f"{key} ({n} throws)")
-        if hatch:
-            ax.bar(centers, mean, width=widths, align="center",
-                   color="none", edgecolor=c, linewidth=0,
-                   hatch=hatch, alpha=0.5)
-        ax.errorbar(centers, mean, yerr=std,
-                    fmt="none", ecolor=c, elinewidth=1.8,
-                    capsize=5, capthick=1.8)
+        sx, sy_lo = _step_xy(bin_edges, np.maximum(0.0, mean - std))
+        sx, sy_hi = _step_xy(bin_edges, mean + std)
+        sx, sy    = _step_xy(bin_edges, mean)
 
-        # --- bottom pad: relative uncertainty ---
+        ax.fill_between(sx, sy_lo, sy_hi,
+                        facecolor="none", edgecolor=C_GAUSS,
+                        hatch="///", linewidth=0.6,
+                        label=f"Gaussian ({n} throws)")
+        ax.plot(sx, sy, color=C_GAUSS, linewidth=1.0)
+
         rel = np.where(mean_raw > 0, std_raw / mean_raw, 0.0)
         bx, by = _step_xy(bin_edges, rel)
-        ax_bot.plot(bx, by, color=c, linewidth=1.5, label=key)
-        ax_bot.errorbar(centers, rel,
-                        fmt="none", ecolor=c, elinewidth=1.2, capsize=3)
+        ax_bot.plot(bx, by, color=C_GAUSS, linewidth=1.2, label="Gaussian")
+
+    # ---- NF: step line + cross markers (xerr=half-bin, yerr=std, no caps) ----
+    if "NF" in results:
+        mean_raw, std_raw = results["NF"]
+        mean = mean_raw / widths
+        std  = std_raw  / widths
+        n    = n_throws.get("NF", "?")
+
+        sx, sy = _step_xy(bin_edges, mean)
+        ax.plot(sx, sy, color=C_NF, linewidth=1.5,
+                label=f"NF ({n} throws)")
+        ax.errorbar(centers, mean,
+                    xerr=widths / 2, yerr=std,
+                    fmt="+", color=C_NF,
+                    elinewidth=1.0, capsize=0,
+                    markersize=6, markeredgewidth=1.2)
+
+        rel = np.where(mean_raw > 0, std_raw / mean_raw, 0.0)
+        bx, by = _step_xy(bin_edges, rel)
+        ax_bot.plot(bx, by, color=C_NF, linewidth=1.2, label="NF")
 
     ax.set_ylabel(r"Event yield / bin width  [GeV$^{-1}$]", fontsize=13)
     ax.set_ylim(bottom=0)
