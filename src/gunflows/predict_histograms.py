@@ -16,6 +16,9 @@ from contextlib import contextmanager
 import hydra
 import torch
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from omegaconf import DictConfig, OmegaConf
 
 
@@ -149,6 +152,90 @@ def _histograms_from_params(
         print(f"  [{label} {len(histograms):4d}] NLL={nll:.4f}  hist={hist}", flush=True)
 
     return histograms
+
+
+# ---------------------------------------------------------------------------
+# Plotting helpers
+# ---------------------------------------------------------------------------
+
+def _bin_labels(bin_edges: np.ndarray) -> list[str]:
+    return [f"[{lo:.2f},{hi:.2f})" for lo, hi in zip(bin_edges[:-1], bin_edges[1:])]
+
+
+def plot_enu_histogram(
+    bin_edges: np.ndarray,
+    mean_hist: np.ndarray,
+    std_hist: np.ndarray,
+    label: str,
+    save_dir: Path,
+) -> None:
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    widths  = bin_edges[1:] - bin_edges[:-1]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(centers, mean_hist, width=widths * 0.85,
+           yerr=std_hist, capsize=4, color="steelblue", alpha=0.7,
+           error_kw=dict(elinewidth=1.2, ecolor="navy"))
+    ax.set_xlabel(r"$E_\nu$ [GeV]")
+    ax.set_ylabel("Event yield")
+    ax.set_title(f"E_nu histogram — {label}  (mean ± std, {len(mean_hist)} bins)")
+    ax.set_xlim(bin_edges[0], bin_edges[-1])
+    fig.tight_layout()
+    fig.savefig(save_dir / f"enu_histogram_{label.lower()}.png", dpi=150)
+    plt.close(fig)
+
+
+def plot_correlation_matrix(
+    hists_arr: np.ndarray,
+    bin_edges: np.ndarray,
+    label: str,
+    save_dir: Path,
+) -> None:
+    corr = np.corrcoef(hists_arr.T)   # [n_bins, n_bins]
+    labels = _bin_labels(bin_edges)
+    n = len(labels)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    im = ax.imshow(corr, vmin=-1, vmax=1, cmap="RdBu_r")
+    plt.colorbar(im, ax=ax, label="Pearson r")
+    ax.set_xticks(range(n)); ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    ax.set_yticks(range(n)); ax.set_yticklabels(labels, fontsize=7)
+    ax.set_title(f"Bin-content correlation — {label}")
+    fig.tight_layout()
+    fig.savefig(save_dir / f"correlation_matrix_{label.lower()}.png", dpi=150)
+    plt.close(fig)
+
+
+def plot_corner(
+    hists_arr: np.ndarray,
+    bin_edges: np.ndarray,
+    label: str,
+    save_dir: Path,
+) -> None:
+    n_bins = hists_arr.shape[1]
+    labels = _bin_labels(bin_edges)
+
+    fig, axes = plt.subplots(n_bins, n_bins, figsize=(2.2 * n_bins, 2.2 * n_bins))
+    fig.suptitle(f"Corner plot — {label}", y=1.01)
+
+    for row in range(n_bins):
+        for col in range(n_bins):
+            ax = axes[row, col]
+            if col > row:
+                ax.axis("off")
+            elif row == col:
+                ax.hist(hists_arr[:, row], bins=12, color="steelblue", alpha=0.7)
+                ax.set_xlabel(labels[row], fontsize=6)
+            else:
+                ax.scatter(hists_arr[:, col], hists_arr[:, row],
+                           s=10, alpha=0.6, color="steelblue")
+                ax.set_xlabel(labels[col], fontsize=6)
+                ax.set_ylabel(labels[row], fontsize=6)
+            ax.tick_params(labelsize=5)
+
+    fig.tight_layout()
+    fig.savefig(save_dir / f"corner_{label.lower()}.png", dpi=150)
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +401,11 @@ def main(cfg: DictConfig) -> None:
         np.save(save_dir / f"enu_histograms_{tag}.npy", hists_arr)
         np.save(save_dir / f"enu_mean_{tag}.npy",       mean_hist)
         np.save(save_dir / f"enu_std_{tag}.npy",        std_hist)
+
+        plot_enu_histogram(bin_edges, mean_hist, std_hist, label, save_dir)
+        plot_correlation_matrix(hists_arr, bin_edges, label, save_dir)
+        plot_corner(hists_arr, bin_edges, label, save_dir)
+        print(f"  Plots saved for {label}", flush=True)
 
     print(f"\nResults saved to {save_dir}", flush=True)
 
