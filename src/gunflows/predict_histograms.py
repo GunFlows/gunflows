@@ -213,58 +213,77 @@ def plot_enu_combined(
     save_dir: Path,
 ) -> None:
     """
-    T2K-style overlay:
-      Gaussian → red hatched band (pre-fit style)
-      NF       → blue step + cross markers (post-fit style)
+    Two-pad figure:
+      Top    — E_nu spectrum normalized by bin width; Gaussian (red hatched)
+               and NF (blue step-fill) with distinct, visible error bars.
+      Bottom — relative uncertainty (std/mean) per bin for each distribution.
     """
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths  = bin_edges[1:] - bin_edges[:-1]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, (ax, ax_bot) = plt.subplots(
+        2, 1, figsize=(10, 8),
+        gridspec_kw={"height_ratios": [3, 1]},
+        sharex=True,
+    )
+    fig.subplots_adjust(hspace=0.05)
 
-    style = {
-        "Gaussian": dict(color="#d62728", hatch="///", label_suffix="Gaussian"),
-        "NF":       dict(color="#1f77b4", label_suffix="NF"),
+    STYLES = {
+        "Gaussian": dict(color="#d62728", hatch="///"),
+        "NF":       dict(color="#1f77b4", hatch=""),
     }
 
-    if "Gaussian" in results:
-        mean, std = results["Gaussian"]
-        c = style["Gaussian"]["color"]
-        n = n_throws["Gaussian"]
-        # hatched filled bars
-        ax.bar(centers, mean, width=widths, align="center",
-               color=c, alpha=0.25, edgecolor=c, linewidth=0.8,
-               hatch=style["Gaussian"]["hatch"],
-               label=f"Gaussian ({n} throws)")
-        # error caps on top
+    def _step_xy(edges, vals):
+        x = np.concatenate([[edges[0]], np.repeat(edges[1:-1], 2), [edges[-1]]])
+        y = np.repeat(vals, 2)
+        return x, y
+
+    for key in ("Gaussian", "NF"):
+        if key not in results:
+            continue
+        mean_raw, std_raw = results[key]
+        mean = mean_raw / widths          # normalize by bin width
+        std  = std_raw  / widths
+        c    = STYLES[key]["color"]
+        hatch = STYLES[key]["hatch"]
+        n    = n_throws[key]
+
+        # --- main histogram ---
+        sx, sy = _step_xy(bin_edges, mean)
+        ax.fill_between(sx, 0, sy,
+                        step="pre" if key == "NF" else None,
+                        color=c, alpha=0.18, linewidth=0)
+        ax.plot(sx, sy, color=c, linewidth=1.8,
+                label=f"{key} ({n} throws)")
+        if hatch:
+            ax.bar(centers, mean, width=widths, align="center",
+                   color="none", edgecolor=c, linewidth=0,
+                   hatch=hatch, alpha=0.5)
         ax.errorbar(centers, mean, yerr=std,
-                    fmt="none", ecolor=c, elinewidth=1.2, capsize=3)
+                    fmt="none", ecolor=c, elinewidth=1.8,
+                    capsize=5, capthick=1.8)
 
-    if "NF" in results:
-        mean, std = results["NF"]
-        c = style["NF"]["color"]
-        n = n_throws["NF"]
-        # step outline
-        step_x = np.concatenate([[bin_edges[0]],
-                                  np.repeat(bin_edges[1:-1], 2),
-                                  [bin_edges[-1]]])
-        step_y = np.repeat(mean, 2)
-        ax.plot(step_x, step_y, color=c, linewidth=1.5)
-        # cross markers: horizontal bar = half-bin-width, vertical = std
-        ax.errorbar(centers, mean,
-                    xerr=widths / 2, yerr=std,
-                    fmt="+", color=c, elinewidth=1.2, capsize=0,
-                    markersize=5, markeredgewidth=1.2,
-                    label=f"NF ({n} throws)")
+        # --- bottom pad: relative uncertainty ---
+        rel = np.where(mean_raw > 0, std_raw / mean_raw, 0.0)
+        bx, by = _step_xy(bin_edges, rel)
+        ax_bot.plot(bx, by, color=c, linewidth=1.5, label=key)
+        ax_bot.errorbar(centers, rel,
+                        fmt="none", ecolor=c, elinewidth=1.2, capsize=3)
 
-    ax.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
-    ax.set_ylabel("Event yield", fontsize=13)
-    ax.set_xlim(bin_edges[0], bin_edges[-1])
+    ax.set_ylabel(r"Event yield / bin width  [GeV$^{-1}$]", fontsize=13)
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=11)
     ax.tick_params(axis="both", labelsize=11)
-    fig.tight_layout()
-    fig.savefig(save_dir / "enu_histogram_combined.png", dpi=150)
+
+    ax_bot.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
+    ax_bot.set_ylabel("Rel. unc.\n(std / mean)", fontsize=10)
+    ax_bot.set_ylim(bottom=0)
+    ax_bot.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    ax_bot.legend(fontsize=9)
+    ax_bot.tick_params(axis="both", labelsize=10)
+    ax_bot.set_xlim(bin_edges[0], bin_edges[-1])
+
+    fig.savefig(save_dir / "enu_histogram_combined.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
