@@ -16,6 +16,12 @@ num_samples: 20
 batch_size: 4098
 # plot_workers: 0
 
+n_bins: 8
+enu_min: 0.0
+enu_max: 5.0
+enu_var: "Enu"
+seed: 0
+
 # do_reweight_nf: true
 
 # mcmc_burnin_frac: 0. # no need if I take only the last 200k steps
