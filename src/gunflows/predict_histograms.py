@@ -143,23 +143,33 @@ def load_mcmc_throws(
     (or the user-supplied thin override). This gives approximately independent
     draws spanning the full post-burnin chain.
     """
-    import uproot
-    f = uproot.open(mcmc_chain)
-    tree = f["FitterEngine/fit/MCMC"]   # uproot picks latest cycle
-    n_total = tree.num_entries
+    import ROOT
+    ROOT.gROOT.SetBatch(True)
 
+    f = ROOT.TFile.Open(mcmc_chain)
+    if not f or f.IsZombie():
+        raise FileNotFoundError(f"Cannot open MCMC file: {mcmc_chain}")
+    tree = f.Get("FitterEngine/fit/MCMC")
+    if not tree:
+        raise RuntimeError("TTree 'FitterEngine/fit/MCMC' not found in file")
+
+    n_total = int(tree.GetEntries())
     start = int(n_total * burnin_frac)
     stop  = min(n_total, start + max_steps) if max_steps is not None else n_total
     n_available = stop - start
 
     m = thin if thin is not None else max(1, n_available // n_samples)
-    n_out = len(range(0, n_available, m)[:n_samples])
+    indices = list(range(start, stop, m))[:n_samples]
     print(f"  MCMC: {n_total} total steps, using [{start}:{stop}], "
-          f"thin={m} → {n_out} throws", flush=True)
+          f"thin={m} → {len(indices)} throws", flush=True)
 
-    pts_jagged = tree["Points"].array(library="np", entry_start=start, entry_stop=stop)
-    pts_2d = np.stack(pts_jagged)       # (n_available, n_params)
-    return pts_2d[::m][:n_samples]
+    rows = []
+    for i in indices:
+        tree.GetEntry(i)
+        rows.append(np.array(list(tree.Points), dtype=np.float64))
+
+    f.Close()
+    return np.stack(rows)
 
 
 # ---------------------------------------------------------------------------
