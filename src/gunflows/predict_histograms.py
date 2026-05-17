@@ -146,7 +146,8 @@ def load_mcmc_throws(
     import ROOT
     ROOT.gROOT.SetBatch(True)
 
-    f = ROOT.TFile.Open(mcmc_chain)
+    path = mcmc_chain if mcmc_chain.startswith("file://") else f"file://{mcmc_chain}"
+    f = ROOT.TFile.Open(path)
     if not f or f.IsZombie():
         raise FileNotFoundError(f"Cannot open MCMC file: {mcmc_chain}")
     tree = f.Get("FitterEngine/fit/MCMC")
