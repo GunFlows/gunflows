@@ -38,6 +38,12 @@ llh_extra_overrides:
 
 # select_regex: ""
 
+use_mcmc: false
+# mcmc_chain: /workspace/config/output/your_mcmc_file.root
+# mcmc_burnin_frac: 0.0
+# mcmc_max_steps: null
+# mcmc_thin: null
+
 device: cuda
 
 hydra:
