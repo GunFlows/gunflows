@@ -82,6 +82,9 @@ def _maybe_build_nf(cfg, dataset, ckpt_path: str):
 
 STREAMS = ("FHC", "RHC")
 
+# 1σ, 2σ, 3σ Gaussian-equivalent coverage levels for CI bands
+_DEFAULT_CI_LEVELS = (0.6827, 0.9545, 0.9973)
+
 
 def build_enu_cache(
     sampler,
@@ -285,9 +288,6 @@ def _bin_labels(bin_edges: np.ndarray) -> list[str]:
 # ---------------------------------------------------------------------------
 # Confidence-interval helpers
 # ---------------------------------------------------------------------------
-
-# 1σ, 2σ, 3σ Gaussian-equivalent coverages
-_DEFAULT_CI_LEVELS = (0.6827, 0.9545, 0.9973)
 
 
 def _hdi_one(samples: np.ndarray, level: float) -> tuple[float, float]:
