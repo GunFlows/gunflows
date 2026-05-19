@@ -7,15 +7,14 @@
 #SBATCH --gpu-bind=single:1            
 #SBATCH --ntasks=1    
 #SBATCH --time=12:00:00
-#SBATCH --mem=72G
-#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=10
 #SBATCH --output=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/%x_%A_%a.log
 #SBATCH --error=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/%x_%A_%a.log
 echo "Starting array job ${SLURM_ARRAY_JOB_ID}, task ${SLURM_ARRAY_TASK_ID} at $(date)"
 DIR=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning
 cd "$DIR" || exit 1
 
-# Per-study DB base directory (must match launch_tuning)
 DB_BASE="$DIR/databases/$STUDY"
 
 choose_scratch () {
@@ -48,5 +47,4 @@ trap 'touch "$DONEFLAG"' EXIT
 
 python -u worker.py
 
-# Copy this job's DB back into the stage tmp_dbs dir for merging
 cp "$TMPDB" "$DB_BASE/tmp_dbs/"

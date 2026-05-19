@@ -7,7 +7,7 @@ nflows: 25
 hidden: 256
 nlayers: 1
 nbins: 15
-tail_bound: 9
+tail_bound: 11.0
 
 # Cov Flow
 freeze_covflow: false
