@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=optuna_loop
-#SBATCH --partition=shared-cpu
-#SBATCH --time=6:00:00
+#SBATCH --partition=private-dpnc-cpu
+#SBATCH --time=168:00:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=1
 #SBATCH --output=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/loop_%j.log

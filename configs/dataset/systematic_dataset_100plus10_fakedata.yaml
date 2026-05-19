@@ -8,7 +8,7 @@ starting_folder: /workspace/config/GundamWorkspace/datasets_sb_configToyOANoMirr
 with_sampler: true
 nf_ckpt: null                     # path to NF checkpoint if available
 data_dir: ${hydra:runtime.output_dir}/generated_samples
-gen_batch_size: 10000
+gen_batch_size: 50000
 max_batches: 50
 num_samplers: 10
 

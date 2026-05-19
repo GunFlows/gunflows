@@ -4,13 +4,13 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=240G
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --time=72:00:00
+#SBATCH --time=168:00:00
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
-#SBATCH --mail-type=ALL
+
 
 set -euo pipefail
 
@@ -18,9 +18,9 @@ module load apptainer 2>/dev/null || true
 
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit"
-HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
+HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace"
+HOST_DATA="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace/DATA"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"

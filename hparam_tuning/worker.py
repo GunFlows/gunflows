@@ -32,13 +32,12 @@ def _extract_loss(text: str):
 CMD_BASE = [
     "apptainer","exec","--nv",
     "--pwd","/workspace/work/GuNFlows",
-    "--bind","/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud:/workspace/data",
     "--bind","/home/shares/sanchezf/gundam_n_flow/GuNFlows:/workspace/work/GuNFlows",
-    "--bind","/srv/beegfs/scratch/groups/dpnc/neutrinos:/workspace/config",
-    "--env","DATA_DIR=/workspace/data/DatasetNFlowsOA2022/Asimov/allParameters",
+    "--bind","/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace:/workspace/config",
+    "--bind","/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace/DATA:/workspace/data",
     "--env","PYTHONPATH=/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows",
     "/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif",
-    "bash","-lc" 
+    "bash","-lc"
 ]
 
 def run(overrides):
@@ -52,7 +51,6 @@ def run(overrides):
     ]
 
     lines = []
-    # Note: no text=True here, we work with raw bytes
     with subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -60,13 +58,12 @@ def run(overrides):
         bufsize=1,
     ) as p:
         for raw in iter(p.stdout.readline, b""):
-            # Decode robustly: replace invalid sequences instead of crashing
             line = raw.decode("utf-8", errors="replace")
             sys.stderr.write(line)
             lines.append(line)
         p.wait()
         if p.returncode:
-            raise subprocess.CalledProcessError(p.returncode, cmd)
+            print(f"[worker] process exited with code {p.returncode} — attempting to parse partial loss", file=sys.stderr)
 
     return "".join(lines)
 
@@ -77,7 +74,7 @@ def objective(trial):
     uid  = uuid.uuid4().hex[:8]
     run_base = f"hparam_tuning/databases/{STUDY}/runs/{user}"
     outdir   = f"{run_base}/{now:%Y-%m-%d}_{now:%H-%M-%S}_{uid}"
-    ov = ["experiment=oa2022_data"]
+    ov = ["experiment=demonstrator_100plus10_fakedata"]
     ov += [f"{k}={sug(trial, k, c)}" for k, c in SPACE.items()]
     ov.append(f"hydra.run.dir={outdir}")
     out = run(ov)
