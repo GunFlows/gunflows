@@ -1,0 +1,54 @@
+# training_folder: /workspace/work/GuNFlows/outputs/demo_60p6_asimov/2026-01-20/17-57-28/
+# training_folder: /workspace/work/GuNFlows/outputs/demo_100p10_asimov/2026-03-18/19-46-28/
+# training_folder: /workspace/work/GuNFlows/outputs/2026-03-30/16-10-28/
+
+# mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
+
+training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
+# mcmc_chain: /workspace/trained_models/MCMC_100p10_Toy50.root
+
+# save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
+# save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10Toy50
+save_dir: ${training_folder}/predict_histograms
+
+
+threads: 24
+num_samples: 20000
+batch_size: 4098
+
+# Custom bin edges (takes priority over n_bins/enu_min/enu_max).
+# Default: 200 MeV bins up to 0.4 GeV, 50 MeV bins 0.4–1 GeV, then [1,2] and [2,5] GeV.
+bin_edges_list: [0.0, 0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 2.0, 5.0]
+enu_var: "Enu"
+seed: 0
+
+# Extra GUNDAM override files appended on top of the training-config overrides.
+# Use this to inject mc additionalLeavesStorage: ["Enu"] without editing the training config.
+llh_extra_overrides:
+  - "override/mcEnuStorage.yaml"
+
+# do_reweight_nf: true
+
+# mcmc_burnin_frac: 0. # no need if I take only the last 200k steps
+# mcmc_thin: 1
+# mcmc_max_steps: 200000
+
+# reweight_num_workers: 2
+
+
+# select_regex: ""
+
+use_mcmc: false
+# mcmc_chain: /workspace/config/output/your_mcmc_file.root
+# mcmc_burnin_frac: 0.0
+# mcmc_max_steps: null
+# mcmc_thin: null
+
+device: cuda
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true

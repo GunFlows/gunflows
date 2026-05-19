@@ -16,7 +16,10 @@ seed=$(($index + $time))
 
 good_fits=(11 12 13 14 15 16 18 20 23 24 26 27 29 31 32 34 35 37 39 40 41 42 45 46 47 49)
 # Pick a seed out of the above ones, the fit converged for them.
-SEED=12
+SEED=42
+
+#INPUT_IDENTIFIER="configToyOA_22plus3_Asimov"
+INPUT_IDENTIFIER="configToyOANoMirrorFakeData_100plus10"
 
 INPUT_IDENTIFIER="configToyOANoMirrorFakeData_100plus10" 
 #INPUT_IDENTIFIER="configToyOA_100plus10_Asimov_ToyFit_${SEED}"
