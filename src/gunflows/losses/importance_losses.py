@@ -205,7 +205,7 @@ def exp_symmetric(
     w_f = _cap_logw(log_w_f, cap_f)
 
     log_w_r = log_q - log_g
-    w_r = _cap_logw(log_w_r, cap_r).detach()
+    w_r = _cap_logw(log_w_r, cap_r)
 
     loss = torch.mean(a * w_f * log_pq**2 + b * w_r * log_pq**2)
 
