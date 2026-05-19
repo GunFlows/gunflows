@@ -15,8 +15,8 @@ TOY_SEED=$SLURM_ARRAY_TASK_ID
 
 # ARGUMENTS TO PASS TO gundamFitter
 # SCRIPTARGS="-c configToyOA_100plus10.yaml -t 10 -a --toy ${TOY_SEED} -s ${TOY_SEED}"
-SCRIPTARGS="-c configToyOA_60plus6.yaml -t 10 -a"
-# SCRIPTARGS="-c configToyOA_100plus10.yaml -t 10 --toy -s ${TOY_SEED} -o output/gundamFitter_configToyOA_100plus10_Toy${TOY_SEED}.root"
+#SCRIPTARGS="-c configToyOA_60plus6.yaml -t 10 -a"
+SCRIPTARGS="-c configToyOA_100plus10.yaml -t 10 -o output/gundamFitter_configToyOANoMirrorFakeData_100plus10.root"
 echo "Running Gundam Fit with arguments: ${SCRIPTARGS}" 
 
 # CHECK AVAILABLE FITTER CONFIGS AT: 

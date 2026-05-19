@@ -24,7 +24,9 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 from omegaconf import DictConfig, OmegaConf
+from scipy.stats import chi2
 
 import ROOT
 
@@ -53,6 +55,17 @@ def _strip_common_prefixes(s: str) -> str:
 def _short(s: str, n: int = 65) -> str:
     s = str(s)
     return s if len(s) <= n else (s[: n - 3] + "...")
+
+
+def _head_tail3(arr: np.ndarray) -> str:
+    a = np.asarray(arr)
+    if a.ndim != 1:
+        a = a.reshape(-1)
+    if a.size <= 6:
+        return np.array2string(a, precision=6, separator=", ")
+    head = np.array2string(a[:3], precision=6, separator=", ")
+    tail = np.array2string(a[-3:], precision=6, separator=", ")
+    return f"{head} ... {tail}"
 
 
 def check_parameters_array_limits(array_of_param_vector: np.ndarray, limits_dictionary: dict[str, tuple[float, float]]) -> np.ndarray:
@@ -306,23 +319,85 @@ def read_param_names_parameterSets(tfile: ROOT.TFile, base_dir: str) -> tuple[li
 
 
 def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
-    n = int(t_mcmc.GetEntries())
-    if max_steps is not None:
-        n = min(n, int(max_steps))
+    n_total = int(t_mcmc.GetEntries())
     if not t_mcmc.GetBranch("Points"):
         raise RuntimeError("MCMC tree has no 'Points' branch.")
-    t_mcmc.GetEntry(0)
+
+    # Deduplicate consecutive entries based on the first Points component
+    # and keep only the first entry of each repeated run.
+
+    kept_entry_indices: list[int] = []
+    prev_key = None
+    for entry_idx in range(n_total):
+        t_mcmc.GetEntry(entry_idx)
+        v = getattr(t_mcmc, "Points")
+        if int(v.size()) <= 0:
+            continue
+        key_val = float(v.at(0))
+        if prev_key is None or key_val != prev_key:
+            kept_entry_indices.append(entry_idx)
+            prev_key = key_val
+
+    if max_steps is not None:
+        n = min(len(kept_entry_indices), int(max_steps))
+        kept_entry_indices = kept_entry_indices[-n:]
+    else:
+        n = len(kept_entry_indices)
+
+    if n == 0:
+        t_mcmc.GetEntry(0)
+        d0 = int(getattr(t_mcmc, "Points").size())
+        return np.empty((0, d0), dtype=np.float64)
+
+    t_mcmc.GetEntry(kept_entry_indices[0])
     d = int(getattr(t_mcmc, "Points").size())
     pts = np.empty((n, d), dtype=np.float64)
-    for i in range(n):
-        t_mcmc.GetEntry(i)
+    for i, entry_idx in enumerate(kept_entry_indices):
+        t_mcmc.GetEntry(entry_idx)
         v = getattr(t_mcmc, "Points")
         for j in range(d):
             pts[i, j] = float(v.at(j))
     return pts
 
 
-def load_mcmc_gundamworkspace(input_root: str, max_steps: int | None) -> tuple[str, list[str], np.ndarray, dict]:
+def read_ttree_nll_from_llh_branches(t_mcmc, max_steps: int | None) -> np.ndarray:
+    """Read TTree NLL proxy defined as (LLHStatistical + LLHPenalty) / 2.
+
+    Uses the same deduplication/capping convention as read_points_vector_tree:
+    deduplicate consecutive entries by Points[0], then apply max_steps on tail.
+    """
+    n_total = int(t_mcmc.GetEntries())
+    if not t_mcmc.GetBranch("Points"):
+        raise RuntimeError("MCMC tree has no 'Points' branch.")
+    if not t_mcmc.GetBranch("LLHStatistical") or not t_mcmc.GetBranch("LLHPenalty"):
+        raise RuntimeError("MCMC tree must contain branches 'LLHStatistical' and 'LLHPenalty'.")
+
+    kept_entry_indices: list[int] = []
+    prev_key = None
+    for entry_idx in range(n_total):
+        t_mcmc.GetEntry(entry_idx)
+        v = getattr(t_mcmc, "Points")
+        if int(v.size()) <= 0:
+            continue
+        key_val = float(v.at(0))
+        if prev_key is None or key_val != prev_key:
+            kept_entry_indices.append(entry_idx)
+            prev_key = key_val
+
+    if max_steps is not None:
+        n = min(len(kept_entry_indices), int(max_steps))
+        kept_entry_indices = kept_entry_indices[-n:]
+
+    out = np.empty(len(kept_entry_indices), dtype=np.float64)
+    for i, entry_idx in enumerate(kept_entry_indices):
+        t_mcmc.GetEntry(entry_idx)
+        llh_stat = float(getattr(t_mcmc, "LLHStatistical"))
+        llh_pen = float(getattr(t_mcmc, "LLHPenalty"))
+        out[i] = 0.5 * (llh_stat + llh_pen)
+    return out
+
+
+def load_mcmc_gundamworkspace(input_root: str, max_steps: int | None) -> tuple[str, list[str], np.ndarray, np.ndarray, dict]:
     tf = ROOT.TFile.Open(input_root, "READ")
     if not tf or tf.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {input_root}")
@@ -331,14 +406,31 @@ def load_mcmc_gundamworkspace(input_root: str, max_steps: int | None) -> tuple[s
     names, pcyc = read_param_names_parameterSets(tf, base_dir)
     t_mcmc, mcyc = get_latest_obj_in_dir(tf, base_dir, "MCMC")
     pts = read_points_vector_tree(t_mcmc, max_steps)
+    nll_from_tree = read_ttree_nll_from_llh_branches(t_mcmc, max_steps)
+
+    if int(pts.shape[0]) != int(nll_from_tree.shape[0]):
+        raise RuntimeError(
+            f"Internal mismatch while loading MCMC tree: points={pts.shape[0]} vs nll_from_tree={nll_from_tree.shape[0]}"
+        )
 
     meta = {"base_dir": base_dir, "parameterSets_cycle": pcyc, "MCMC_cycle": mcyc}
-    return base_dir, names, pts, meta
+    return base_dir, names, pts, nll_from_tree, meta
 
 
 def apply_burnin_thin(pts: np.ndarray, burnin_frac: float, thin: int) -> tuple[np.ndarray, int]:
     nsteps = int(pts.shape[0])
-    burn = int(max(0, min(nsteps, burnin_frac * nsteps)))
+
+    # Burn-in is interpreted strictly as a FRACTION of total steps and
+    # removed from the START of the chain before thinning.
+    burnin_frac = float(burnin_frac)
+    if not np.isfinite(burnin_frac):
+        raise ValueError(f"burnin_frac must be finite, got {burnin_frac}")
+    if burnin_frac < 0.0 or burnin_frac > 1.0:
+        raise ValueError(
+            f"burnin_frac must be in [0, 1] and is interpreted as a fraction of total steps; got {burnin_frac}"
+        )
+
+    burn = int(np.floor(burnin_frac * nsteps))
     thin = max(1, int(thin))
     post = pts[burn:nsteps:thin]
     return post, burn
@@ -394,6 +486,204 @@ def gaussian_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
     return np.exp(-0.5 * z * z) / (sigma * np.sqrt(2.0 * np.pi))
 
 
+def eval_nf_neglogq_on_physical_points(
+    model,
+    dataset,
+    points_physical: np.ndarray,
+    batch_size: int,
+    device: str,
+) -> np.ndarray:
+    """Evaluate -log q_NF for points in physical/data space."""
+    x_phys = np.asarray(points_physical, dtype=np.float32)
+    if x_phys.ndim != 2:
+        raise RuntimeError(f"points_physical must be 2D, got shape={x_phys.shape}")
+
+    n, d = x_phys.shape
+    d_model = int(dataset.mean.shape[0])
+    if d != d_model:
+        raise RuntimeError(f"Dimension mismatch for NF eval: points have d={d}, model expects d={d_model}")
+
+    phase_dims = list(dataset.phase_space_dim)
+    cond_dims = list(dataset.list_dim_conditionnal)
+    if len(phase_dims) == 0 or len(cond_dims) == 0:
+        raise RuntimeError("Invalid phase/context split in dataset target for NF evaluation.")
+
+    out = np.empty(n, dtype=np.float64)
+    dev = torch.device(device)
+    with torch.no_grad():
+        for start in range(0, n, int(batch_size)):
+            end = min(n, start + int(batch_size))
+            xb = torch.as_tensor(x_phys[start:end], dtype=torch.float32, device=dev)
+
+            # Invert the script's eigen->data map to evaluate NF in eigen space.
+            mean = dataset.mean.to(device=dev, dtype=xb.dtype)
+            std = dataset.std_per_dim.to(device=dev, dtype=xb.dtype)
+            x_eig = (xb - mean) / std
+
+            z = x_eig[:, phase_dims]
+            c = x_eig[:, cond_dims]
+            logq = model.log_prob(z, context=c)
+            out[start:end] = (-logq).detach().to(device="cpu", dtype=torch.float64).numpy().reshape(-1)
+    return out
+
+
+def eval_nll_on_physical_points(likelihood_sampler, points_physical: np.ndarray, batch_size: int) -> np.ndarray:
+    """Evaluate the LH NLL for points already expressed in physical/data space."""
+    x_phys = np.asarray(points_physical, dtype=np.float64)
+    if x_phys.ndim != 2:
+        raise RuntimeError(f"points_physical must be 2D, got shape={x_phys.shape}")
+
+    n = int(x_phys.shape[0])
+    out = np.empty(n, dtype=np.float64)
+    with torch.no_grad():
+        for start in range(0, n, int(batch_size)):
+            end = min(n, start + int(batch_size))
+            for i in range(start, end):
+                nll_val, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(
+                    np.asarray(x_phys[i], dtype=np.float64), extend_continue=False
+                )
+                out[i] = float(nll_val)
+    return out
+
+
+def compute_delta_nll_cutoff(p_3sigma: float, ndim: int) -> float:
+    p = float(p_3sigma)
+    if not np.isfinite(p) or not (0.0 < p < 1.0):
+        raise ValueError(f"p_3sigma must be in (0, 1), got {p_3sigma}")
+    if int(ndim) <= 0:
+        raise ValueError(f"ndim must be positive, got {ndim}")
+    delta2 = float(chi2.ppf(p, df=int(ndim)))
+    return 0.5 * delta2
+
+
+def plot_nll_vs_neglogq(
+    nll: np.ndarray,
+    neglogq: np.ndarray,
+    keep_mask: np.ndarray,
+    delta_nll_cut: float,
+    outpath: Path,
+    bins: int = 80,
+) -> None:
+    nll = np.asarray(nll, dtype=np.float64).reshape(-1)
+    neglogq = np.asarray(neglogq, dtype=np.float64).reshape(-1)
+    keep_mask = np.asarray(keep_mask, dtype=bool).reshape(-1)
+
+    # Shift -log_q by its median, same convention as logq_nf shifting.
+    finite_neglogq = np.isfinite(neglogq)
+    if finite_neglogq.any():
+        median_neglogq = np.median(neglogq[finite_neglogq])
+        neglogq = neglogq - median_neglogq
+
+    finite_mask = np.isfinite(nll) & np.isfinite(neglogq)
+    all_nll = nll[finite_mask]
+    all_nq = neglogq[finite_mask]
+
+    kept_mask_finite = keep_mask[finite_mask]
+    kept_nll = all_nll[kept_mask_finite]
+    kept_nq = all_nq[kept_mask_finite]
+
+    if all_nll.size == 0:
+        return
+
+    fig = plt.figure(figsize=(12, 5))
+    ax1 = fig.add_subplot(1, 2, 1)
+    ax2 = fig.add_subplot(1, 2, 2)
+
+    def _plot_hist2d_log(ax, x, y):
+        h, xe, ye = np.histogram2d(x, y, bins=bins)
+        h = np.ma.masked_less_equal(h, 0)
+        positive = h.compressed()
+        if positive.size == 0:
+            ax.hist2d(x, y, bins=bins)
+            return
+        mesh = ax.pcolormesh(
+            xe,
+            ye,
+            h.T,
+            cmap="viridis",
+            norm=LogNorm(vmin=float(positive.min()), vmax=float(positive.max())),
+            shading="auto",
+        )
+        fig.colorbar(mesh, ax=ax)
+
+    _plot_hist2d_log(ax1, all_nll, all_nq)
+    ax1.set_title("All MCMC steps")
+    ax1.set_xlabel("NLL")
+    ax1.set_ylabel("-log q_NF")
+    # Add y=x diagonal line
+    lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), 
+        np.max([ax1.get_xlim(), ax1.get_ylim()])]
+    ax1.plot(lims, lims, 'k--', linewidth=1.5, alpha=0.7)
+
+    if kept_nll.size > 0:
+        _plot_hist2d_log(ax2, kept_nll, kept_nq)
+    ax2.set_title(f"Kept steps (ΔNLL <= {delta_nll_cut:.3g})")
+    ax2.set_xlabel("NLL")
+    ax2.set_ylabel("-log q_NF")
+    # Add y=x diagonal line
+    lims = [np.min([ax2.get_xlim(), ax2.get_ylim()]), 
+        np.max([ax2.get_xlim(), ax2.get_ylim()])]
+    ax2.plot(lims, lims, 'k--', linewidth=1.5, alpha=0.7)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+def plot_delta_nll_overlay(
+    delta_nll_nf: np.ndarray,
+    delta_nll_mcmc: np.ndarray,
+    outpath: Path,
+    bins: int = 80,
+) -> None:
+    delta_nll_nf = np.asarray(delta_nll_nf, dtype=np.float64).reshape(-1)
+    delta_nll_mcmc = np.asarray(delta_nll_mcmc, dtype=np.float64).reshape(-1)
+
+    finite_nf = np.isfinite(delta_nll_nf)
+    finite_mcmc = np.isfinite(delta_nll_mcmc)
+    delta_nll_nf = delta_nll_nf[finite_nf]
+    delta_nll_mcmc = delta_nll_mcmc[finite_mcmc]
+
+    if delta_nll_nf.size == 0 and delta_nll_mcmc.size == 0:
+        return
+
+    xmin = float(min(np.min(delta_nll_nf) if delta_nll_nf.size else 0.0, np.min(delta_nll_mcmc) if delta_nll_mcmc.size else 0.0))
+    xmax = float(max(np.max(delta_nll_nf) if delta_nll_nf.size else 0.0, np.max(delta_nll_mcmc) if delta_nll_mcmc.size else 0.0))
+    if not np.isfinite(xmin) or not np.isfinite(xmax) or xmax <= xmin:
+        xmin, xmax = -1.0, 1.0
+
+    edges = np.linspace(xmin, xmax, bins + 1)
+
+    fig = plt.figure(figsize=(7, 4))
+    if delta_nll_mcmc.size:
+        plt.hist(
+            delta_nll_mcmc,
+            bins=edges,
+            histtype="step",
+            density=True,
+            linewidth=1.4,
+            label=f"MCMC (n={len(delta_nll_mcmc)})",
+        )
+    if delta_nll_nf.size:
+        plt.hist(
+            delta_nll_nf,
+            bins=edges,
+            histtype="step",
+            density=True,
+            linewidth=1.4,
+            label=f"NF (n={len(delta_nll_nf)})",
+        )
+
+    plt.xlabel("NLL - NLL_bestfit")
+    plt.ylabel("Density")
+    plt.title("Delta NLL distribution")
+    plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=8)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
 def plot_2d_hist_side_by_side(
     x_nf: np.ndarray,
     y_nf: np.ndarray,
@@ -418,12 +708,29 @@ def plot_2d_hist_side_by_side(
     ax1 = fig.add_subplot(1, 2, 1)
     ax2 = fig.add_subplot(1, 2, 2)
 
-    ax1.hist2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    def _plot_hist2d_log(ax, x, y):
+        h, xe, ye = np.histogram2d(x, y, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+        h = np.ma.masked_less_equal(h, 0)
+        positive = h.compressed()
+        if positive.size == 0:
+            ax.hist2d(x, y, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+            return
+        mesh = ax.pcolormesh(
+            xe,
+            ye,
+            h.T,
+            cmap="viridis",
+            norm=LogNorm(vmin=float(positive.min()), vmax=float(positive.max())),
+            shading="auto",
+        )
+        fig.colorbar(mesh, ax=ax)
+
+    _plot_hist2d_log(ax1, x_nf, y_nf)
     ax1.set_title("NF")
     ax1.set_xlabel(_short(xlabel, 45))
     ax1.set_ylabel(_short(ylabel, 45))
 
-    ax2.hist2d(x_mc, y_mc, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    _plot_hist2d_log(ax2, x_mc, y_mc)
     ax2.set_title("MCMC")
     ax2.set_xlabel(_short(xlabel, 45))
     ax2.set_ylabel(_short(ylabel, 45))
@@ -446,7 +753,21 @@ def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel
 
     fig = plt.figure(figsize=(6, 5))
     ax = fig.add_subplot(1, 1, 1)
-    ax.hist2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    h, xe, ye = np.histogram2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    h = np.ma.masked_less_equal(h, 0)
+    positive = h.compressed()
+    if positive.size == 0:
+        ax.hist2d(x_nf, y_nf, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+    else:
+        mesh = ax.pcolormesh(
+            xe,
+            ye,
+            h.T,
+            cmap="viridis",
+            norm=LogNorm(vmin=float(positive.min()), vmax=float(positive.max())),
+            shading="auto",
+        )
+        fig.colorbar(mesh, ax=ax)
     ax.set_title("NF")
     ax.set_xlabel(_short(xlabel, 45))
     ax.set_ylabel(_short(ylabel, 45))
@@ -464,6 +785,9 @@ def main(cfg: DictConfig) -> None:
     do_plot_mcmc = bool(getattr(cfg, "do_plot_mcmc", True))
     do_reweight_nf = bool(getattr(cfg, "do_reweight_nf", False))
     reweight_num_workers = int(getattr(cfg, "reweight_num_workers", 1))
+    do_mcmc_step_lh_nf_eval = bool(getattr(cfg, "do_mcmc_step_lh_nf_eval", True))
+    mcmc_delta_lh_p_3sigma = float(getattr(cfg, "mcmc_delta_lh_p_3sigma", getattr(cfg, "mcmc_lh_keep_quantile", 0.95)))
+    mcmc_nf_eval_batch_size = int(getattr(cfg, "mcmc_nf_eval_batch_size", 2048))
 
     if do_plot_mcmc:
         mcmc_root = _abspath(str(cfg.mcmc_chain))
@@ -481,6 +805,9 @@ def main(cfg: DictConfig) -> None:
     print(f"do_plot_mcmc: {do_plot_mcmc}", flush=True)
     print(f"do_reweight_nf: {do_reweight_nf}", flush=True)
     print(f"reweight_num_workers: {reweight_num_workers}", flush=True)
+    print(f"do_mcmc_step_lh_nf_eval: {do_mcmc_step_lh_nf_eval}", flush=True)
+    print(f"mcmc_delta_lh_p_3sigma: {mcmc_delta_lh_p_3sigma}", flush=True)
+    print(f"mcmc_nf_eval_batch_size: {mcmc_nf_eval_batch_size}", flush=True)
 
     train_cfg_path = os.path.join(training_folder, ".hydra", "config.yaml")
     if not os.path.isfile(train_cfg_path):
@@ -590,13 +917,15 @@ def main(cfg: DictConfig) -> None:
         mcmc_burnin_frac = float(cfg.mcmc_burnin_frac)
         mcmc_thin = int(cfg.mcmc_thin)
 
-        base_dir, mcmc_names, mcmc_pts_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
+        base_dir, mcmc_names, mcmc_pts_raw, mcmc_nll_tree_raw, meta = load_mcmc_gundamworkspace(mcmc_root, mcmc_max_steps)
         mcmc_post, burn = apply_burnin_thin(mcmc_pts_raw, mcmc_burnin_frac, mcmc_thin)
+        mcmc_nll_tree_post = mcmc_nll_tree_raw[burn:mcmc_nll_tree_raw.shape[0]:mcmc_thin]
         print(f"MCMC loaded: raw {mcmc_pts_raw.shape} -> post {mcmc_post.shape} (burn={burn}, thin={mcmc_thin})", flush=True)
         print(f"MCMC base_dir: {base_dir}  meta: {meta}", flush=True)
     else:
-        base_dir, mcmc_names, mcmc_pts_raw, meta = None, None, None, None
+        base_dir, mcmc_names, mcmc_pts_raw, mcmc_nll_tree_raw, meta = None, None, None, None, None
         mcmc_post, burn = None, None
+        mcmc_nll_tree_post = None
         mcmc_burnin_frac, mcmc_thin = None, None
 
     # Resolve comparison dimension
@@ -619,11 +948,187 @@ def main(cfg: DictConfig) -> None:
     cov_mat = postfit_covariance[:d, :d]
     sig_vec = np.sqrt(np.clip(np.diag(cov_mat), 0.0, np.inf))
     labels = nf_param_names_short[:d]
+    delta_nll_cut = compute_delta_nll_cutoff(mcmc_delta_lh_p_3sigma, int(dataset.mean.shape[0]))
+    print(
+        f"MCMC keep cut from chi2: p_3sigma={mcmc_delta_lh_p_3sigma} -> DeltaNLL_cut={delta_nll_cut:.6g} (ndim={int(dataset.mean.shape[0])})",
+        flush=True,
+    )
 
-    if do_plot_mcmc:
+    mcmc_nll = None
+    mcmc_neglogq = None
+    mcmc_keep_mask = None
+    mcmc_keep_threshold = None
+    mcmc_post_all = None
+
+    if do_plot_mcmc and do_mcmc_step_lh_nf_eval:
+        if mcmc_post.shape[1] != bestfit_parameter_values.shape[0]:
+            print(
+                "Skipping MCMC-step LH/NF diagnostics because MCMC dim does not match likelihood/NF dim: "
+                f"mcmc={mcmc_post.shape[1]} vs model={bestfit_parameter_values.shape[0]}",
+                flush=True,
+            )
+        else:
+            nll_bestfit, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(
+                bestfit_parameter_values, extend_continue=False
+            )
+
+            if samples_nf.shape[1] != bestfit_parameter_values.shape[0]:
+                print(
+                    "Skipping NF debug print because NF dim does not match likelihood dim: "
+                    f"nf={samples_nf.shape[1]} vs model={bestfit_parameter_values.shape[0]}",
+                    flush=True,
+                )
+            else:
+                n_nf_debug = min(20, int(samples_nf.shape[0]))
+                print(f"Computing LH NLL debug for first {n_nf_debug} NF samples...", flush=True)
+                nf_neglogq_debug = eval_nf_neglogq_on_physical_points(
+                    model=model,
+                    dataset=dataset,
+                    points_physical=samples_nf[:n_nf_debug],
+                    batch_size=max(1, min(mcmc_nf_eval_batch_size, n_nf_debug)),
+                    device=str(cfg.device),
+                )
+                for it, vec in enumerate(samples_nf[:n_nf_debug]):
+                    nll_val, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(vec, extend_continue=False)
+                    neglogq_val = float(nf_neglogq_debug[it])
+                    delta_nll_val = float(nll_val) - float(nll_bestfit)
+                    accepted = bool(np.isfinite(nll_val) and (nll_val <= (nll_bestfit + delta_nll_cut)))
+                    print(
+                        f"  debug NF[{it:03d}] NLL={float(nll_val):.6g} -log_q={neglogq_val:.6g} best_fit={float(nll_bestfit):.6g} "
+                        f"Delta_NLL={delta_nll_val:.6g} {'accepted' if accepted else 'rejected'}",
+                        flush=True,
+                    )
+                    print(f"    params(head/tail): {_head_tail3(vec[:d])}", flush=True)
+
+            print("Computing LH NLL at each MCMC step...", flush=True)
+            t_lh = time.time()
+            if mcmc_nll_tree_post is None or int(mcmc_nll_tree_post.shape[0]) != int(mcmc_post.shape[0]):
+                raise RuntimeError(
+                    "MCMC TTree-derived NLL is missing or misaligned with post chain after burn/thin."
+                )
+            n_mcmc_debug = min(100, int(mcmc_post.shape[0]))
+            mcmc_neglogq_debug = eval_nf_neglogq_on_physical_points(
+                model=model,
+                dataset=dataset,
+                points_physical=mcmc_post[:n_mcmc_debug],
+                batch_size=max(1, min(mcmc_nf_eval_batch_size, n_mcmc_debug)),
+                device=str(cfg.device),
+            )
+            mcmc_nll = np.empty(mcmc_post.shape[0], dtype=np.float64)
+            for it, vec in enumerate(mcmc_post):
+                nll_val, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(vec, extend_continue=False)
+                mcmc_nll[it] = float(nll_val)
+                delta_nll_val = float(nll_val) - float(nll_bestfit)
+                accepted = bool(np.isfinite(nll_val) and (nll_val <= (nll_bestfit + delta_nll_cut)))
+                if it < 100:
+                    neglogq_val = float(mcmc_neglogq_debug[it])
+                    nll_tree_val = float(mcmc_nll_tree_post[it])
+                    nll_diff_val = float(nll_val) - nll_tree_val
+                    print(
+                        f"  debug MCMC[{it:03d}] NLL={float(nll_val):.6g} -log_q={neglogq_val:.6g} best_fit={float(nll_bestfit):.6g} "
+                        f"Delta_NLL={delta_nll_val:.6g} {'accepted' if accepted else 'rejected'}",
+                        flush=True,
+                    )
+                    print(
+                        f"    NLL_tree((LLHStatistical+LLHPenalty)/2)={nll_tree_val:.6g} "
+                        f"NLL_computed={float(nll_val):.6g} diff={nll_diff_val:.6g}",
+                        flush=True,
+                    )
+                    print(f"    params(head/tail): {_head_tail3(vec[:d])}", flush=True)
+                if (it % max(1, int(mcmc_post.shape[0] // 100)) == 0):
+                    print(f"  LH eval {it}/{mcmc_post.shape[0]}", flush=True)
+            print(f"LH evaluation done in {time.time()-t_lh:.1f}s", flush=True)
+
+            print("Computing NF -log q at each MCMC step...", flush=True)
+            t_nf = time.time()
+            mcmc_neglogq = eval_nf_neglogq_on_physical_points(
+                model=model,
+                dataset=dataset,
+                points_physical=mcmc_post,
+                batch_size=mcmc_nf_eval_batch_size,
+                device=str(cfg.device),
+            )
+            print(f"NF evaluation done in {time.time()-t_nf:.1f}s", flush=True)
+
+            finite_lh = np.isfinite(mcmc_nll)
+            if not finite_lh.any():
+                raise RuntimeError("All MCMC likelihood evaluations are non-finite.")
+
+            mcmc_keep_threshold = float(nll_bestfit + delta_nll_cut)
+            mcmc_keep_mask = finite_lh & (mcmc_nll <= mcmc_keep_threshold)
+            n_keep = int(mcmc_keep_mask.sum())
+            print(
+                f"Keeping {n_keep}/{len(mcmc_keep_mask)} MCMC steps with NLL <= bestfit + {delta_nll_cut:.6g} ({mcmc_keep_threshold:.6g})",
+                flush=True,
+            )
+
+            mcmc_nll_all = mcmc_nll.copy()
+            mcmc_neglogq_all = mcmc_neglogq.copy()
+            mcmc_post_all = mcmc_post.copy()
+
+            # Keep only selected MCMC throws for subsequent comparisons.
+            mcmc_post = mcmc_post[mcmc_keep_mask]
+            mcmc_nll = mcmc_nll[mcmc_keep_mask]
+            mcmc_neglogq = mcmc_neglogq[mcmc_keep_mask]
+
+            plot_nll_vs_neglogq(
+                nll=mcmc_nll_all,
+                neglogq=mcmc_neglogq_all,
+                keep_mask=mcmc_keep_mask,
+                delta_nll_cut=delta_nll_cut,
+                outpath=out_dir / "mcmc_nll_vs_neglogq_kept.png",
+                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
+            )
+
+            np.savez(
+                out_dir / "mcmc_lh_nf_eval_kept.npz",
+                nll=mcmc_nll,
+                neglogq=mcmc_neglogq,
+                nll_all=mcmc_nll_all,
+                nll_tree_all=mcmc_nll_tree_post,
+                nll_tree_kept=mcmc_nll_tree_post[mcmc_keep_mask],
+                neglogq_all=mcmc_neglogq_all,
+                keep_mask=mcmc_keep_mask,
+                p_3sigma=float(mcmc_delta_lh_p_3sigma),
+                delta_nll_cut=float(delta_nll_cut),
+                keep_threshold=float(mcmc_keep_threshold),
+            )
+
+    if do_plot_mcmc and mcmc_keep_mask is not None:
         samples_mcmc_c = mcmc_post[:, :d]
     else:
         samples_mcmc_c = None
+
+    if do_plot_mcmc and mcmc_post_all is not None:
+        samples_mcmc_all_c = mcmc_post_all[:, :d]
+    else:
+        samples_mcmc_all_c = None
+
+    delta_nll_nf = None
+    delta_nll_mcmc = None
+    nll_bestfit = None
+    if do_plot_mcmc and mcmc_nll is not None:
+        print("Computing best-fit NLL and delta-NLL distributions...", flush=True)
+        nll_bestfit, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(
+            bestfit_parameter_values, extend_continue=False
+        )
+        nf_nll = eval_nll_on_physical_points(likelihood_sampler, samples_nf, batch_size=max(1, batch_size))
+        delta_nll_nf = np.asarray(nf_nll, dtype=np.float64) - float(nll_bestfit)
+        delta_nll_mcmc = np.asarray(mcmc_nll, dtype=np.float64) - float(nll_bestfit)
+
+        plot_delta_nll_overlay(
+            delta_nll_nf=delta_nll_nf,
+            delta_nll_mcmc=delta_nll_mcmc,
+            outpath=out_dir / "delta_nll_nf_vs_mcmc.png",
+            bins=int(getattr(cfg, "delta_nll_bins", 80)),
+        )
+
+        np.savez(
+            out_dir / "delta_nll_nf_vs_mcmc.npz",
+            delta_nll_nf=delta_nll_nf,
+            delta_nll_mcmc=delta_nll_mcmc,
+            nll_bestfit=float(nll_bestfit),
+        )
 
     if do_reweight_nf:
         if logq_nf is None or logq_nf.shape[0] != samples_nf.shape[0]:
@@ -710,9 +1215,24 @@ def main(cfg: DictConfig) -> None:
         print(f"Effective sample size (NF to LH, filtered): {eff_f:.1f} / {int(outlier_mask.sum())}", flush=True)
 
         fig = plt.figure(figsize=(6, 4))
-        plt.hist(reweight_nf_to_lh, bins=100, histtype="step", alpha=1.0, label="reweight_nf_to_lh")
-        plt.hist(np.asarray(logq_nf).reshape(-1), bins=100, histtype="step", alpha=0.7, label="logq_nf (shifted)")
-        plt.hist(lh_values, bins=100, histtype="step", alpha=0.7, label="lh_values (shifted)")
+        # Use shared bin edges so all overlaid histograms have identical bin widths.
+        h_rew = np.asarray(reweight_nf_to_lh, dtype=np.float64).reshape(-1)
+        h_logq = np.asarray(logq_nf, dtype=np.float64).reshape(-1)
+        h_lh = np.asarray(lh_values, dtype=np.float64).reshape(-1)
+        h_all = np.concatenate([h_rew, h_logq, h_lh])
+        h_all = h_all[np.isfinite(h_all)]
+        if h_all.size == 0:
+            bin_edges = np.linspace(-1.0, 1.0, 101)
+        else:
+            x_min = float(np.min(h_all))
+            x_max = float(np.max(h_all))
+            if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+                x_min, x_max = x_min - 0.5, x_min + 0.5
+            bin_edges = np.linspace(x_min, x_max, 101)
+
+        plt.hist(h_rew, bins=bin_edges, histtype="step", alpha=1.0, label="reweight_nf_to_lh")
+        plt.hist(h_logq, bins=bin_edges, histtype="step", alpha=0.7, label="logq_nf (shifted)")
+        plt.hist(h_lh, bins=bin_edges, histtype="step", alpha=0.7, label="lh_values (shifted)")
         plt.xlabel("Reweighting factor (logq_NF - logp_LH)")
         plt.ylabel("Entries")
         plt.title("Reweighting factors from NF to LH")
@@ -743,8 +1263,22 @@ def main(cfg: DictConfig) -> None:
             f.write(f"mcmc_meta: {meta}\n")
             f.write(f"mcmc_raw: {mcmc_pts_raw.shape}\n")
             f.write(f"mcmc_post: {mcmc_post.shape}\n")
+            if mcmc_nll_tree_raw is not None:
+                f.write(f"mcmc_nll_tree_raw: {mcmc_nll_tree_raw.shape}\n")
+            if mcmc_nll_tree_post is not None:
+                f.write(f"mcmc_nll_tree_post: {mcmc_nll_tree_post.shape}\n")
+                f.write("mcmc_nll_tree_definition: (LLHStatistical+LLHPenalty)/2\n")
             f.write(f"burnin_frac: {mcmc_burnin_frac}\n")
             f.write(f"thin: {mcmc_thin}\n")
+            f.write(f"do_mcmc_step_lh_nf_eval: {do_mcmc_step_lh_nf_eval}\n")
+            if mcmc_keep_mask is not None:
+                f.write(f"mcmc_delta_lh_p_3sigma: {mcmc_delta_lh_p_3sigma}\n")
+                f.write(f"mcmc_lh_keep_threshold: {mcmc_keep_threshold}\n")
+                f.write(f"mcmc_lh_keep_count: {int(len(mcmc_nll))}\n")
+                f.write("mcmc_nll_neglogq_plot: mcmc_nll_vs_neglogq_kept.png\n")
+            if delta_nll_nf is not None:
+                f.write("delta_nll_plot: delta_nll_nf_vs_mcmc.png\n")
+                f.write(f"nll_bestfit: {float(nll_bestfit)}\n")
         f.write(f"nf_samples: {samples_nf.shape}\n")
         f.write(f"matching_mode: index_order_only\n")
         f.write(f"compared_dims: {d}\n")
@@ -759,10 +1293,10 @@ def main(cfg: DictConfig) -> None:
     # Marginals
     # -------------------------
     bins_n = int(cfg.bins)
-    if run_without_mcmc:
-        print(f"Plotting {d} NF-only parameter marginals.", flush=True)
-    else:
+    if do_plot_mcmc and samples_mcmc_c is not None:
         print(f"Comparing {d} parameters.", flush=True)
+    else:
+        print(f"Plotting {d} NF-only parameter marginals.", flush=True)
     print("Plotting marginals sequentially.", flush=True)
 
     global_xmin = float(np.min(samples_nf_c))
@@ -793,7 +1327,7 @@ def main(cfg: DictConfig) -> None:
         mu = float(mu_vec[k])
         sig = float(sig_vec[k])
 
-        if do_plot_mcmc:
+        if do_plot_mcmc and samples_mcmc_c is not None:
             x_m = samples_mcmc_c[:, k]
             xmin = float(min(np.min(x_m), np.min(x_n), mu))
             xmax = float(max(np.max(x_m), np.max(x_n), mu))
@@ -817,8 +1351,18 @@ def main(cfg: DictConfig) -> None:
 
         fig = plt.figure(figsize=(6, 4))
 
-        if do_plot_mcmc:
-            plt.hist(x_m, bins=edges, histtype="step", density=True, label=f"MCMC (n={len(x_m)})")
+        if do_plot_mcmc and samples_mcmc_c is not None:
+            plt.hist(x_m, bins=edges, histtype="step", density=True, label=f"MCMC kept (n={len(x_m)})")
+            if samples_mcmc_all_c is not None:
+                x_m_all = samples_mcmc_all_c[:, k]
+                plt.hist(
+                    x_m_all,
+                    bins=edges,
+                    histtype="stepfilled",
+                    density=True,
+                    alpha=0.18,
+                    label=f"MCMC all (n={len(x_m_all)})",
+                )
 
         plt.hist(x_n, bins=edges, histtype="step", density=True, label=f"NF (n={len(x_n)})")
 
@@ -855,7 +1399,7 @@ def main(cfg: DictConfig) -> None:
         if (k + 1) % 10 == 0 or (k + 1) == d:
             print(f"  Plotted {k+1}/{d}", flush=True)
 
-    if do_plot_mcmc:
+    if do_plot_mcmc and samples_mcmc_c is not None:
         corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
         dims_cfg = getattr(cfg, "corr2d_dims", None)
 
@@ -881,7 +1425,7 @@ def main(cfg: DictConfig) -> None:
         else:
             print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
     else:
-        print("do_plot_mcmc=False, skipping 2D NF-vs-MCMC plots.", flush=True)
+        print("do_plot_mcmc=False or no filtered MCMC samples, skipping 2D NF-vs-MCMC plots.", flush=True)
 
     print(f"Done. Outputs in: {str(out_dir)}", flush=True)
 

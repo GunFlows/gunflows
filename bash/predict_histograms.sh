@@ -8,8 +8,8 @@
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
-#SBATCH --output=logs/sample_nf_mcmc_toy_%j.out
-#SBATCH --error=logs/sample_nf_mcmc_toy_%j.err
+#SBATCH --output=logs/predict_hists%j.out
+#SBATCH --error=logs/predict_hists%j.err
 #SBATCH --mail-type=ALL
 
 set -euo pipefail
@@ -21,8 +21,8 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 # HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos" # belong to OA config
 # HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud" # belong to OA config
-# HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit"
+# HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 trained_models="/home/shares/sanchezf/gundam_n_flow/trained_models"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
@@ -45,10 +45,10 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --bind "${trained_models}:/workspace/trained_models" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
-  "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.sample_mcmc_toy \
+  "${SIF}" bash -c "source '${IN_CONTAINER_SETUP}' && \
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.predict_histograms \
                      --config-path ${IN_CONTAINER_WORKDIR}/configs \
-                     --config-name sample_mcmc_nf_toyOA \
+                     --config-name predict_histograms \
                      ${EXTRA_ARGS}"
 
 echo "Job ended at $(date)"
