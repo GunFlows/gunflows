@@ -26,9 +26,19 @@ SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 IN_CONTAINER_WORKDIR="/workspace/work/GuNFlows"
 IN_CONTAINER_SETUP="${IN_CONTAINER_WORKDIR}/setup_nosubshell.sh"
 
-EXTRA_ARGS=""
+# --- default Hydra overrides ------------------------------------------------
+# Marginal-evolution scan across checkpoint epochs.
+# Indices (global): a few LIN (0-59), DET (60-99, the band showing the
+# reweighting right-shift), and SPL (100-109).
+# Override at submit time by passing the same key in $@.
+DEFAULT_ARGS=(
+  "+marginal_scan_param_indices=[0,30,65,89,96,100]"
+  "marginal_scan_bins=60"
+)
+
+EXTRA_ARGS="$(printf ' %q' "${DEFAULT_ARGS[@]}")"
 if [ "$#" -gt 0 ]; then
-  EXTRA_ARGS="$(printf ' %q' "$@")"
+  EXTRA_ARGS="${EXTRA_ARGS}$(printf ' %q' "$@")"
 fi
 
 echo "Job started at $(date)"
