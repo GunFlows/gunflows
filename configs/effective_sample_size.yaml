@@ -3,7 +3,7 @@ save_dir:        ${training_folder}/ess
 run_without_mcmc: true
 mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 
-num_samples: 100000
+num_samples: 5000
 batch_size: 4098
 bins: 200
 plot_workers: 0
@@ -11,8 +11,9 @@ llh_workers: 10 # if 0, do not use multiprocessing for llh computation
 n_checkpoints: 10 # number of NF checkpoints to evaluate (roughly equally spaced)
 
 # Marginal-evolution scan: one figure per index, one subpanel per checkpoint epoch.
-# Set to [] (default) to disable. Override e.g. `marginal_scan_param_indices=[0,30,65,100]`.
-marginal_scan_param_indices: []
+# Indices span LIN (0-59), DET (60-99 -- the band with the right-shift bias),
+# and SPL (100-109). Set to [] to disable.
+marginal_scan_param_indices: [0, 30, 65, 89, 96, 100]
 marginal_scan_bins: 60
 
 verbose: 0
