@@ -10,6 +10,11 @@ plot_workers: 0
 llh_workers: 10 # if 0, do not use multiprocessing for llh computation
 n_checkpoints: 10 # number of NF checkpoints to evaluate (roughly equally spaced)
 
+# Marginal-evolution scan: one figure per index, one subpanel per checkpoint epoch.
+# Set to [] (default) to disable. Override e.g. `marginal_scan_param_indices=[0,30,65,100]`.
+marginal_scan_param_indices: []
+marginal_scan_bins: 60
+
 verbose: 0
 
 #3: print also NLL status every 40 iterations

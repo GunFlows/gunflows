@@ -236,6 +236,97 @@ def _plot_contours_nf_vs_reweighted(
     plt.close(fig)
 
 
+def _plot_marginal_epoch_panel(
+    epoch_data: list,
+    mu: float,
+    sigma: float,
+    label: str,
+    out_path: Path,
+    bins: int = 60,
+) -> None:
+    """One figure for a single parameter; one subpanel per training epoch.
+
+    Each subpanel overlays:
+      - NF marginal (unweighted)
+      - NF reweighted marginal (IS weights = exp(log_ratio))
+      - Gaussian reference (best-fit mean, postfit sigma)
+      - dashed vertical line at the best-fit value
+
+    Parameters
+    ----------
+    epoch_data : list of (epoch, x_nf, log_ratio) sorted by epoch ascending.
+    """
+    if len(epoch_data) == 0:
+        return
+
+    n = len(epoch_data)
+    ncols = min(5, n)
+    nrows = int(math.ceil(n / ncols))
+
+    # Shared x range across panels: percentile of pooled samples, padded by
+    # +/- 4 sigma so the Gaussian reference is always visible.
+    all_x = np.concatenate(
+        [np.asarray(x, dtype=np.float64).reshape(-1) for _, x, _ in epoch_data]
+    )
+    if all_x.size == 0:
+        return
+    p1, p99 = np.percentile(all_x, [0.5, 99.5])
+    if not np.isfinite(p1) or not np.isfinite(p99) or p99 <= p1:
+        p1, p99 = float(np.min(all_x)), float(np.max(all_x))
+    if np.isfinite(sigma) and sigma > 0 and np.isfinite(mu):
+        p1 = min(p1, mu - 4.0 * sigma)
+        p99 = max(p99, mu + 4.0 * sigma)
+    if not np.isfinite(p1) or not np.isfinite(p99) or p99 <= p1:
+        p1, p99 = 0.0, 1.0
+    span = p99 - p1
+    xmin, xmax = p1 - 0.05 * span, p99 + 0.05 * span
+    edges = np.linspace(xmin, xmax, bins + 1)
+    xgrid = np.linspace(xmin, xmax, 400)
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(3.0 * ncols, 2.6 * nrows),
+        sharex=True, sharey=False, squeeze=False,
+    )
+
+    for k, (ep, x, lr) in enumerate(epoch_data):
+        r, c = divmod(k, ncols)
+        ax = axes[r][c]
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
+        lr = np.asarray(lr, dtype=np.float64).reshape(-1)
+        if x.size == 0:
+            ax.set_visible(False)
+            continue
+        w = _stable_weights_from_logratio(lr)
+        ax.hist(x, bins=edges, density=True, histtype="step", linewidth=1.2,
+                color="C2", label="NF")
+        ax.hist(x, bins=edges, density=True, histtype="step", linewidth=1.2,
+                color="C3", weights=w, label="NF rw")
+        if np.isfinite(sigma) and sigma > 0 and np.isfinite(mu):
+            gauss = np.exp(-0.5 * ((xgrid - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
+            ax.plot(xgrid, gauss, color="C4", linewidth=1.0, label="Gauss")
+            ax.axvline(mu, color="C0", linestyle="--", linewidth=0.9, label="best fit")
+        ax.set_title(f"epoch {ep}k", fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+        ax.grid(True, alpha=0.2)
+        if k == 0:
+            ax.legend(fontsize=7, loc="best")
+
+    # Hide unused subplots
+    for k in range(len(epoch_data), nrows * ncols):
+        r, c = divmod(k, ncols)
+        axes[r][c].set_visible(False)
+
+    # Common x-axis label on the bottom row
+    for c in range(ncols):
+        axes[nrows - 1][c].set_xlabel(label, fontsize=9)
+
+    fig.suptitle(f"Marginal evolution: {label}", fontsize=11)
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 @hydra.main(config_path="../../configs", config_name="effective_sample_size", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
@@ -304,6 +395,24 @@ def main(cfg: DictConfig) -> None:
     epoch_list = []
     latest_epoch = -1
     latest_payload = None
+
+    # ---- per-epoch marginal scan -------------------------------------------------
+    # User-configurable list of parameter indices to plot one figure per param,
+    # with one subpanel per checkpoint epoch. Default = empty (feature off).
+    _scan_cfg = getattr(cfg, "marginal_scan_param_indices", None)
+    if _scan_cfg is None:
+        marginal_scan_indices: list[int] = []
+    else:
+        marginal_scan_indices = [int(i) for i in _scan_cfg]
+    marginal_scan_bins = int(getattr(cfg, "marginal_scan_bins", 60))
+    # epoch_marginal_payloads[idx] = list of (epoch, x_arr, log_ratio_arr)
+    epoch_marginal_payloads: dict = {i: [] for i in marginal_scan_indices}
+    if marginal_scan_indices:
+        print(
+            f"Marginal-evolution scan enabled for param indices: {marginal_scan_indices} "
+            f"(bins={marginal_scan_bins})",
+            flush=True,
+        )
 
     if (cfg.llh_workers > 0):
         print(f"Initializing {cfg.llh_workers} ({mp.cpu_count()}) workers to compute LH values in parallel.", flush=True)
@@ -493,6 +602,17 @@ def main(cfg: DictConfig) -> None:
                 "sigma": np.sqrt(np.clip(np.diag(postfit_covariance[:d, :d]), 0.0, np.inf)),
             }
 
+        # Stash this epoch's column slice + log-ratio for the marginal-evolution scan.
+        if marginal_scan_indices:
+            _lr_arr = np.asarray(reweight_nf_to_lh[:samples_nf.shape[0]], dtype=np.float64)
+            for _idx in marginal_scan_indices:
+                if 0 <= _idx < int(samples_nf.shape[1]):
+                    epoch_marginal_payloads[_idx].append(
+                        (int(ep),
+                         np.asarray(samples_nf[:, _idx], dtype=np.float64).copy(),
+                         _lr_arr.copy())
+                    )
+
         # sort lists by epoch
         sorted_indices = np.argsort(epoch_list)
         epoch_list = [epoch_list[i] for i in sorted_indices]
@@ -623,6 +743,48 @@ def main(cfg: DictConfig) -> None:
 
     print("Finished looping over checkpoints.")
 
+    # -------------------------------------------------------------------------
+    # Marginal-evolution panels: one figure per scanned parameter, one subpanel
+    # per training epoch. Shows NF unweighted vs NF-reweighted marginal so the
+    # build-up (or absence) of the reweighting-induced shift is visible across
+    # epochs.
+    # -------------------------------------------------------------------------
+    if marginal_scan_indices:
+        scan_dir = out_dir / "marginal_epoch_scan"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resolve labels / mu / sigma from any successful checkpoint
+        if latest_payload is not None:
+            labels_ref = latest_payload["labels"]
+            mu_ref = latest_payload["mu"]
+            sigma_ref = latest_payload["sigma"]
+        else:
+            labels_ref = nf_param_names_short
+            mu_ref = bestfit_parameter_values
+            sigma_ref = np.sqrt(np.clip(np.diag(postfit_covariance), 0.0, np.inf))
+
+        for _idx in marginal_scan_indices:
+            data = epoch_marginal_payloads.get(_idx, [])
+            if not data:
+                print(f"  scan: no data collected for index {_idx}, skipping.", flush=True)
+                continue
+            data_sorted = sorted(data, key=lambda t: t[0])
+            label = labels_ref[_idx] if 0 <= _idx < len(labels_ref) else f"param_{_idx}"
+            mu_i = float(mu_ref[_idx]) if 0 <= _idx < len(mu_ref) else float("nan")
+            sig_i = float(sigma_ref[_idx]) if 0 <= _idx < len(sigma_ref) else float("nan")
+            safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", str(label))
+            out_path = scan_dir / f"param_{_idx:03d}_{safe_label}.png"
+            _plot_marginal_epoch_panel(
+                data_sorted,
+                mu_i,
+                sig_i,
+                str(label),
+                out_path,
+                bins=marginal_scan_bins,
+            )
+            print(f"  scan: wrote {out_path}  (epochs={[e for e,_,_ in data_sorted]})", flush=True)
+
+        print(f"Marginal-evolution scan plots saved in {scan_dir}.", flush=True)
 
 
 
