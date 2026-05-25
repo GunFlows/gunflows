@@ -174,6 +174,99 @@ def sample_nf_physical_with_logq(
     return s, lq
 
 
+def _compute_mcmc_ess(samples: np.ndarray, max_lag: int | None = None) -> np.ndarray:
+    """Per-parameter ESS for an MCMC chain via integrated autocorrelation time.
+
+    ESS_k = N / (1 + 2 * sum_{t=1}^{T} rho_k(t))
+
+    The autocorrelation sum is truncated at the first lag where |rho| < 0.05
+    (standard early-stopping) to reduce noise from long tails.
+
+    Parameters
+    ----------
+    samples  : ndarray, shape (N, D)
+    max_lag  : int or None  — defaults to min(N//2, 2000)
+
+    Returns
+    -------
+    ess : ndarray, shape (D,)
+    """
+    n, d = samples.shape
+    if n < 4:
+        return np.full(d, float(n))
+    if max_lag is None:
+        max_lag = min(n // 2, 2000)
+    ess = np.empty(d, dtype=np.float64)
+    for k in range(d):
+        x = samples[:, k].astype(np.float64)
+        x -= x.mean()
+        var = float(np.var(x, ddof=0))
+        if var == 0.0:
+            ess[k] = 1.0
+            continue
+        tau = 1.0
+        for lag in range(1, max_lag + 1):
+            rho = float(np.dot(x[lag:], x[:-lag])) / (float(n - lag) * var)
+            if abs(rho) < 0.05:
+                break
+            tau += 2.0 * rho
+        ess[k] = max(1.0, float(n) / max(tau, 1.0))
+    return ess
+
+
+
+def _gaussian_logp(samples: np.ndarray, mu: np.ndarray, cov: np.ndarray) -> np.ndarray:
+    """Multivariate Gaussian log-density evaluated at each row of `samples` (N, D)."""
+    samples = np.asarray(samples, dtype=np.float64)
+    mu = np.asarray(mu, dtype=np.float64).reshape(-1)
+    cov = np.asarray(cov, dtype=np.float64)
+    d = mu.size
+    sign, logdet = np.linalg.slogdet(cov)
+    if sign <= 0:
+        raise RuntimeError("Covariance matrix has non-positive determinant")
+    cov_inv = np.linalg.inv(cov)
+    diff = samples - mu[None, :]
+    quad = np.einsum("ij,jk,ik->i", diff, cov_inv, diff)
+    return -0.5 * (d * np.log(2.0 * np.pi) + logdet + quad)
+
+
+def sample_gaussian_physical_with_logp(
+    mu: np.ndarray,
+    cov: np.ndarray,
+    parameter_limits: dict,
+    num_samples: int,
+    batch_size: int,
+    rng_seed: int = 0,
+):
+    """Sample from MVN(mu, cov) with rejection on parameter limits.
+
+    Returns
+    -------
+    samples : ndarray (N, D) float32
+    logp    : ndarray (N,)   float64  -- Gaussian log-density (NOT clipped for limits)
+    """
+    rng = np.random.default_rng(int(rng_seed))
+    mu = np.asarray(mu, dtype=np.float64).reshape(-1)
+    cov = np.asarray(cov, dtype=np.float64)
+    need_total = int(num_samples)
+    b = max(int(batch_size), 16)
+
+    samples_list = []
+    while len(samples_list) < need_total:
+        batch = rng.multivariate_normal(mean=mu, cov=cov, size=b).astype(np.float32)
+        mask = check_parameters_array_limits(batch, parameter_limits)
+        accepted = batch[mask]
+        for row in accepted:
+            if len(samples_list) >= need_total:
+                break
+            samples_list.append(row)
+        print(f" Gauss: accepted {int(mask.sum())}/{b}  -> total {len(samples_list)}/{need_total}", flush=True)
+
+    samples = np.asarray(samples_list[:need_total], dtype=np.float32)
+    logp = _gaussian_logp(samples, mu, cov)
+    return samples, logp
+
+
 def _init_reweight_worker(llh_config, llh_overrides, data_is_asimov, threads, llh_cwd):
     global _REWEIGHT_LIKELIHOOD_SAMPLER
     _REWEIGHT_LIKELIHOOD_SAMPLER = LikelihoodSampler(
@@ -319,41 +412,36 @@ def read_param_names_parameterSets(tfile: ROOT.TFile, base_dir: str) -> tuple[li
 
 
 def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
+    """Read every MCMC entry (no deduplication).
+
+    Rejected MCMC proposals keep the chain at the current state, so an entry
+    that is identical to the previous one is a *valid* sample: it must be
+    counted once per iteration to give correct posterior marginals.
+
+    `max_steps`, if not None, keeps the *last* max_steps entries (so a long
+    burn-in is naturally truncated on the left).
+    """
     n_total = int(t_mcmc.GetEntries())
     if not t_mcmc.GetBranch("Points"):
         raise RuntimeError("MCMC tree has no 'Points' branch.")
 
-    # Deduplicate consecutive entries based on the first Points component
-    # and keep only the first entry of each repeated run.
-
-    kept_entry_indices: list[int] = []
-    prev_key = None
-    for entry_idx in range(n_total):
-        t_mcmc.GetEntry(entry_idx)
-        v = getattr(t_mcmc, "Points")
-        if int(v.size()) <= 0:
-            continue
-        key_val = float(v.at(0))
-        if prev_key is None or key_val != prev_key:
-            kept_entry_indices.append(entry_idx)
-            prev_key = key_val
-
-    if max_steps is not None:
-        n = min(len(kept_entry_indices), int(max_steps))
-        kept_entry_indices = kept_entry_indices[-n:]
+    if max_steps is not None and max_steps > 0:
+        n = min(n_total, int(max_steps))
+        start = n_total - n
     else:
-        n = len(kept_entry_indices)
+        n = n_total
+        start = 0
 
     if n == 0:
         t_mcmc.GetEntry(0)
         d0 = int(getattr(t_mcmc, "Points").size())
         return np.empty((0, d0), dtype=np.float64)
 
-    t_mcmc.GetEntry(kept_entry_indices[0])
+    t_mcmc.GetEntry(start)
     d = int(getattr(t_mcmc, "Points").size())
     pts = np.empty((n, d), dtype=np.float64)
-    for i, entry_idx in enumerate(kept_entry_indices):
-        t_mcmc.GetEntry(entry_idx)
+    for i in range(n):
+        t_mcmc.GetEntry(start + i)
         v = getattr(t_mcmc, "Points")
         for j in range(d):
             pts[i, j] = float(v.at(j))
@@ -361,36 +449,25 @@ def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
 
 
 def read_ttree_nll_from_llh_branches(t_mcmc, max_steps: int | None) -> np.ndarray:
-    """Read TTree NLL proxy defined as (LLHStatistical + LLHPenalty) / 2.
+    """Read TTree NLL proxy = (LLHStatistical + LLHPenalty)/2 for every entry.
 
-    Uses the same deduplication/capping convention as read_points_vector_tree:
-    deduplicate consecutive entries by Points[0], then apply max_steps on tail.
+    No deduplication: each chain entry contributes once.  `max_steps`, if set,
+    keeps the last `max_steps` entries (matching read_points_vector_tree).
     """
     n_total = int(t_mcmc.GetEntries())
-    if not t_mcmc.GetBranch("Points"):
-        raise RuntimeError("MCMC tree has no 'Points' branch.")
     if not t_mcmc.GetBranch("LLHStatistical") or not t_mcmc.GetBranch("LLHPenalty"):
         raise RuntimeError("MCMC tree must contain branches 'LLHStatistical' and 'LLHPenalty'.")
 
-    kept_entry_indices: list[int] = []
-    prev_key = None
-    for entry_idx in range(n_total):
-        t_mcmc.GetEntry(entry_idx)
-        v = getattr(t_mcmc, "Points")
-        if int(v.size()) <= 0:
-            continue
-        key_val = float(v.at(0))
-        if prev_key is None or key_val != prev_key:
-            kept_entry_indices.append(entry_idx)
-            prev_key = key_val
+    if max_steps is not None and max_steps > 0:
+        n = min(n_total, int(max_steps))
+        start = n_total - n
+    else:
+        n = n_total
+        start = 0
 
-    if max_steps is not None:
-        n = min(len(kept_entry_indices), int(max_steps))
-        kept_entry_indices = kept_entry_indices[-n:]
-
-    out = np.empty(len(kept_entry_indices), dtype=np.float64)
-    for i, entry_idx in enumerate(kept_entry_indices):
-        t_mcmc.GetEntry(entry_idx)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        t_mcmc.GetEntry(start + i)
         llh_stat = float(getattr(t_mcmc, "LLHStatistical"))
         llh_pen = float(getattr(t_mcmc, "LLHPenalty"))
         out[i] = 0.5 * (llh_stat + llh_pen)
@@ -556,6 +633,54 @@ def compute_delta_nll_cutoff(p_3sigma: float, ndim: int) -> float:
     return 0.5 * delta2
 
 
+
+def plot_nll_diff_histogram(
+    nll_computed: np.ndarray,
+    nll_tree: np.ndarray,
+    outpath: Path,
+    bins: int = 100,
+) -> None:
+    """Histogram of (computed NLL - TTree NLL) over all MCMC steps.
+
+    Annotates: variance, mean, min/max, n_finite.  Useful to check whether
+    the GUNDAM LH evaluated freshly at each chain point reproduces the value
+    stored by GUNDAM in the MCMC TTree.
+    """
+    a = np.asarray(nll_computed, dtype=np.float64).reshape(-1)
+    b = np.asarray(nll_tree,    dtype=np.float64).reshape(-1)
+    n = min(a.size, b.size)
+    diff = a[:n] - b[:n]
+    finite = np.isfinite(diff)
+    diff_f = diff[finite]
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    if diff_f.size == 0:
+        ax.text(0.5, 0.5, "no finite diffs", ha="center", transform=ax.transAxes)
+    else:
+        var = float(np.var(diff_f, ddof=1)) if diff_f.size > 1 else 0.0
+        mean = float(np.mean(diff_f))
+        ax.hist(diff_f, bins=bins, histtype="step", linewidth=1.4, color="C0",
+                label=f"diff (N={diff_f.size})")
+        ax.axvline(0.0, color="k", linestyle="--", linewidth=0.7, alpha=0.6)
+        ax.axvline(mean, color="C3", linestyle=":", linewidth=1.0, alpha=0.8,
+                   label=f"mean = {mean:.4g}")
+        info = (f"N finite      = {diff_f.size}\n"
+                f"mean (diff)   = {mean:.6g}\n"
+                f"variance      = {var:.6g}\n"
+                f"stddev        = {np.sqrt(var):.6g}\n"
+                f"min / max     = {diff_f.min():.4g} / {diff_f.max():.4g}")
+        ax.text(0.02, 0.97, info, transform=ax.transAxes, va="top", ha="left",
+                fontsize=9, family="monospace",
+                bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="0.7", alpha=0.85))
+        ax.legend(loc="upper right", fontsize=9)
+    ax.set_xlabel(r"NLL$_\mathrm{computed}$  -  NLL$_\mathrm{TTree}$  (per MCMC step)")
+    ax.set_ylabel("entries")
+    ax.set_title("MCMC: freshly-computed LH vs stored TTree LH")
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
 def plot_nll_vs_neglogq(
     nll: np.ndarray,
     neglogq: np.ndarray,
@@ -568,11 +693,15 @@ def plot_nll_vs_neglogq(
     neglogq = np.asarray(neglogq, dtype=np.float64).reshape(-1)
     keep_mask = np.asarray(keep_mask, dtype=bool).reshape(-1)
 
-    # Shift -log_q by its median, same convention as logq_nf shifting.
+    # Shift both NLL and -log_q by their respective medians so the cloud
+    # lands on the x=y diagonal (removes the normalisation offset).
+    finite_nll_m = np.isfinite(nll)
+    median_nll = float(np.median(nll[finite_nll_m])) if finite_nll_m.any() else 0.0
+    nll = nll - median_nll
+
     finite_neglogq = np.isfinite(neglogq)
-    if finite_neglogq.any():
-        median_neglogq = np.median(neglogq[finite_neglogq])
-        neglogq = neglogq - median_neglogq
+    median_neglogq = float(np.median(neglogq[finite_neglogq])) if finite_neglogq.any() else 0.0
+    neglogq = neglogq - median_neglogq
 
     finite_mask = np.isfinite(nll) & np.isfinite(neglogq)
     all_nll = nll[finite_mask]
@@ -607,9 +736,9 @@ def plot_nll_vs_neglogq(
         fig.colorbar(mesh, ax=ax)
 
     _plot_hist2d_log(ax1, all_nll, all_nq)
-    ax1.set_title("All MCMC steps")
-    ax1.set_xlabel("NLL")
-    ax1.set_ylabel("-log q_NF")
+    ax1.set_title(f"All MCMC steps  [NLL shift: {median_nll:.4g}, -logq shift: {median_neglogq:.4g}]", fontsize=9)
+    ax1.set_xlabel("NLL  (median-centred)")
+    ax1.set_ylabel("-log q_NF  (median-centred)")
     # Add y=x diagonal line
     lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), 
         np.max([ax1.get_xlim(), ax1.get_ylim()])]
@@ -617,9 +746,9 @@ def plot_nll_vs_neglogq(
 
     if kept_nll.size > 0:
         _plot_hist2d_log(ax2, kept_nll, kept_nq)
-    ax2.set_title(f"Kept steps (ΔNLL <= {delta_nll_cut:.3g})")
-    ax2.set_xlabel("NLL")
-    ax2.set_ylabel("-log q_NF")
+    ax2.set_title(f"Kept steps (ΔNLL <= {delta_nll_cut:.3g})  [same shifts]", fontsize=9)
+    ax2.set_xlabel("NLL  (median-centred)")
+    ax2.set_ylabel("-log q_NF  (median-centred)")
     # Add y=x diagonal line
     lims = [np.min([ax2.get_xlim(), ax2.get_ylim()]), 
         np.max([ax2.get_xlim(), ax2.get_ylim()])]
@@ -784,6 +913,10 @@ def main(cfg: DictConfig) -> None:
 
     do_plot_mcmc = bool(getattr(cfg, "do_plot_mcmc", True))
     do_reweight_nf = bool(getattr(cfg, "do_reweight_nf", False))
+    do_reweight_gauss = bool(getattr(cfg, "do_reweight_gauss", do_reweight_nf))
+    fake_zero_weights = bool(getattr(cfg, "fake_zero_weights", False))
+    if fake_zero_weights:
+        do_reweight_gauss = False  # the Gaussian path always evaluates GUNDAM; disable in sanity mode
     reweight_num_workers = int(getattr(cfg, "reweight_num_workers", 1))
     do_mcmc_step_lh_nf_eval = bool(getattr(cfg, "do_mcmc_step_lh_nf_eval", True))
     mcmc_delta_lh_p_3sigma = float(getattr(cfg, "mcmc_delta_lh_p_3sigma", getattr(cfg, "mcmc_lh_keep_quantile", 0.95)))
@@ -804,6 +937,8 @@ def main(cfg: DictConfig) -> None:
     print(f"save_dir: {save_dir}", flush=True)
     print(f"do_plot_mcmc: {do_plot_mcmc}", flush=True)
     print(f"do_reweight_nf: {do_reweight_nf}", flush=True)
+    print(f"do_reweight_gauss: {do_reweight_gauss}", flush=True)
+    print(f"fake_zero_weights (sanity test d): {fake_zero_weights}", flush=True)
     print(f"reweight_num_workers: {reweight_num_workers}", flush=True)
     print(f"do_mcmc_step_lh_nf_eval: {do_mcmc_step_lh_nf_eval}", flush=True)
     print(f"mcmc_delta_lh_p_3sigma: {mcmc_delta_lh_p_3sigma}", flush=True)
@@ -960,6 +1095,36 @@ def main(cfg: DictConfig) -> None:
     mcmc_keep_threshold = None
     mcmc_post_all = None
 
+    mcmc_neglogq_all = None  # ALWAYS_PRODUCE_MCMC_NEGLOGQ_PLOT
+    if (do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] > 0
+            and mcmc_post.shape[1] == bestfit_parameter_values.shape[0]):
+        print("Computing NF -log q for all MCMC points (default diagnostic)...", flush=True)
+        _t_nf_def = time.time()
+        mcmc_neglogq_all = eval_nf_neglogq_on_physical_points(
+            model=model, dataset=dataset, points_physical=mcmc_post,
+            batch_size=mcmc_nf_eval_batch_size, device=str(cfg.device),
+        )
+        print(f"  done in {time.time()-_t_nf_def:.1f}s", flush=True)
+
+        if mcmc_nll_tree_post is not None:
+            # Fallback keep-mask based on TTree NLL (used only if no LH-eval below).
+            _nll_min = float(np.min(mcmc_nll_tree_post[np.isfinite(mcmc_nll_tree_post)]))
+            _keep_tree = (np.isfinite(mcmc_nll_tree_post)
+                          & (mcmc_nll_tree_post <= _nll_min + float(delta_nll_cut)))
+            print(f"  default keep-mask from TTree NLL: {int(_keep_tree.sum())}/{len(_keep_tree)} steps "
+                  f"(cut: NLL <= {_nll_min:.4f} + {float(delta_nll_cut):.4f})", flush=True)
+            # Produce the plot now (will be overridden later if LH-eval block runs)
+            plot_nll_vs_neglogq(
+                nll=mcmc_nll_tree_post,
+                neglogq=mcmc_neglogq_all,
+                keep_mask=_keep_tree,
+                delta_nll_cut=float(delta_nll_cut),
+                outpath=out_dir / "mcmc_nll_vs_neglogq_kept.png",
+                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
+            )
+            mcmc_keep_mask = _keep_tree
+            mcmc_keep_threshold = float(_nll_min + delta_nll_cut)
+
     if do_plot_mcmc and do_mcmc_step_lh_nf_eval:
         if mcmc_post.shape[1] != bestfit_parameter_values.shape[0]:
             print(
@@ -1080,6 +1245,13 @@ def main(cfg: DictConfig) -> None:
                 bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
             )
 
+            plot_nll_diff_histogram(
+                nll_computed=mcmc_nll_all,
+                nll_tree=mcmc_nll_tree_post,
+                outpath=out_dir / "mcmc_nll_diff_computed_minus_tree.png",
+                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
+            )
+
             np.savez(
                 out_dir / "mcmc_lh_nf_eval_kept.npz",
                 nll=mcmc_nll,
@@ -1094,7 +1266,9 @@ def main(cfg: DictConfig) -> None:
                 keep_threshold=float(mcmc_keep_threshold),
             )
 
-    if do_plot_mcmc and mcmc_keep_mask is not None:
+    if do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] > 0:
+        # Use whatever survives: if do_mcmc_step_lh_nf_eval=True, mcmc_post has
+        # already been filtered by the LH-keep mask; otherwise it is the full chain.
         samples_mcmc_c = mcmc_post[:, :d]
     else:
         samples_mcmc_c = None
@@ -1146,7 +1320,26 @@ def main(cfg: DictConfig) -> None:
         reweight_nf_to_lh_list = []
         lh_values = []
 
-        if reweight_num_workers <= 1:
+        if fake_zero_weights:
+            n_print = int(getattr(cfg, "fake_zero_weights_print_n", 10))
+            n_print = max(0, min(n_print, samples_nf_c.shape[0]))
+            print(f"  >>> fake_zero_weights=True: histogram uses weights=1 (rw_val=0 for all).", flush=True)
+            print(f"  >>> But will evaluate real LH for the first {n_print} samples for printout.", flush=True)
+            for it_print in range(n_print):
+                nfv = samples_nf_c[it_print]
+                lq  = float(logq_nf[it_print])
+                lp, ns, nsy = likelihood_sampler.inject_params_and_compute_likelihood(nfv, extend_continue=False)
+                lp = float(lp); ns = float(ns); nsy = float(nsy)
+                rw_val_true = -lq - lp
+                print(f"    sample {it_print:03d}: NLL_total={lp:.4f}  stat={ns:.4f}  syst={nsy:.4f}"
+                      f"  log_q_NF={lq:.4f}   rw(real)={rw_val_true:+.4f}", flush=True)
+            print(f"  >>> done with LH printout; now zeroing all rw_vals for the histogram.", flush=True)
+            reweight_nf_to_lh_list = [0.0 for _ in range(samples_nf_c.shape[0])]
+            lh_values = [0.0 for _ in range(samples_nf_c.shape[0])]
+        elif False:
+            pass  # placeholder so the elif chain below stays syntactically valid
+
+        elif reweight_num_workers <= 1:
             for it, (nf_vector, logq) in enumerate(zip(samples_nf_c, logq_nf)):
                 logp, nll_stat, nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(
                     nf_vector, extend_continue=False
@@ -1248,6 +1441,140 @@ def main(cfg: DictConfig) -> None:
             flush=True,
         )
         print(f"Reweighting done in {time.time() - t_rw:.1f}s", flush=True)
+
+
+    # -------------------------
+    # Gaussian -> LH reweighting (importance sampling, used for ESS)
+    # -------------------------
+    reweight_gauss_to_lh = None
+    eff_gauss = None
+    eff_gauss_f = None
+    n_gauss_filtered = 0
+    samples_gauss = None
+    if do_reweight_gauss:
+        print(f"Sampling {num_samples} points from multivariate Gaussian (mu, postfit cov)...", flush=True)
+        t_g = time.time()
+        _rng_seed = int(getattr(cfg, "seed", 0))
+        samples_gauss, logp_gauss = sample_gaussian_physical_with_logp(
+            mu_vec, cov_mat,
+            parameter_limits=parameter_limits,
+            num_samples=num_samples,
+            batch_size=int(getattr(cfg, "batch_size", 4098)),
+            rng_seed=_rng_seed,
+        )
+        print(f"Gaussian sampling done in {time.time()-t_g:.1f}s; shape={samples_gauss.shape}", flush=True)
+
+        print("Computing reweighting factors from Gaussian to LH...", flush=True)
+        t_rw_g = time.time()
+        rw_gauss_list = []
+        if reweight_num_workers <= 1:
+            for it, (gvec, gq) in enumerate(zip(samples_gauss, logp_gauss)):
+                logp_lh, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(gvec, extend_continue=False)
+                rw_gauss_list.append(-float(gq) - float(logp_lh))
+                if (it % max(1, int(num_samples // 100)) == 0):
+                    print(f"  gauss iter {it} NLL/2: {logp_lh}, log_q_gauss: {float(gq)}", flush=True)
+        else:
+            worker_args = [
+                (int(it), np.asarray(gvec, dtype=np.float64), float(gq))
+                for it, (gvec, gq) in enumerate(zip(samples_gauss, logp_gauss))
+            ]
+            ctx = mp.get_context("spawn")
+            chunksize = max(1, len(worker_args) // (reweight_num_workers * 20))
+            with ctx.Pool(
+                processes=reweight_num_workers,
+                initializer=_init_reweight_worker,
+                initargs=(
+                    cfg.experiment.dataset.llh_config,
+                    cfg.experiment.dataset.llh_overrides,
+                    cfg.experiment.dataset.data_is_asimov,
+                    cfg.experiment.sampler.threads,
+                    cfg.experiment.dataset.llh_cwd,
+                ),
+            ) as pool:
+                for it, rw_val, lh_val, gq_val, logp_val in pool.imap(_compute_single_reweight, worker_args, chunksize=chunksize):
+                    if (it % max(1, int(num_samples // 100)) == 0):
+                        print(f"  gauss iter {it} NLL/2: {logp_val}, log_q_gauss: {float(gq_val)}", flush=True)
+                    rw_gauss_list.append(rw_val)
+
+        reweight_gauss_to_lh = np.asarray(rw_gauss_list, dtype=np.float64).reshape(-1)
+        if reweight_gauss_to_lh.size > 0:
+            reweight_gauss_to_lh = reweight_gauss_to_lh - float(np.median(reweight_gauss_to_lh))
+
+        lo_g = float(np.quantile(reweight_gauss_to_lh, 0.001))
+        hi_g = float(np.quantile(reweight_gauss_to_lh, 0.999))
+        outlier_mask_g = (reweight_gauss_to_lh >= lo_g) & (reweight_gauss_to_lh <= hi_g)
+        n_gauss_filtered = int(outlier_mask_g.sum())
+
+        w_g = np.exp(reweight_gauss_to_lh)
+        eff_gauss = float((np.sum(w_g) ** 2) / np.sum(w_g ** 2)) if np.sum(w_g ** 2) > 0 else 0.0
+        w_gf = np.exp(reweight_gauss_to_lh[outlier_mask_g])
+        eff_gauss_f = float((np.sum(w_gf) ** 2) / np.sum(w_gf ** 2)) if np.sum(w_gf ** 2) > 0 else 0.0
+
+        print(f"Effective sample size (Gauss to LH): {eff_gauss:.1f} / {len(reweight_gauss_to_lh)}", flush=True)
+        print(f"Effective sample size (Gauss to LH, filtered): {eff_gauss_f:.1f} / {n_gauss_filtered}", flush=True)
+        print(f"Gaussian reweighting done in {time.time()-t_rw_g:.1f}s", flush=True)
+
+        np.savez(
+            out_dir / "gauss_reweight.npz",
+            samples_gauss=samples_gauss,
+            logp_gauss=logp_gauss,
+            reweight_gauss_to_lh=reweight_gauss_to_lh,
+            outlier_mask=outlier_mask_g,
+            eff=eff_gauss,
+            eff_filtered=eff_gauss_f,
+        )
+
+    # -------------------------
+    # Effective Sample Size
+    # -------------------------
+    ess_lines: list[str] = []
+
+    # --- MCMC ESS (autocorrelation-based, computed on full post-burnin chain) ---
+    if do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] >= 4:
+        print("Computing MCMC ESS (autocorrelation)...", flush=True)
+        t_ess = time.time()
+        ess_mcmc = _compute_mcmc_ess(mcmc_post)
+        print(
+            f"  MCMC ESS: min={ess_mcmc.min():.1f}  median={np.median(ess_mcmc):.1f}"
+            f"  max={ess_mcmc.max():.1f}  (chain N={mcmc_post.shape[0]}, {time.time()-t_ess:.1f}s)",
+            flush=True,
+        )
+        ess_lines.append(f"# MCMC ESS (autocorrelation, integrated tau, chain N={mcmc_post.shape[0]})")
+        ess_lines.append(f"mcmc_ess_min:    {ess_mcmc.min():.2f}")
+        ess_lines.append(f"mcmc_ess_median: {np.median(ess_mcmc):.2f}")
+        ess_lines.append(f"mcmc_ess_mean:   {ess_mcmc.mean():.2f}")
+        ess_lines.append(f"mcmc_ess_max:    {ess_mcmc.max():.2f}")
+        ess_lines.append("# Per-parameter MCMC ESS:")
+        for _i in range(len(ess_mcmc)):
+            _pname = labels[_i] if _i < len(labels) else str(_i)
+            ess_lines.append(f"  mcmc_ess_{_i:03d}  {ess_mcmc[_i]:9.2f}  {_pname}")
+    else:
+        ess_lines.append("# MCMC ESS: not computed (do_plot_mcmc=False or chain unavailable)")
+
+    # --- NF reweighting ESS (importance-sampling weights) ---
+    if do_reweight_nf and reweight_nf_to_lh is not None:
+        ess_lines.append(f"# NF->LH reweighting ESS (importance sampling, N={len(reweight_nf_to_lh)})")
+        ess_lines.append(f"nf_ess:               {eff:.2f}  ({100.0 * eff / len(reweight_nf_to_lh):.2f}%)")
+        ess_lines.append(f"nf_ess_filtered:      {eff_f:.2f}"
+                         f"  ({100.0 * eff_f / max(1, int(outlier_mask.sum())):.2f}%"
+                         f", filtered N={int(outlier_mask.sum())})")
+    else:
+        ess_lines.append("# NF reweighting ESS: not computed (do_reweight_nf=False)")
+
+    # --- Gaussian reweighting ESS ---
+    if do_reweight_gauss and reweight_gauss_to_lh is not None:
+        ess_lines.append(f"# Gauss->LH reweighting ESS (importance sampling, N={len(reweight_gauss_to_lh)})")
+        ess_lines.append(f"gauss_ess:            {eff_gauss:.2f}  ({100.0 * eff_gauss / len(reweight_gauss_to_lh):.2f}%)")
+        ess_lines.append(f"gauss_ess_filtered:   {eff_gauss_f:.2f}"
+                         f"  ({100.0 * eff_gauss_f / max(1, n_gauss_filtered):.2f}%, filtered N={n_gauss_filtered})")
+    else:
+        ess_lines.append("# Gaussian reweighting ESS: not computed (do_reweight_gauss=False)")
+
+    ess_path = out_dir / "ess.txt"
+    with open(ess_path, "w") as f:
+        f.write("\n".join(ess_lines) + "\n")
+    print(f"ESS written to: {ess_path}", flush=True)
+
 
     # -------------------------
     # Report
@@ -1426,6 +1753,95 @@ def main(cfg: DictConfig) -> None:
             print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
     else:
         print("do_plot_mcmc=False or no filtered MCMC samples, skipping 2D NF-vs-MCMC plots.", flush=True)
+
+
+    # ------------------------------------------------------------------
+    # (c) Detector-correlation diagnostic
+    # ------------------------------------------------------------------
+    if bool(getattr(cfg, "corr2d_diagnose_detectors", False)):
+        det_range = getattr(cfg, "corr2d_diagnose_det_range", [60, 100])
+        det_start = int(det_range[0]); det_end = int(det_range[1])
+        det_start = max(0, min(det_start, d)); det_end = max(det_start, min(det_end, d))
+        top_k = int(getattr(cfg, "corr2d_diagnose_top_k", 3))
+        diag_bins = int(getattr(cfg, "corr2d_diagnose_bins", 60))
+
+        diag_dir = out_dir / "corr2d_diagnose"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pearson correlation matrix from NF samples (uses all d dims)
+        ns_arr = np.asarray(samples_nf_c, dtype=np.float64)
+        # subtract mean
+        ns_mean = ns_arr.mean(axis=0, keepdims=True)
+        ns_c = ns_arr - ns_mean
+        std_ = ns_c.std(axis=0, ddof=0)
+        safe_std = np.where(std_ > 0, std_, 1.0)
+        ns_n = ns_c / safe_std[None, :]
+        corr = (ns_n.T @ ns_n) / float(ns_n.shape[0])
+
+        # If reweighted samples & weights available, also compute weighted samples
+        have_rw = (do_reweight_nf and reweight_nf_to_lh is not None and outlier_mask is not None)
+        if have_rw:
+            x_rw = samples_nf_c[outlier_mask]
+            w_rw = np.exp(reweight_nf_to_lh[outlier_mask])
+            w_rw = w_rw / w_rw.sum()
+        else:
+            x_rw = None; w_rw = None
+
+        # Gaussian samples if computed
+        if 'samples_gauss' in dir() and samples_gauss is not None:
+            x_gauss = samples_gauss[:, :d]
+        else:
+            x_gauss = None
+
+        print(f"Diagnose-detectors: scanning idx [{det_start},{det_end})  top_k={top_k}", flush=True)
+        for idx in range(det_start, det_end):
+            row = corr[idx].copy()
+            row[idx] = 0.0  # exclude self
+            order = np.argsort(np.abs(row))[::-1]
+            partners = [int(p) for p in order[:top_k]]
+            print(f"  det idx={idx} ({_short(labels[idx], 35)}) -> partners (by |corr|): "
+                  + ", ".join(f"{p}:{corr[idx,p]:+.2f}" for p in partners), flush=True)
+
+            for p in partners:
+                a, b = idx, p
+                fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+                # axis ranges from NF spread
+                xs_n = samples_nf_c[:, a]; ys_n = samples_nf_c[:, b]
+                xr = float(xs_n.min()), float(xs_n.max())
+                yr = float(ys_n.min()), float(ys_n.max())
+
+                # 1) NF
+                axes[0].hist2d(xs_n, ys_n, bins=diag_bins, range=(xr, yr), cmap="viridis")
+                axes[0].set_title(f"NF (n={len(xs_n)})")
+
+                # 2) NF reweighted
+                if x_rw is not None:
+                    axes[1].hist2d(x_rw[:, a], x_rw[:, b], bins=diag_bins, range=(xr, yr),
+                                   weights=w_rw, cmap="viridis")
+                    axes[1].set_title(f"NF reweighted (filt n={len(x_rw)})")
+                else:
+                    axes[1].text(0.5, 0.5, "no reweighted samples", ha="center", transform=axes[1].transAxes)
+
+                # 3) Gaussian
+                if x_gauss is not None:
+                    axes[2].hist2d(x_gauss[:, a], x_gauss[:, b], bins=diag_bins, range=(xr, yr), cmap="viridis")
+                    axes[2].set_title(f"Gaussian (n={len(x_gauss)})")
+                else:
+                    axes[2].text(0.5, 0.5, "no Gaussian samples", ha="center", transform=axes[2].transAxes)
+
+                # Best-fit marker
+                bf_a = float(mu_vec[a]); bf_b = float(mu_vec[b])
+                for ax in axes:
+                    ax.axvline(bf_a, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+                    ax.axhline(bf_b, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+                    ax.set_xlabel(_short(labels[a], 30))
+                    ax.set_ylabel(_short(labels[b], 30))
+                fig.suptitle(f"idx {a} vs {b}  (Pearson corr in NF = {corr[a,b]:+.3f})", fontsize=10)
+                plt.tight_layout()
+                fig.savefig(diag_dir / f"corr2d_diag_{a:03d}_{b:03d}.png", dpi=130)
+                plt.close(fig)
+
+        print(f"Detector-correlation diagnostics written to {diag_dir}", flush=True)
 
     print(f"Done. Outputs in: {str(out_dir)}", flush=True)
 

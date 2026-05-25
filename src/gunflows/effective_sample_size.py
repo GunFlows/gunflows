@@ -315,19 +315,29 @@ def main(cfg: DictConfig) -> None:
     # start a loop where at each iteration you pickup a checkpoint, sample from it, compute ESS, make some plots, then store the results
     ckpt_folder = os.path.join(training_folder, "checkpoints")
     pattern = re.compile(r"sampler_epoch(\d+)000.pt")
-    tot_models = 0
+    all_ckpts: list[tuple[int, str]] = []
     for fname in os.listdir(ckpt_folder):
         m = pattern.match(fname)
         if m:
-            tot_models += 1
-    print(f"Total NF tot_models found: {tot_models}", flush=True)
-    for fname in os.listdir(ckpt_folder):
-        m = pattern.match(fname)
-        if m:
-            print(f"Found NF model file: {fname}", flush=True)
-            ep = int(m.group(1))
-        else:
-            continue
+            all_ckpts.append((int(m.group(1)), fname))
+    all_ckpts.sort(key=lambda t: t[0])
+    print(f"Total NF checkpoints found: {len(all_ckpts)}", flush=True)
+
+    # Sub-sample to `n_checkpoints` roughly equally-spaced (default 10).
+    # Always keep the lowest and highest available epoch.
+    n_pick = int(getattr(cfg, "n_checkpoints", 10))
+    if n_pick > 0 and len(all_ckpts) > n_pick:
+        idx = np.linspace(0, len(all_ckpts) - 1, n_pick).round().astype(int)
+        idx = sorted(set(int(i) for i in idx))
+        selected = [all_ckpts[i] for i in idx]
+    else:
+        selected = all_ckpts
+    print(f"Selected {len(selected)} checkpoints (epochs x1000): "
+          f"{[e for e, _ in selected]}", flush=True)
+    tot_models = len(selected)
+
+    for ep, fname in selected:
+        print(f"Found NF model file: {fname}", flush=True)
         ckpt_path = Path(os.path.join(ckpt_folder, fname))
         print("Using NF model:", ckpt_path, flush=True)
 
@@ -519,99 +529,99 @@ def main(cfg: DictConfig) -> None:
 
 
 
-        if cfg.llh_workers > 0:
-            pool.close()
-            pool.join()
+    if cfg.llh_workers > 0:
+        pool.close()
+        pool.join()
 
-        if latest_payload is not None:
-            print(
-                f"Producing least-Gaussian parameter plots from epoch {latest_payload['epoch']}.",
-                flush=True,
+    if latest_payload is not None:
+        print(
+            f"Producing least-Gaussian parameter plots from epoch {latest_payload['epoch']}.",
+            flush=True,
+        )
+
+        least_dir = out_dir / "least_gaussian"
+        least_marg_dir = least_dir / "marginals"
+        least_corr_dir = least_dir / "corr2d_contours"
+        least_dir.mkdir(parents=True, exist_ok=True)
+        least_marg_dir.mkdir(parents=True, exist_ok=True)
+        least_corr_dir.mkdir(parents=True, exist_ok=True)
+
+        samples_plot = latest_payload["samples_nf"]
+        log_ratio = latest_payload["log_ratio"]
+        labels_plot = latest_payload["labels"]
+        mu_plot = latest_payload["mu"]
+        sigma_plot = latest_payload["sigma"]
+
+        w_reweighted = _stable_weights_from_logratio(log_ratio)
+
+        ks_records = []
+        for idx in range(samples_plot.shape[1]):
+            ks_val = _ks_stat_against_gaussian(samples_plot[:, idx], float(mu_plot[idx]), float(sigma_plot[idx]))
+            if np.isfinite(ks_val):
+                ks_records.append((idx, float(ks_val), labels_plot[idx]))
+
+        ks_records = sorted(ks_records, key=lambda t: t[1], reverse=True)
+        n_select = min(10, len(ks_records))
+        selected = ks_records[:n_select]
+        selected_indices = [x[0] for x in selected]
+
+        with open(least_dir / "least_gaussian_ks.json", "w") as f:
+            json.dump(
+                {
+                    "epoch": int(latest_payload["epoch"]),
+                    "top_k": int(n_select),
+                    "selected": [
+                        {
+                            "index": int(i),
+                            "name": str(name),
+                            "ks_stat": float(score),
+                        }
+                        for i, score, name in selected
+                    ],
+                },
+                f,
+                indent=2,
             )
 
-            least_dir = out_dir / "least_gaussian"
-            least_marg_dir = least_dir / "marginals"
-            least_corr_dir = least_dir / "corr2d_contours"
-            least_dir.mkdir(parents=True, exist_ok=True)
-            least_marg_dir.mkdir(parents=True, exist_ok=True)
-            least_corr_dir.mkdir(parents=True, exist_ok=True)
+        marginal_bins = int(getattr(cfg, "least_gaussian_marginal_bins", 60))
+        contour_bins = int(getattr(cfg, "least_gaussian_corr2d_bins", 70))
 
-            samples_plot = latest_payload["samples_nf"]
-            log_ratio = latest_payload["log_ratio"]
-            labels_plot = latest_payload["labels"]
-            mu_plot = latest_payload["mu"]
-            sigma_plot = latest_payload["sigma"]
-
-            w_reweighted = _stable_weights_from_logratio(log_ratio)
-
-            ks_records = []
-            for idx in range(samples_plot.shape[1]):
-                ks_val = _ks_stat_against_gaussian(samples_plot[:, idx], float(mu_plot[idx]), float(sigma_plot[idx]))
-                if np.isfinite(ks_val):
-                    ks_records.append((idx, float(ks_val), labels_plot[idx]))
-
-            ks_records = sorted(ks_records, key=lambda t: t[1], reverse=True)
-            n_select = min(10, len(ks_records))
-            selected = ks_records[:n_select]
-            selected_indices = [x[0] for x in selected]
-
-            with open(least_dir / "least_gaussian_ks.json", "w") as f:
-                json.dump(
-                    {
-                        "epoch": int(latest_payload["epoch"]),
-                        "top_k": int(n_select),
-                        "selected": [
-                            {
-                                "index": int(i),
-                                "name": str(name),
-                                "ks_stat": float(score),
-                            }
-                            for i, score, name in selected
-                        ],
-                    },
-                    f,
-                    indent=2,
-                )
-
-            marginal_bins = int(getattr(cfg, "least_gaussian_marginal_bins", 60))
-            contour_bins = int(getattr(cfg, "least_gaussian_corr2d_bins", 70))
-
-            for i in selected_indices:
-                out_path = least_marg_dir / f"least_gaussian_marginal_{i:03d}.png"
-                _plot_marginal_nf_vs_reweighted(
-                    samples_plot[:, i],
-                    w_reweighted,
-                    float(mu_plot[i]),
-                    float(sigma_plot[i]),
-                    labels_plot[i],
-                    out_path,
-                    bins=marginal_bins,
-                )
-
-            if len(selected_indices) >= 2:
-                for a_pos in range(len(selected_indices)):
-                    for b_pos in range(a_pos + 1, len(selected_indices)):
-                        a = selected_indices[a_pos]
-                        b = selected_indices[b_pos]
-                        out_path = least_corr_dir / f"least_gaussian_corr2d_{a:03d}_{b:03d}.png"
-                        _plot_contours_nf_vs_reweighted(
-                            samples_plot[:, a],
-                            samples_plot[:, b],
-                            w_reweighted,
-                            labels_plot[a],
-                            labels_plot[b],
-                            out_path,
-                            bins=contour_bins,
-                        )
-
-            print(
-                f"Least-Gaussian plots saved in {least_dir} (selected={len(selected_indices)}).",
-                flush=True,
+        for i in selected_indices:
+            out_path = least_marg_dir / f"least_gaussian_marginal_{i:03d}.png"
+            _plot_marginal_nf_vs_reweighted(
+                samples_plot[:, i],
+                w_reweighted,
+                float(mu_plot[i]),
+                float(sigma_plot[i]),
+                labels_plot[i],
+                out_path,
+                bins=marginal_bins,
             )
-        else:
-            print("No valid checkpoint payload available for least-Gaussian plotting.", flush=True)
 
-        print("Finished looping over checkpoints.")
+        if len(selected_indices) >= 2:
+            for a_pos in range(len(selected_indices)):
+                for b_pos in range(a_pos + 1, len(selected_indices)):
+                    a = selected_indices[a_pos]
+                    b = selected_indices[b_pos]
+                    out_path = least_corr_dir / f"least_gaussian_corr2d_{a:03d}_{b:03d}.png"
+                    _plot_contours_nf_vs_reweighted(
+                        samples_plot[:, a],
+                        samples_plot[:, b],
+                        w_reweighted,
+                        labels_plot[a],
+                        labels_plot[b],
+                        out_path,
+                        bins=contour_bins,
+                    )
+
+        print(
+            f"Least-Gaussian plots saved in {least_dir} (selected={len(selected_indices)}).",
+            flush=True,
+        )
+    else:
+        print("No valid checkpoint payload available for least-Gaussian plotting.", flush=True)
+
+    print("Finished looping over checkpoints.")
 
 
 
