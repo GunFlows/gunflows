@@ -16,7 +16,11 @@ TOY_SEED=$SLURM_ARRAY_TASK_ID
 # ARGUMENTS TO PASS TO gundamFitter
 # SCRIPTARGS="-c configToyOA_100plus10.yaml -t 10 -a --toy ${TOY_SEED} -s ${TOY_SEED}"
 #SCRIPTARGS="-c configToyOA_60plus6.yaml -t 10 -a"
-SCRIPTARGS="-c configToyOA_100plus10.yaml -t 10 -o output/gundamFitter_configToyOANoMirrorFakeData_100plus10.root"
+# Reduced-binning + new (small-sigma) detector prior variant.
+# Output is auto-named by gundam from the main-config name:
+#   output/gundamFitter_configToyOA_100plus10_reduced.root
+# so we do NOT pass -o and the previous run's output is not overwritten.
+SCRIPTARGS="-c configToyOA_100plus10_reduced.yaml -t 10"
 echo "Running Gundam Fit with arguments: ${SCRIPTARGS}" 
 
 # CHECK AVAILABLE FITTER CONFIGS AT: 

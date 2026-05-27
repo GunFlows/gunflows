@@ -1726,33 +1726,44 @@ def main(cfg: DictConfig) -> None:
         if (k + 1) % 10 == 0 or (k + 1) == d:
             print(f"  Plotted {k+1}/{d}", flush=True)
 
-    if do_plot_mcmc and samples_mcmc_c is not None:
-        corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
-        dims_cfg = getattr(cfg, "corr2d_dims", None)
+    # 2D correlations for user-specified pairs.
+    # If MCMC is available -> side-by-side NF vs MCMC.
+    # If MCMC is unavailable -> NF-only 2D histogram (still useful to see
+    # marginal correlation structure in the NF samples themselves).
+    _mcmc_available = bool(do_plot_mcmc) and (samples_mcmc_c is not None)
+    corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
+    dims_cfg = getattr(cfg, "corr2d_dims", None)
 
-        if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and dims_cfg.strip() == ""):
-            dims = list(range(max(0, d - 6), d))
-        else:
-            dims = parse_dim_list(dims_cfg, d)
+    if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and dims_cfg.strip() == ""):
+        dims = list(range(max(0, d - 6), d))
+    else:
+        dims = parse_dim_list(dims_cfg, d)
 
-        if len(dims) >= 2:
-            print(f"Plotting 2D correlations for dims: {dims}", flush=True)
-            for i in range(len(dims)):
-                for j in range(i + 1, len(dims)):
-                    a = dims[i]
-                    b = dims[j]
-                    outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
+    if len(dims) >= 2:
+        mode = "NF-vs-MCMC" if _mcmc_available else "NF-only"
+        print(f"Plotting 2D correlations ({mode}) for dims: {dims}", flush=True)
+        for i in range(len(dims)):
+            for j in range(i + 1, len(dims)):
+                a = dims[i]
+                b = dims[j]
+                outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
+                if _mcmc_available:
                     plot_2d_hist_side_by_side(
                         samples_nf_c[:, a], samples_nf_c[:, b],
                         samples_mcmc_c[:, a], samples_mcmc_c[:, b],
                         labels[a], labels[b],
                         outp,
-                        bins=corr2d_bins
+                        bins=corr2d_bins,
                     )
-        else:
-            print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
+                else:
+                    plot_2d_hist_nf_only(
+                        samples_nf_c[:, a], samples_nf_c[:, b],
+                        labels[a], labels[b],
+                        outp,
+                        bins=corr2d_bins,
+                    )
     else:
-        print("do_plot_mcmc=False or no filtered MCMC samples, skipping 2D NF-vs-MCMC plots.", flush=True)
+        print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
 
 
     # ------------------------------------------------------------------
