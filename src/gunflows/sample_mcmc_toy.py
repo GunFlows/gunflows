@@ -534,6 +534,9 @@ def parse_dim_list(cfg_val, ndim: int) -> list[int]:
     s = str(cfg_val).strip()
     if not s:
         return []
+    # Tolerate "[1,2,3]" string form that Hydra sometimes serialises lists into.
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1].strip()
     out: list[int] = []
     for part in s.split(","):
         part = part.strip()
