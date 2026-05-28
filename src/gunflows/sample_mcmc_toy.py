@@ -909,6 +909,125 @@ def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel
     plt.close(fig)
 
 
+def _plot_marginal_shift(
+    samples_gauss: np.ndarray,           # (N, d)  physical space, drawn from MVN(bestfit, postfit_cov)
+    logratio_gauss: np.ndarray,          # (N,)    log IS weights (Gauss → LH)
+    outlier_mask_g: np.ndarray,          # (N,)    bool
+    samples_nf: "np.ndarray | None",     # (M, d)  physical space, or None
+    logratio_nf: "np.ndarray | None",    # (M,)    log IS weights (NF → LH), or None
+    outlier_mask_nf: "np.ndarray | None",# (M,)    bool or None
+    bestfit: np.ndarray,                 # (d,)    MAP values
+    sig: np.ndarray,                     # (d,)    postfit sigma (for normalisation)
+    labels: "list[str]",
+    out_dir: "Path",
+) -> None:
+    """Compute and plot per-parameter IS-mean shift relative to the MAP.
+
+    Produces two PNGs inside ``out_dir``:
+    - ``marginal_shift_per_param.png``: bar chart across all d parameters.
+    - ``marginal_shift_per_block.png``: mean shift aggregated by parameter block
+      (LIN / DET / SPL), useful to quickly check whether DET is systematically off.
+    """
+
+    def _stable_weights(lr: np.ndarray) -> np.ndarray:
+        lr = lr - float(np.max(lr))
+        w = np.exp(lr)
+        s = float(w.sum())
+        return w / s if (s > 0 and np.isfinite(s)) else np.ones_like(lr) / lr.size
+
+    # ── block colours inferred from parameter names ─────────────────────────
+    colors = []
+    block_ids = []
+    for lbl in labels:
+        if "Detector" in lbl:
+            colors.append("C3"); block_ids.append("DET")
+        elif "Non-Linear" in lbl or "Spline" in lbl:
+            colors.append("C2"); block_ids.append("SPL")
+        else:
+            colors.append("C0"); block_ids.append("LIN")
+
+    block_ids_arr = np.array(block_ids)
+    d = len(labels)
+    sig = np.where(sig > 0, sig, 1.0)  # avoid division by zero
+
+    results: dict[str, np.ndarray] = {}
+
+    # ── Gauss → LH shift ────────────────────────────────────────────────────
+    sg = samples_gauss[outlier_mask_g]          # (K, d)
+    wg = _stable_weights(logratio_gauss[outlier_mask_g])
+    delta_g = (sg * wg[:, None]).sum(axis=0) - bestfit   # physical units
+    delta_g_norm = delta_g / sig                          # in σ units
+    results["Gauss→LH"] = delta_g_norm
+
+    # ── NF → LH shift (optional) ────────────────────────────────────────────
+    if samples_nf is not None and logratio_nf is not None and outlier_mask_nf is not None:
+        sn = samples_nf[outlier_mask_nf]
+        wn = _stable_weights(logratio_nf[outlier_mask_nf])
+        delta_n = (sn * wn[:, None]).sum(axis=0) - bestfit
+        delta_n_norm = delta_n / sig
+        results["NF→LH"] = delta_n_norm
+
+    # ── per-parameter bar chart ──────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(12, d // 5), 4))
+    bar_w = 0.4
+    n_sets = len(results)
+    offsets = np.linspace(-bar_w * (n_sets - 1) / 2, bar_w * (n_sets - 1) / 2, n_sets)
+    palette = ["C0", "C1", "C3", "C2"]
+    for idx, (key, delta_norm) in enumerate(results.items()):
+        ax.bar(np.arange(d) + offsets[idx], delta_norm, width=bar_w,
+               color=palette[idx], alpha=0.7, label=key)
+    ax.axhline(0, color="k", lw=0.7)
+    # Shade parameter blocks for readability
+    prev_block = block_ids[0]
+    block_start = 0
+    block_shade = {"LIN": "C0", "DET": "C3", "SPL": "C2"}
+    for i, b in enumerate(block_ids + ["_end"]):
+        if b != prev_block or b == "_end":
+            ax.axvspan(block_start - 0.5, i - 0.5,
+                       alpha=0.07, color=block_shade.get(prev_block, "grey"))
+            ax.axvline(i - 0.5, color="grey", lw=0.5, ls="--")
+            # label block
+            mid = (block_start + i - 1) / 2
+            ax.text(mid, ax.get_ylim()[1] if ax.get_ylim()[1] != 0 else 0.1,
+                    prev_block, ha="center", va="bottom", fontsize=7, color="grey")
+            prev_block = b
+            block_start = i
+    ax.set_xlabel("parameter index")
+    ax.set_ylabel(r"$(\langle\theta\rangle_\mathrm{IS} - \theta_\mathrm{MAP})\,/\,\sigma$")
+    ax.set_title("IS marginal mean shift relative to MAP (in postfit σ units)")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.25, axis="y")
+    plt.tight_layout()
+    out = out_dir / "marginal_shift_per_param.png"
+    fig.savefig(out, dpi=140)
+    plt.close(fig)
+    print(f"  marginal shift plot → {out}", flush=True)
+
+    # ── per-block summary bar chart ──────────────────────────────────────────
+    blocks_present = list(dict.fromkeys(block_ids))   # preserve order, unique
+    fig, ax = plt.subplots(figsize=(max(5, len(blocks_present) * 2), 4))
+    n_sets = len(results)
+    offsets = np.linspace(-bar_w * (n_sets - 1) / 2, bar_w * (n_sets - 1) / 2, n_sets)
+    for idx, (key, delta_norm) in enumerate(results.items()):
+        means = [float(delta_norm[block_ids_arr == b].mean()) for b in blocks_present]
+        stds  = [float(delta_norm[block_ids_arr == b].std())  for b in blocks_present]
+        xs = np.arange(len(blocks_present)) + offsets[idx]
+        ax.bar(xs, means, width=bar_w, color=palette[idx], alpha=0.7, label=key,
+               yerr=stds, capsize=4)
+    ax.axhline(0, color="k", lw=0.7)
+    ax.set_xticks(range(len(blocks_present)))
+    ax.set_xticklabels(blocks_present, fontsize=11)
+    ax.set_ylabel(r"mean $(\langle\theta\rangle_\mathrm{IS} - \theta_\mathrm{MAP})\,/\,\sigma$")
+    ax.set_title("IS shift per parameter block (mean ± std across block)")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.25, axis="y")
+    plt.tight_layout()
+    out = out_dir / "marginal_shift_per_block.png"
+    fig.savefig(out, dpi=140)
+    plt.close(fig)
+    print(f"  marginal shift block summary → {out}", flush=True)
+
+
 @hydra.main(config_path="/workspace/work/GuNFlows/configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
@@ -1525,6 +1644,21 @@ def main(cfg: DictConfig) -> None:
             outlier_mask=outlier_mask_g,
             eff=eff_gauss,
             eff_filtered=eff_gauss_f,
+        )
+
+        # ── marginal shift plots (IS mean − MAP, normalised by postfit σ) ──
+        print("Plotting marginal shift...", flush=True)
+        _plot_marginal_shift(
+            samples_gauss=samples_gauss[:, :d],
+            logratio_gauss=reweight_gauss_to_lh,
+            outlier_mask_g=outlier_mask_g,
+            samples_nf=samples_nf_c if do_reweight_nf and reweight_nf_to_lh is not None else None,
+            logratio_nf=reweight_nf_to_lh if do_reweight_nf and reweight_nf_to_lh is not None else None,
+            outlier_mask_nf=outlier_mask if do_reweight_nf and outlier_mask is not None else None,
+            bestfit=mu_vec,
+            sig=sig_vec,
+            labels=list(labels),
+            out_dir=out_dir,
         )
 
     # -------------------------
