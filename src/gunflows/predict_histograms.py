@@ -443,7 +443,7 @@ def _plot_enu_one_level(
     # File-safe tag from coverage percentage
     tag = f"{pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
     stream_suffix = f"_{stream.lower()}" if stream else ""
-    out = save_dir / f"enu_histogram_combined_ci{tag}{stream_suffix}.png"
+    out = save_dir / f"enu_histogram{stream_suffix}_combined_ci{tag}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -488,7 +488,7 @@ def plot_correlation_matrix(
     ax.set_title(f"Bin-content correlation — {label}{title_suffix}")
     fig.tight_layout()
     file_suffix = f"_{stream.lower()}" if stream else ""
-    fig.savefig(save_dir / f"correlation_matrix_{label.lower()}{file_suffix}.png", dpi=150)
+    fig.savefig(save_dir / f"correlation_matrix{file_suffix}_{label.lower()}.png", dpi=150)
     plt.close(fig)
 
 
@@ -525,7 +525,7 @@ def plot_corner(
 
     fig.tight_layout()
     file_suffix = f"_{stream.lower()}" if stream else ""
-    fig.savefig(save_dir / f"corner_{label.lower()}{file_suffix}.png", dpi=150)
+    fig.savefig(save_dir / f"corner{file_suffix}_{label.lower()}.png", dpi=150)
     plt.close(fig)
 
 

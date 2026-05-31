@@ -445,6 +445,66 @@ def main(cfg: DictConfig) -> None:
           f"{[e for e, _ in selected]}", flush=True)
     tot_models = len(selected)
 
+    # ── Gaussian approximation ESS (plotted at epoch 0) ──────────────────────
+    num_samples = int(cfg.num_samples)
+    batch_size  = int(cfg.batch_size)
+    print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
+    _rng_g = np.random.default_rng(42)
+    _mu_g  = bestfit_parameter_values.copy()
+    _cov_g = postfit_covariance.copy()
+    _ndim  = len(_mu_g)
+    _L_g   = np.linalg.cholesky(_cov_g)
+    _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
+    _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
+    _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
+
+    _g_samples: list[np.ndarray] = []
+    _g_logqs:   list[float]      = []
+    while len(_g_samples) < num_samples:
+        take = min(batch_size, (num_samples - len(_g_samples)) * 3)
+        _z = _rng_g.standard_normal((take, _ndim))
+        _xs = _mu_g + _z @ _L_g.T
+        for _x in _xs:
+            if not check_parameters_limits(_x, parameter_limits):
+                continue
+            _diff = _x - _mu_g
+            _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
+            _g_samples.append(_x.copy())
+            if len(_g_samples) >= num_samples:
+                break
+
+    _g_samples = np.asarray(_g_samples[:num_samples])
+    _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
+
+    print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
+    _t0_g = time.time()
+    if cfg.llh_workers > 0:
+        _g_lh = pool.map(worker, _g_samples, chunksize=32)
+        _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
+    else:
+        _g_rw_list = []
+        for _gx, _glq in zip(_g_samples, _g_logqs):
+            _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
+            _g_rw_list.append(-_glq - _glp)
+        _g_rw = np.array(_g_rw_list)
+    print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
+
+    _g_rw -= np.median(_g_rw)
+    _g_w   = np.exp(_g_rw)
+    _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
+    _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
+    _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
+    _g_fw    = np.exp(_g_rw[_g_fmask])
+    _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
+    print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
+          f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
+
+    epoch_list.append(0)
+    ess_list.append(_g_ess / num_samples)
+    ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
+    tot_models += 1
+    # ── end Gaussian ESS ─────────────────────────────────────────────────────
+
     for ep, fname in selected:
         print(f"Found NF model file: {fname}", flush=True)
         ckpt_path = Path(os.path.join(ckpt_folder, fname))
@@ -630,13 +690,29 @@ def main(cfg: DictConfig) -> None:
             json.dump(results, f, indent=4)
 
         # plot ESS vs epoch
-        plt.figure(figsize=(8,6))
-        plt.plot(epoch_list, ess_list, marker='o', label='ESS')
-        plt.plot(epoch_list, ess_filtered_list, marker='o', label='ESS (filtered)')
-        plt.xlabel('Epoch')
-        plt.ylabel('Effective Sample Size')
+        _ep_arr   = np.array(epoch_list)
+        _ess_arr  = np.array(ess_list)
+        _essf_arr = np.array(ess_filtered_list)
+        _nf_mask_plt   = _ep_arr > 0
+        _gauss_mask_plt = _ep_arr == 0
+
+        plt.figure(figsize=(8, 6))
+        # NF points
+        if _nf_mask_plt.any():
+            plt.plot(_ep_arr[_nf_mask_plt], _ess_arr[_nf_mask_plt],
+                     marker='o', color='C0', label='ESS (NF)')
+            plt.plot(_ep_arr[_nf_mask_plt], _essf_arr[_nf_mask_plt],
+                     marker='o', color='C1', label='ESS filtered (NF)')
+        # Gaussian point at epoch 0
+        if _gauss_mask_plt.any():
+            plt.scatter(_ep_arr[_gauss_mask_plt], _ess_arr[_gauss_mask_plt],
+                        marker='*', s=200, color='C0', zorder=5, label='ESS (Gaussian)')
+            plt.scatter(_ep_arr[_gauss_mask_plt], _essf_arr[_gauss_mask_plt],
+                        marker='*', s=200, color='C1', zorder=5, label='ESS filtered (Gaussian)')
+            plt.axvline(0, color='grey', linestyle='--', linewidth=0.8)
+        plt.xlabel('Epoch (×1000)')
+        plt.ylabel('Effective Sample Size (fraction)')
         plt.title(f'Effective Sample Size vs Training Epoch ({num_samples} samples)')
-        # plt.yscale('log')
         plt.grid(True, which='both', linestyle='--', linewidth=0.5)
         plt.legend()
         plt_path = out_dir / "ess_vs_epoch.png"
