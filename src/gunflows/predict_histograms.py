@@ -368,9 +368,9 @@ def _plot_enu_one_level(
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths  = bin_edges[1:] - bin_edges[:-1]
 
-    fig, (ax, ax_bot) = plt.subplots(
-        2, 1, figsize=(10, 8),
-        gridspec_kw={"height_ratios": [3, 1]},
+    fig, (ax, ax_mean, ax_sig) = plt.subplots(
+        3, 1, figsize=(10, 10),
+        gridspec_kw={"height_ratios": [3, 1, 1]},
         sharex=True,
     )
     fig.subplots_adjust(hspace=0.05)
@@ -378,13 +378,21 @@ def _plot_enu_one_level(
     COLORS = {"Gaussian": "#d62728", "NF": "#1f77b4", "MCMC": "#2ca02c"}
     BAND_ALPHA = 0.32
 
+    # Collect per-label mean and std of bin counts (used for bottom panels)
+    means_raw: dict[str, np.ndarray] = {}
+    stds_raw:  dict[str, np.ndarray] = {}
+
     for label in ("Gaussian", "NF", "MCMC"):
         if label not in results:
             continue
         color = COLORS[label]
         hists_arr = results[label]
 
-        mean = hists_arr.mean(axis=0) / widths
+        mean_raw = hists_arr.mean(axis=0)
+        means_raw[label] = mean_raw
+        stds_raw[label]  = hists_arr.std(axis=0)
+
+        mean = mean_raw / widths
         bands_raw = _compute_bands(hists_arr, method=ci_method, levels=(level,))
         lo_raw, hi_raw = bands_raw[0]
         lo = lo_raw / widths
@@ -412,33 +420,53 @@ def _plot_enu_one_level(
             sx, sy = _step_xy(bin_edges, mean)
             ax.plot(sx, sy, color=color, linewidth=1.4, label=legend_label)
 
-        # Bottom panel: half-width / mean at this level
-        mean_raw = hists_arr.mean(axis=0)
-        rel = np.where(mean_raw > 0, (hi_raw - lo_raw) / (2.0 * mean_raw), 0.0)
-        if smooth:
-            x_d, rel_d = _smooth_curve(centers, rel)
-            ax_bot.plot(x_d, rel_d, color=color, linewidth=1.3, label=label)
-        else:
-            bx, by = _step_xy(bin_edges, rel)
-            ax_bot.plot(bx, by, color=color, linewidth=1.2, label=label)
-
     pct = 100.0 * level
     stream_str = f" — {stream}" if stream else ""
     title = f"CI band: {pct:.2f}%{stream_str}  (method: {ci_method}" + (", smoothed)" if smooth else ")")
     ax.set_title(title, fontsize=10, loc="right", color="gray")
-
     ax.set_ylabel(r"Event yield / bin width  [GeV$^{-1}$]", fontsize=13)
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=11)
     ax.tick_params(axis="both", labelsize=11)
 
-    ax_bot.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
-    ax_bot.set_ylabel(f"{pct:.1f}% half-width\n/ mean", fontsize=10)
-    ax_bot.set_ylim(bottom=0)
-    ax_bot.axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax_bot.legend(fontsize=9)
-    ax_bot.tick_params(axis="both", labelsize=10)
-    ax_bot.set_xlim(bin_edges[0], bin_edges[-1])
+    # ── Bottom panels: NF vs Gaussian relative differences ──────────────────
+    _nf_present = "NF" in means_raw
+    _ga_present = "Gaussian" in means_raw
+
+    if _nf_present and _ga_present:
+        mn = means_raw["NF"];   mg = means_raw["Gaussian"]
+        sn = stds_raw["NF"];    sg = stds_raw["Gaussian"]
+
+        denom_m = 0.5 * (mn + mg)
+        rel_mean_pct = np.where(denom_m != 0.0, (mn - mg) / denom_m * 100.0, 0.0)
+
+        denom_s = 0.5 * (sn + sg)
+        rel_sig_pct  = np.where(denom_s != 0.0, (sn - sg) / denom_s * 100.0, 0.0)
+    else:
+        rel_mean_pct = np.zeros(len(centers))
+        rel_sig_pct  = np.zeros(len(centers))
+
+    bar_kw = dict(align="center", edgecolor="none", alpha=0.8)
+
+    ax_mean.bar(centers, rel_mean_pct, width=widths, color="#1f77b4", **bar_kw)
+    ax_mean.axhline(0, color="k", lw=0.8)
+    ax_mean.set_ylabel("$\\Delta$ mean [%]", fontsize=10)
+    ax_mean.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    ax_mean.grid(True, alpha=0.25, axis="y")
+    ax_mean.tick_params(axis="both", labelsize=9)
+
+    ax_sig.bar(centers, rel_sig_pct, width=widths, color="#d62728", **bar_kw)
+    ax_sig.axhline(0, color="k", lw=0.8)
+    ax_sig.set_ylabel("$\\Delta\\sigma$ [%]", fontsize=10)
+    ax_sig.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
+    ax_sig.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
+    ax_sig.grid(True, alpha=0.25, axis="y")
+    ax_sig.tick_params(axis="both", labelsize=9)
+    ax_sig.set_xlim(bin_edges[0], bin_edges[-1])
+
+    if _nf_present and _ga_present:
+        ax_mean.set_title("(NF − Gaussian) / mean(NF, Gaussian)", fontsize=8,
+                          loc="right", color="gray")
 
     # File-safe tag from coverage percentage
     tag = f"{pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
