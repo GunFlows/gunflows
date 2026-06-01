@@ -512,8 +512,8 @@ def plot_correlation_matrix(
     plt.colorbar(im, ax=ax, label="Pearson r")
     ax.set_xticks(range(n)); ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(range(n)); ax.set_yticklabels(labels, fontsize=7)
-    title_suffix = f" — {stream}" if stream else ""
-    ax.set_title(f"Bin-content correlation — {label}{title_suffix}")
+    title_prefix = f"{stream} — " if stream else ""
+    ax.set_title(f"Bin-content correlation — {title_prefix}{label}")
     fig.tight_layout()
     file_suffix = f"_{stream.lower()}" if stream else ""
     fig.savefig(save_dir / f"correlation_matrix{file_suffix}_{label.lower()}.png", dpi=150)
@@ -533,8 +533,8 @@ def plot_corner(
     labels = _bin_labels(bin_edges)
 
     fig, axes = plt.subplots(n_bins, n_bins, figsize=(2.2 * n_bins, 2.2 * n_bins))
-    title_suffix = f" — {stream}" if stream else ""
-    fig.suptitle(f"Corner plot — {label}{title_suffix}", y=1.01)
+    title_prefix = f"{stream} — " if stream else ""
+    fig.suptitle(f"Corner plot — {title_prefix}{label}", y=1.01)
 
     for row in range(n_bins):
         for col in range(n_bins):

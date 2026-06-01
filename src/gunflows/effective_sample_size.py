@@ -432,6 +432,22 @@ def main(cfg: DictConfig) -> None:
     all_ckpts.sort(key=lambda t: t[0])
     print(f"Total NF checkpoints found: {len(all_ckpts)}", flush=True)
 
+    # Optionally ignore checkpoints beyond `max_epoch` (in real epoch units,
+    # e.g. max_epoch=20000 keeps sampler_epoch<=20000.pt). The stored epoch
+    # value is in thousands, so compare e*1000 against max_epoch.
+    max_epoch = getattr(cfg, "max_epoch", None)
+    if max_epoch is not None and int(max_epoch) > 0:
+        max_epoch = int(max_epoch)
+        kept = [(e, f) for e, f in all_ckpts if e * 1000 <= max_epoch]
+        if not kept:
+            raise RuntimeError(
+                f"max_epoch={max_epoch} excludes every checkpoint "
+                f"(available epochs x1000: {[e for e, _ in all_ckpts]})"
+            )
+        all_ckpts = kept
+        print(f"Applied max_epoch={max_epoch}: {len(all_ckpts)} checkpoints "
+              f"remain (epochs x1000: {[e for e, _ in all_ckpts]})", flush=True)
+
     # Sub-sample to `n_checkpoints` roughly equally-spaced (default 10).
     # Always keep the lowest and highest available epoch.
     n_pick = int(getattr(cfg, "n_checkpoints", 10))
