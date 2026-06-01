@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sample_nf_mcmc_toy
-#SBATCH --partition=shared-gpu,private-dpnc-gpu
+#SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24

@@ -1,28 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=predict_hists
-#SBATCH --partition=shared-gpu,private-dpnc-gpu
+#SBATCH --job-name=check_lh_shift
+#SBATCH --partition=shared-cpu,private-dpnc-cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --mem-per-cpu=16G
-#SBATCH --time=24:00:00
-#SBATCH --gres=gpu:1
-#SBATCH --constraint=COMPUTE_TYPE_AMPERE
-#SBATCH --output=logs/predict_hists%j.out
-#SBATCH --error=logs/predict_hists%j.err
-#SBATCH --mail-type=ALL
+#SBATCH --cpus-per-task=4
+#SBATCH --mem-per-cpu=8G
+#SBATCH --time=00:30:00
+#SBATCH --output=logs/check_lh_shift_%j.out
+#SBATCH --error=logs/check_lh_shift_%j.err
 
 set -euo pipefail
 
 module load apptainer 2>/dev/null || true
-
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
-# HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos" # belong to OA config
-# HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud" # belong to OA config
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit"
-# HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace_2"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 trained_models="/home/shares/sanchezf/gundam_n_flow/trained_models"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
@@ -35,9 +28,7 @@ if [ "$#" -gt 0 ]; then
   EXTRA_ARGS="$(printf ' %q' "$@")"
 fi
 
-echo "Job started at $(date)"
-
-srun --ntasks=1 apptainer exec --nv \
+srun --ntasks=1 apptainer exec \
   --env PYTHONNOUSERSITE=1 \
   --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
@@ -45,10 +36,10 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --bind "${trained_models}:/workspace/trained_models" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
-  "${SIF}" bash -c "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.predict_histograms \
+  "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.check_lh_shift \
                      --config-path ${IN_CONTAINER_WORKDIR}/configs \
-                     --config-name predict_histograms \
+                     --config-name sample_mcmc_nf_toyOA \
+                     hydra.run.dir=/workspace/trained_models/check_lh_shift \
+                     hydra.output_subdir=null \
                      ${EXTRA_ARGS}"
-
-echo "Job ended at $(date)"

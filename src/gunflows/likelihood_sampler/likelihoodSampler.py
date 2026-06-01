@@ -275,9 +275,10 @@ class LikelihoodSampler:
                             par.setParameterValue(float(values[n]), False)
                         else:
                             if not extend_continue:
-                                if (verbose): print(f"WARNING| Parameter value out of domain: {values[n]} out of [{min},{max}] for parameter {par.getFullTitle()}. Returning -1. You MUST re-throw!")
+                                print(f"ERROR| inject_params_and_compute_likelihood: physical value out of domain for {par.getFullTitle()}: "
+                                      f"value={values[n]:.6g} not in [{min:.6g},{max:.6g}]. Returning NLL=-1.", flush=True)
                                 self.inject_parameter_values(current)
-                                return -1,-1,0  # If extend_continue is False, return -1 if the value is out of domain. The user MUST re-throw!
+                                return -1,-1,0  # extend_continue=False: caller must re-throw
                             if values[n] < min:
                                 out_of_domain_penalty += math.exp((min - values[n])**2) - 1
                                 par.setParameterValue(min, False)
@@ -296,7 +297,8 @@ class LikelihoodSampler:
                 for par in par_set.getParameterList():
                     if par.isEnabled():
                         if not par.isValueWithinBounds():
-                            if (verbose): print(f"WARNING| Parameter {par.getFullTitle()} is out of bounds after eigendecomposition. Value: {par.getParameterValue()}.")
+                            print(f"ERROR| inject_params_and_compute_likelihood: parameter {par.getFullTitle()} out of bounds AFTER eigen-decomposition. "
+                                  f"physical value={par.getParameterValue():.6g}. Returning NLL=-1.", flush=True)
                             return -1,-1,0
 
         if n != len(values):
