@@ -73,70 +73,89 @@ def _build_osc_weights(
 # Chi-square helpers
 # ---------------------------------------------------------------------------
 
-def _chi2_spec_obs(
+def _estimate_N_raw(
+    N_obs: np.ndarray,
+    bin_centers: np.ndarray,
+    osc_nom: "OscillationProbability",
+    p_floor: float = 0.005,
+) -> np.ndarray:
+    """
+    Estimate raw (unweighted) MC event count per bin.
+
+    N_raw(b) ≈ N_obs(b) / P_surv(E_b, θ_nominal)
+
+    Valid when <w_sys> ≈ 1 at best-fit parameters.
+    p_floor prevents N_raw from diverging near the oscillation minimum.
+    """
+    p_surv = osc_nom.survival_prob(bin_centers)
+    return N_obs / np.maximum(p_surv, p_floor)
+
+
+def _chi2_bb_obs(
     N_obs_fhc: np.ndarray,
     N_obs_rhc: np.ndarray,
     w_all: np.ndarray,
+    N_raw_fhc: np.ndarray,
+    N_raw_rhc: np.ndarray,
 ) -> np.ndarray:
     """
-    Spectrum chi-square for the Asimov observed spectrum at each grid point.
+    Barlow-Beeston spectrum chi-square for the Asimov observed spectrum.
 
-    Uses N_obs as both data and prediction base:
-        χ²_obs(b, θ) = Σ_b N_obs(b) · (1 − w(b,θ))² / max(N_obs(b), 1)
+    Data = prediction base = N_obs (after FD scaling).
+    Prediction at grid point: μ = N_obs * w.
 
+        χ²_BB(b, θ) = (N_obs − μ)² / (N_obs + μ²/N_raw)
+
+    Consistent with _chi2_bb_toys: both use N_obs as data and N_obs*w as prediction.
     Returns shape (n_grid,).
     """
-    denom_fhc = np.maximum(N_obs_fhc, 1.0)
-    denom_rhc = np.maximum(N_obs_rhc, 1.0)
-    chi2_fhc = np.sum(
-        N_obs_fhc[None, :] * (1.0 - w_all) ** 2 / denom_fhc[None, :], axis=-1
-    )
-    chi2_rhc = np.sum(
-        N_obs_rhc[None, :] * (1.0 - w_all) ** 2 / denom_rhc[None, :], axis=-1
-    )
-    return chi2_fhc + chi2_rhc
+    def _term(N_obs, w, N_raw):
+        mu  = N_obs[None, :] * w                          # (n_grid, n_bins)
+        num = (N_obs[None, :] - mu) ** 2
+        den = np.maximum(N_obs[None, :], 1e-9) + mu ** 2 / np.maximum(N_raw[None, :], 1e-9)
+        return np.sum(num / den, axis=-1)                  # (n_grid,)
+
+    return _term(N_obs_fhc, w_all, N_raw_fhc) + _term(N_obs_rhc, w_all, N_raw_rhc)
 
 
-def _chi2_spec_toys(
+def _chi2_bb_toys(
     hists_fhc: np.ndarray,
     hists_rhc: np.ndarray,
     N_obs_fhc: np.ndarray,
     N_obs_rhc: np.ndarray,
     w_all: np.ndarray,
+    N_raw_fhc: np.ndarray,
+    N_raw_rhc: np.ndarray,
     chunk_size: int = 500,
 ) -> np.ndarray:
     """
-    Spectrum chi-square for each (grid_point, toy) pair.
+    Barlow-Beeston spectrum chi-square for each (grid_point, toy) pair.
 
-        χ²(θ_osc, t) = Σ_b (N_obs(b) − N_toy(b,t)·w(b,θ))² / max(N_obs(b), 1)
+    Data = N_toy (after FD scaling).  Prediction = N_obs * w (after FD scaling).
 
-    Returns shape (n_grid, N_toys).
-    Chunked over toys to bound peak memory.
+        χ²_BB(b, θ, t) = (N_toy − N_obs·w)² / (N_toy + (N_obs·w)²/N_raw)
+
+    Returns shape (n_grid, N_toys). Chunked over toys to bound peak memory.
     """
     n_grid = w_all.shape[0]
     N_toys = hists_fhc.shape[0]
-    denom_fhc = np.maximum(N_obs_fhc, 1.0)
-    denom_rhc = np.maximum(N_obs_rhc, 1.0)
-
     chi2_out = np.empty((n_grid, N_toys), dtype=np.float64)
+
     for t_start in range(0, N_toys, chunk_size):
         t_end = min(t_start + chunk_size, N_toys)
-        b_fhc = hists_fhc[t_start:t_end]  # (chunk, n_bins)
-        b_rhc = hists_rhc[t_start:t_end]
-
-        # (n_grid, chunk, n_bins)
-        pred_fhc = b_fhc[None, :, :] * w_all[:, None, :]
-        pred_rhc = b_rhc[None, :, :] * w_all[:, None, :]
-
-        chi2_fhc = np.sum(
-            (N_obs_fhc[None, None, :] - pred_fhc) ** 2 / denom_fhc[None, None, :],
-            axis=-1,
-        )
-        chi2_rhc = np.sum(
-            (N_obs_rhc[None, None, :] - pred_rhc) ** 2 / denom_rhc[None, None, :],
-            axis=-1,
-        )
-        chi2_out[:, t_start:t_end] = chi2_fhc + chi2_rhc
+        for hists, N_obs, N_raw in [
+            (hists_fhc, N_obs_fhc, N_raw_fhc),
+            (hists_rhc, N_obs_rhc, N_raw_rhc),
+        ]:
+            mu   = N_obs[None, None, :] * w_all[:, None, :]          # (n_grid, chunk, n_bins)
+            num  = (hists[None, t_start:t_end, :] - mu) ** 2
+            den  = (np.maximum(hists[None, t_start:t_end, :], 1e-9)
+                    + mu ** 2 / np.maximum(N_raw[None, None, :], 1e-9))
+            c    = np.sum(num / den, axis=-1)                         # (n_grid, chunk)
+            if hists is hists_fhc:
+                chi2_out[:, t_start:t_end] = c
+            else:
+                chi2_out[:, t_start:t_end] += c
 
     return chi2_out
 
@@ -151,6 +170,8 @@ def compute_sensitivity(
     N_obs_fhc: np.ndarray,
     N_obs_rhc: np.ndarray,
     w_all: np.ndarray,
+    N_raw_fhc: np.ndarray,
+    N_raw_rhc: np.ndarray,
     ci_levels: tuple[float, ...],
     chunk_size: int = 500,
 ) -> dict:
@@ -173,12 +194,13 @@ def compute_sensitivity(
         in_contour_wilks : (n_grid, n_levels) bool — inside Wilks contour
         wilks_thresholds : (n_levels,)
     """
-    print("  Computing chi-square for toy experiments...", flush=True)
-    chi2_toys = _chi2_spec_toys(
-        hists_fhc, hists_rhc, N_obs_fhc, N_obs_rhc, w_all, chunk_size
+    print("  Computing BB chi-square for toy experiments...", flush=True)
+    chi2_toys = _chi2_bb_toys(
+        hists_fhc, hists_rhc, N_obs_fhc, N_obs_rhc, w_all,
+        N_raw_fhc, N_raw_rhc, chunk_size,
     )
 
-    chi2_obs_raw = _chi2_spec_obs(N_obs_fhc, N_obs_rhc, w_all)
+    chi2_obs_raw = _chi2_bb_obs(N_obs_fhc, N_obs_rhc, w_all, N_raw_fhc, N_raw_rhc)
 
     # Profile: subtract per-toy minimum over grid
     chi2_toys_min = chi2_toys.min(axis=0)   # (N_toys,)
@@ -621,38 +643,47 @@ def main(cfg: DictConfig) -> None:
     np.save(save_dir / "sensitivity_dm2_vals.npy", dm2_vals)
     print(f"Weight grid shape: {w_all.shape}", flush=True)
 
-    # Convert to arrays once (only for active surrogates)
-    hists_nf_fhc = (
-        np.array(nf_per_stream["FHC"][:num_samples], dtype=np.float64) if use_nf else None
-    )
-    hists_nf_rhc = (
-        np.array(nf_per_stream["RHC"][:num_samples], dtype=np.float64) if use_nf else None
-    )
-    hists_g_fhc = (
-        np.array(gaussian_per_stream["FHC"][:num_samples], dtype=np.float64) if use_gaussian else None
-    )
-    hists_g_rhc = (
-        np.array(gaussian_per_stream["RHC"][:num_samples], dtype=np.float64) if use_gaussian else None
-    )
+    # ── FD/ND geometric scale factor ──────────────────────────────────────
+    fd_cfg   = cfg.get("fd_scale", {})
+    L_ND_m   = float(fd_cfg.get("L_ND_m",  280.0))
+    L_FD_m   = float(fd_cfg.get("L_FD_m",  295_000.0))
+    M_FD_t   = float(fd_cfg.get("M_FD_t",  22_500.0))
+    M_ND_t   = float(fd_cfg.get("M_ND_t",  8.0))
+    p_floor  = float(fd_cfg.get("p_floor", 0.005))
+    f_scale  = (L_ND_m / L_FD_m) ** 2 * M_FD_t / M_ND_t
+    print(f"\nFD/ND scale factor: f = {f_scale:.5f}  ({100*f_scale:.3f}%)", flush=True)
 
-    # Observed spectrum = mean of NF toys (preferred) or Gaussian toys
-    ref_fhc = hists_nf_fhc if use_nf else hists_g_fhc
-    ref_rhc = hists_nf_rhc if use_nf else hists_g_rhc
+    # Convert to arrays, apply FD scaling so chi-squares use realistic statistics
+    def _scaled(per_stream, stream):
+        return np.array(per_stream[stream][:num_samples], dtype=np.float64) * f_scale
+
+    hists_nf_fhc = _scaled(nf_per_stream, "FHC") if use_nf else None
+    hists_nf_rhc = _scaled(nf_per_stream, "RHC") if use_nf else None
+    hists_g_fhc  = _scaled(gaussian_per_stream, "FHC") if use_gaussian else None
+    hists_g_rhc  = _scaled(gaussian_per_stream, "RHC") if use_gaussian else None
+
+    # Observed (Asimov) FD spectrum = scaled mean of NF (or Gaussian) toys
+    ref_fhc   = hists_nf_fhc if use_nf else hists_g_fhc
+    ref_rhc   = hists_nf_rhc if use_nf else hists_g_rhc
     N_obs_fhc = ref_fhc.mean(axis=0)
     N_obs_rhc = ref_rhc.mean(axis=0)
 
+    # Estimate raw MC counts for Barlow-Beeston correction
+    N_raw_fhc = _estimate_N_raw(N_obs_fhc, bin_centers, osc_nom, p_floor)
+    N_raw_rhc = _estimate_N_raw(N_obs_rhc, bin_centers, osc_nom, p_floor)
+
     np.save(save_dir / "sensitivity_N_obs_fhc.npy", N_obs_fhc)
     np.save(save_dir / "sensitivity_N_obs_rhc.npy", N_obs_rhc)
-    print(f"Observed spectrum: FHC total={N_obs_fhc.sum():.1f}, RHC total={N_obs_rhc.sum():.1f}", flush=True)
+    print(f"FD Asimov spectrum: FHC total={N_obs_fhc.sum():.1f}, RHC total={N_obs_rhc.sum():.1f}", flush=True)
 
     sens_nf    = None
     sens_gauss = None
 
     if use_nf:
-        print("\nComputing NF sensitivity...", flush=True)
+        print("\nComputing NF sensitivity (BB, FD-scaled)...", flush=True)
         sens_nf = compute_sensitivity(
             hists_nf_fhc, hists_nf_rhc, N_obs_fhc, N_obs_rhc,
-            w_all, ci_levels, chunk_size,
+            w_all, N_raw_fhc, N_raw_rhc, ci_levels, chunk_size,
         )
         np.save(save_dir / "sensitivity_T_obs.npy",               sens_nf["T_obs"])
         np.save(save_dir / "sensitivity_T_crit_fc_nf.npy",        sens_nf["T_crit_fc"])
@@ -660,10 +691,10 @@ def main(cfg: DictConfig) -> None:
         np.save(save_dir / "sensitivity_in_contour_wilks_nf.npy", sens_nf["in_contour_wilks"])
 
     if use_gaussian:
-        print("\nComputing Gaussian sensitivity...", flush=True)
+        print("\nComputing Gaussian sensitivity (BB, FD-scaled)...", flush=True)
         sens_gauss = compute_sensitivity(
             hists_g_fhc, hists_g_rhc, N_obs_fhc, N_obs_rhc,
-            w_all, ci_levels, chunk_size,
+            w_all, N_raw_fhc, N_raw_rhc, ci_levels, chunk_size,
         )
         np.save(save_dir / "sensitivity_T_crit_fc_gauss.npy",        sens_gauss["T_crit_fc"])
         np.save(save_dir / "sensitivity_in_contour_fc_gauss.npy",    sens_gauss["in_contour_fc"])
