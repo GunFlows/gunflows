@@ -236,6 +236,97 @@ def _plot_contours_nf_vs_reweighted(
     plt.close(fig)
 
 
+def _plot_marginal_epoch_panel(
+    epoch_data: list,
+    mu: float,
+    sigma: float,
+    label: str,
+    out_path: Path,
+    bins: int = 60,
+) -> None:
+    """One figure for a single parameter; one subpanel per training epoch.
+
+    Each subpanel overlays:
+      - NF marginal (unweighted)
+      - NF reweighted marginal (IS weights = exp(log_ratio))
+      - Gaussian reference (best-fit mean, postfit sigma)
+      - dashed vertical line at the best-fit value
+
+    Parameters
+    ----------
+    epoch_data : list of (epoch, x_nf, log_ratio) sorted by epoch ascending.
+    """
+    if len(epoch_data) == 0:
+        return
+
+    n = len(epoch_data)
+    ncols = min(5, n)
+    nrows = int(math.ceil(n / ncols))
+
+    # Shared x range across panels: percentile of pooled samples, padded by
+    # +/- 4 sigma so the Gaussian reference is always visible.
+    all_x = np.concatenate(
+        [np.asarray(x, dtype=np.float64).reshape(-1) for _, x, _ in epoch_data]
+    )
+    if all_x.size == 0:
+        return
+    p1, p99 = np.percentile(all_x, [0.5, 99.5])
+    if not np.isfinite(p1) or not np.isfinite(p99) or p99 <= p1:
+        p1, p99 = float(np.min(all_x)), float(np.max(all_x))
+    if np.isfinite(sigma) and sigma > 0 and np.isfinite(mu):
+        p1 = min(p1, mu - 4.0 * sigma)
+        p99 = max(p99, mu + 4.0 * sigma)
+    if not np.isfinite(p1) or not np.isfinite(p99) or p99 <= p1:
+        p1, p99 = 0.0, 1.0
+    span = p99 - p1
+    xmin, xmax = p1 - 0.05 * span, p99 + 0.05 * span
+    edges = np.linspace(xmin, xmax, bins + 1)
+    xgrid = np.linspace(xmin, xmax, 400)
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(3.0 * ncols, 2.6 * nrows),
+        sharex=True, sharey=False, squeeze=False,
+    )
+
+    for k, (ep, x, lr) in enumerate(epoch_data):
+        r, c = divmod(k, ncols)
+        ax = axes[r][c]
+        x = np.asarray(x, dtype=np.float64).reshape(-1)
+        lr = np.asarray(lr, dtype=np.float64).reshape(-1)
+        if x.size == 0:
+            ax.set_visible(False)
+            continue
+        w = _stable_weights_from_logratio(lr)
+        ax.hist(x, bins=edges, density=True, histtype="step", linewidth=1.2,
+                color="C2", label="NF")
+        ax.hist(x, bins=edges, density=True, histtype="step", linewidth=1.2,
+                color="C3", weights=w, label="NF rw")
+        if np.isfinite(sigma) and sigma > 0 and np.isfinite(mu):
+            gauss = np.exp(-0.5 * ((xgrid - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
+            ax.plot(xgrid, gauss, color="C4", linewidth=1.0, label="Gauss")
+            ax.axvline(mu, color="C0", linestyle="--", linewidth=0.9, label="best fit")
+        ax.set_title(f"epoch {ep}k", fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+        ax.grid(True, alpha=0.2)
+        if k == 0:
+            ax.legend(fontsize=7, loc="best")
+
+    # Hide unused subplots
+    for k in range(len(epoch_data), nrows * ncols):
+        r, c = divmod(k, ncols)
+        axes[r][c].set_visible(False)
+
+    # Common x-axis label on the bottom row
+    for c in range(ncols):
+        axes[nrows - 1][c].set_xlabel(label, fontsize=9)
+
+    fig.suptitle(f"Marginal evolution: {label}", fontsize=11)
+    plt.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 @hydra.main(config_path="../../configs", config_name="effective_sample_size", version_base=None)
 def main(cfg: DictConfig) -> None:
     training_folder = _abspath(str(cfg.training_folder))
@@ -305,6 +396,24 @@ def main(cfg: DictConfig) -> None:
     latest_epoch = -1
     latest_payload = None
 
+    # ---- per-epoch marginal scan -------------------------------------------------
+    # User-configurable list of parameter indices to plot one figure per param,
+    # with one subpanel per checkpoint epoch. Default = empty (feature off).
+    _scan_cfg = getattr(cfg, "marginal_scan_param_indices", None)
+    if _scan_cfg is None:
+        marginal_scan_indices: list[int] = []
+    else:
+        marginal_scan_indices = [int(i) for i in _scan_cfg]
+    marginal_scan_bins = int(getattr(cfg, "marginal_scan_bins", 60))
+    # epoch_marginal_payloads[idx] = list of (epoch, x_arr, log_ratio_arr)
+    epoch_marginal_payloads: dict = {i: [] for i in marginal_scan_indices}
+    if marginal_scan_indices:
+        print(
+            f"Marginal-evolution scan enabled for param indices: {marginal_scan_indices} "
+            f"(bins={marginal_scan_bins})",
+            flush=True,
+        )
+
     if (cfg.llh_workers > 0):
         print(f"Initializing {cfg.llh_workers} ({mp.cpu_count()}) workers to compute LH values in parallel.", flush=True)
         # compute LH with multiple threads
@@ -315,19 +424,105 @@ def main(cfg: DictConfig) -> None:
     # start a loop where at each iteration you pickup a checkpoint, sample from it, compute ESS, make some plots, then store the results
     ckpt_folder = os.path.join(training_folder, "checkpoints")
     pattern = re.compile(r"sampler_epoch(\d+)000.pt")
-    tot_models = 0
+    all_ckpts: list[tuple[int, str]] = []
     for fname in os.listdir(ckpt_folder):
         m = pattern.match(fname)
         if m:
-            tot_models += 1
-    print(f"Total NF tot_models found: {tot_models}", flush=True)
-    for fname in os.listdir(ckpt_folder):
-        m = pattern.match(fname)
-        if m:
-            print(f"Found NF model file: {fname}", flush=True)
-            ep = int(m.group(1))
-        else:
-            continue
+            all_ckpts.append((int(m.group(1)), fname))
+    all_ckpts.sort(key=lambda t: t[0])
+    print(f"Total NF checkpoints found: {len(all_ckpts)}", flush=True)
+
+    # Optionally ignore checkpoints beyond `max_epoch` (in real epoch units,
+    # e.g. max_epoch=20000 keeps sampler_epoch<=20000.pt). The stored epoch
+    # value is in thousands, so compare e*1000 against max_epoch.
+    max_epoch = getattr(cfg, "max_epoch", None)
+    if max_epoch is not None and int(max_epoch) > 0:
+        max_epoch = int(max_epoch)
+        kept = [(e, f) for e, f in all_ckpts if e * 1000 <= max_epoch]
+        if not kept:
+            raise RuntimeError(
+                f"max_epoch={max_epoch} excludes every checkpoint "
+                f"(available epochs x1000: {[e for e, _ in all_ckpts]})"
+            )
+        all_ckpts = kept
+        print(f"Applied max_epoch={max_epoch}: {len(all_ckpts)} checkpoints "
+              f"remain (epochs x1000: {[e for e, _ in all_ckpts]})", flush=True)
+
+    # Sub-sample to `n_checkpoints` roughly equally-spaced (default 10).
+    # Always keep the lowest and highest available epoch.
+    n_pick = int(getattr(cfg, "n_checkpoints", 10))
+    if n_pick > 0 and len(all_ckpts) > n_pick:
+        idx = np.linspace(0, len(all_ckpts) - 1, n_pick).round().astype(int)
+        idx = sorted(set(int(i) for i in idx))
+        selected = [all_ckpts[i] for i in idx]
+    else:
+        selected = all_ckpts
+    print(f"Selected {len(selected)} checkpoints (epochs x1000): "
+          f"{[e for e, _ in selected]}", flush=True)
+    tot_models = len(selected)
+
+    # ── Gaussian approximation ESS (plotted at epoch 0) ──────────────────────
+    num_samples = int(cfg.num_samples)
+    batch_size  = int(cfg.batch_size)
+    print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
+    _rng_g = np.random.default_rng(42)
+    _mu_g  = bestfit_parameter_values.copy()
+    _cov_g = postfit_covariance.copy()
+    _ndim  = len(_mu_g)
+    _L_g   = np.linalg.cholesky(_cov_g)
+    _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
+    _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
+    _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
+
+    _g_samples: list[np.ndarray] = []
+    _g_logqs:   list[float]      = []
+    while len(_g_samples) < num_samples:
+        take = min(batch_size, (num_samples - len(_g_samples)) * 3)
+        _z = _rng_g.standard_normal((take, _ndim))
+        _xs = _mu_g + _z @ _L_g.T
+        for _x in _xs:
+            if not check_parameters_limits(_x, parameter_limits):
+                continue
+            _diff = _x - _mu_g
+            _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
+            _g_samples.append(_x.copy())
+            if len(_g_samples) >= num_samples:
+                break
+
+    _g_samples = np.asarray(_g_samples[:num_samples])
+    _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
+
+    print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
+    _t0_g = time.time()
+    if cfg.llh_workers > 0:
+        _g_lh = pool.map(worker, _g_samples, chunksize=32)
+        _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
+    else:
+        _g_rw_list = []
+        for _gx, _glq in zip(_g_samples, _g_logqs):
+            _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
+            _g_rw_list.append(-_glq - _glp)
+        _g_rw = np.array(_g_rw_list)
+    print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
+
+    _g_rw -= np.median(_g_rw)
+    _g_w   = np.exp(_g_rw)
+    _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
+    _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
+    _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
+    _g_fw    = np.exp(_g_rw[_g_fmask])
+    _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
+    print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
+          f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
+
+    epoch_list.append(0)
+    ess_list.append(_g_ess / num_samples)
+    ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
+    tot_models += 1
+    # ── end Gaussian ESS ─────────────────────────────────────────────────────
+
+    for ep, fname in selected:
+        print(f"Found NF model file: {fname}", flush=True)
         ckpt_path = Path(os.path.join(ckpt_folder, fname))
         print("Using NF model:", ckpt_path, flush=True)
 
@@ -483,6 +678,17 @@ def main(cfg: DictConfig) -> None:
                 "sigma": np.sqrt(np.clip(np.diag(postfit_covariance[:d, :d]), 0.0, np.inf)),
             }
 
+        # Stash this epoch's column slice + log-ratio for the marginal-evolution scan.
+        if marginal_scan_indices:
+            _lr_arr = np.asarray(reweight_nf_to_lh[:samples_nf.shape[0]], dtype=np.float64)
+            for _idx in marginal_scan_indices:
+                if 0 <= _idx < int(samples_nf.shape[1]):
+                    epoch_marginal_payloads[_idx].append(
+                        (int(ep),
+                         np.asarray(samples_nf[:, _idx], dtype=np.float64).copy(),
+                         _lr_arr.copy())
+                    )
+
         # sort lists by epoch
         sorted_indices = np.argsort(epoch_list)
         epoch_list = [epoch_list[i] for i in sorted_indices]
@@ -500,13 +706,29 @@ def main(cfg: DictConfig) -> None:
             json.dump(results, f, indent=4)
 
         # plot ESS vs epoch
-        plt.figure(figsize=(8,6))
-        plt.plot(epoch_list, ess_list, marker='o', label='ESS')
-        plt.plot(epoch_list, ess_filtered_list, marker='o', label='ESS (filtered)')
-        plt.xlabel('Epoch')
-        plt.ylabel('Effective Sample Size')
+        _ep_arr   = np.array(epoch_list)
+        _ess_arr  = np.array(ess_list)
+        _essf_arr = np.array(ess_filtered_list)
+        _nf_mask_plt   = _ep_arr > 0
+        _gauss_mask_plt = _ep_arr == 0
+
+        plt.figure(figsize=(8, 6))
+        # NF points
+        if _nf_mask_plt.any():
+            plt.plot(_ep_arr[_nf_mask_plt], _ess_arr[_nf_mask_plt],
+                     marker='o', color='C0', label='ESS (NF)')
+            plt.plot(_ep_arr[_nf_mask_plt], _essf_arr[_nf_mask_plt],
+                     marker='o', color='C1', label='ESS filtered (NF)')
+        # Gaussian point at epoch 0
+        if _gauss_mask_plt.any():
+            plt.scatter(_ep_arr[_gauss_mask_plt], _ess_arr[_gauss_mask_plt],
+                        marker='*', s=200, color='C0', zorder=5, label='ESS (Gaussian)')
+            plt.scatter(_ep_arr[_gauss_mask_plt], _essf_arr[_gauss_mask_plt],
+                        marker='*', s=200, color='C1', zorder=5, label='ESS filtered (Gaussian)')
+            plt.axvline(0, color='grey', linestyle='--', linewidth=0.8)
+        plt.xlabel('Epoch (×1000)')
+        plt.ylabel('Effective Sample Size (fraction)')
         plt.title(f'Effective Sample Size vs Training Epoch ({num_samples} samples)')
-        # plt.yscale('log')
         plt.grid(True, which='both', linestyle='--', linewidth=0.5)
         plt.legend()
         plt_path = out_dir / "ess_vs_epoch.png"
@@ -519,100 +741,142 @@ def main(cfg: DictConfig) -> None:
 
 
 
-        if cfg.llh_workers > 0:
-            pool.close()
-            pool.join()
+    if cfg.llh_workers > 0:
+        pool.close()
+        pool.join()
 
+    if latest_payload is not None:
+        print(
+            f"Producing least-Gaussian parameter plots from epoch {latest_payload['epoch']}.",
+            flush=True,
+        )
+
+        least_dir = out_dir / "least_gaussian"
+        least_marg_dir = least_dir / "marginals"
+        least_corr_dir = least_dir / "corr2d_contours"
+        least_dir.mkdir(parents=True, exist_ok=True)
+        least_marg_dir.mkdir(parents=True, exist_ok=True)
+        least_corr_dir.mkdir(parents=True, exist_ok=True)
+
+        samples_plot = latest_payload["samples_nf"]
+        log_ratio = latest_payload["log_ratio"]
+        labels_plot = latest_payload["labels"]
+        mu_plot = latest_payload["mu"]
+        sigma_plot = latest_payload["sigma"]
+
+        w_reweighted = _stable_weights_from_logratio(log_ratio)
+
+        ks_records = []
+        for idx in range(samples_plot.shape[1]):
+            ks_val = _ks_stat_against_gaussian(samples_plot[:, idx], float(mu_plot[idx]), float(sigma_plot[idx]))
+            if np.isfinite(ks_val):
+                ks_records.append((idx, float(ks_val), labels_plot[idx]))
+
+        ks_records = sorted(ks_records, key=lambda t: t[1], reverse=True)
+        n_select = min(10, len(ks_records))
+        selected = ks_records[:n_select]
+        selected_indices = [x[0] for x in selected]
+
+        with open(least_dir / "least_gaussian_ks.json", "w") as f:
+            json.dump(
+                {
+                    "epoch": int(latest_payload["epoch"]),
+                    "top_k": int(n_select),
+                    "selected": [
+                        {
+                            "index": int(i),
+                            "name": str(name),
+                            "ks_stat": float(score),
+                        }
+                        for i, score, name in selected
+                    ],
+                },
+                f,
+                indent=2,
+            )
+
+        marginal_bins = int(getattr(cfg, "least_gaussian_marginal_bins", 60))
+        contour_bins = int(getattr(cfg, "least_gaussian_corr2d_bins", 70))
+
+        for i in selected_indices:
+            out_path = least_marg_dir / f"least_gaussian_marginal_{i:03d}.png"
+            _plot_marginal_nf_vs_reweighted(
+                samples_plot[:, i],
+                w_reweighted,
+                float(mu_plot[i]),
+                float(sigma_plot[i]),
+                labels_plot[i],
+                out_path,
+                bins=marginal_bins,
+            )
+
+        if len(selected_indices) >= 2:
+            for a_pos in range(len(selected_indices)):
+                for b_pos in range(a_pos + 1, len(selected_indices)):
+                    a = selected_indices[a_pos]
+                    b = selected_indices[b_pos]
+                    out_path = least_corr_dir / f"least_gaussian_corr2d_{a:03d}_{b:03d}.png"
+                    _plot_contours_nf_vs_reweighted(
+                        samples_plot[:, a],
+                        samples_plot[:, b],
+                        w_reweighted,
+                        labels_plot[a],
+                        labels_plot[b],
+                        out_path,
+                        bins=contour_bins,
+                    )
+
+        print(
+            f"Least-Gaussian plots saved in {least_dir} (selected={len(selected_indices)}).",
+            flush=True,
+        )
+    else:
+        print("No valid checkpoint payload available for least-Gaussian plotting.", flush=True)
+
+    print("Finished looping over checkpoints.")
+
+    # -------------------------------------------------------------------------
+    # Marginal-evolution panels: one figure per scanned parameter, one subpanel
+    # per training epoch. Shows NF unweighted vs NF-reweighted marginal so the
+    # build-up (or absence) of the reweighting-induced shift is visible across
+    # epochs.
+    # -------------------------------------------------------------------------
+    if marginal_scan_indices:
+        scan_dir = out_dir / "marginal_epoch_scan"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resolve labels / mu / sigma from any successful checkpoint
         if latest_payload is not None:
-            print(
-                f"Producing least-Gaussian parameter plots from epoch {latest_payload['epoch']}.",
-                flush=True,
-            )
-
-            least_dir = out_dir / "least_gaussian"
-            least_marg_dir = least_dir / "marginals"
-            least_corr_dir = least_dir / "corr2d_contours"
-            least_dir.mkdir(parents=True, exist_ok=True)
-            least_marg_dir.mkdir(parents=True, exist_ok=True)
-            least_corr_dir.mkdir(parents=True, exist_ok=True)
-
-            samples_plot = latest_payload["samples_nf"]
-            log_ratio = latest_payload["log_ratio"]
-            labels_plot = latest_payload["labels"]
-            mu_plot = latest_payload["mu"]
-            sigma_plot = latest_payload["sigma"]
-
-            w_reweighted = _stable_weights_from_logratio(log_ratio)
-
-            ks_records = []
-            for idx in range(samples_plot.shape[1]):
-                ks_val = _ks_stat_against_gaussian(samples_plot[:, idx], float(mu_plot[idx]), float(sigma_plot[idx]))
-                if np.isfinite(ks_val):
-                    ks_records.append((idx, float(ks_val), labels_plot[idx]))
-
-            ks_records = sorted(ks_records, key=lambda t: t[1], reverse=True)
-            n_select = min(10, len(ks_records))
-            selected = ks_records[:n_select]
-            selected_indices = [x[0] for x in selected]
-
-            with open(least_dir / "least_gaussian_ks.json", "w") as f:
-                json.dump(
-                    {
-                        "epoch": int(latest_payload["epoch"]),
-                        "top_k": int(n_select),
-                        "selected": [
-                            {
-                                "index": int(i),
-                                "name": str(name),
-                                "ks_stat": float(score),
-                            }
-                            for i, score, name in selected
-                        ],
-                    },
-                    f,
-                    indent=2,
-                )
-
-            marginal_bins = int(getattr(cfg, "least_gaussian_marginal_bins", 60))
-            contour_bins = int(getattr(cfg, "least_gaussian_corr2d_bins", 70))
-
-            for i in selected_indices:
-                out_path = least_marg_dir / f"least_gaussian_marginal_{i:03d}.png"
-                _plot_marginal_nf_vs_reweighted(
-                    samples_plot[:, i],
-                    w_reweighted,
-                    float(mu_plot[i]),
-                    float(sigma_plot[i]),
-                    labels_plot[i],
-                    out_path,
-                    bins=marginal_bins,
-                )
-
-            if len(selected_indices) >= 2:
-                for a_pos in range(len(selected_indices)):
-                    for b_pos in range(a_pos + 1, len(selected_indices)):
-                        a = selected_indices[a_pos]
-                        b = selected_indices[b_pos]
-                        out_path = least_corr_dir / f"least_gaussian_corr2d_{a:03d}_{b:03d}.png"
-                        _plot_contours_nf_vs_reweighted(
-                            samples_plot[:, a],
-                            samples_plot[:, b],
-                            w_reweighted,
-                            labels_plot[a],
-                            labels_plot[b],
-                            out_path,
-                            bins=contour_bins,
-                        )
-
-            print(
-                f"Least-Gaussian plots saved in {least_dir} (selected={len(selected_indices)}).",
-                flush=True,
-            )
+            labels_ref = latest_payload["labels"]
+            mu_ref = latest_payload["mu"]
+            sigma_ref = latest_payload["sigma"]
         else:
-            print("No valid checkpoint payload available for least-Gaussian plotting.", flush=True)
+            labels_ref = nf_param_names_short
+            mu_ref = bestfit_parameter_values
+            sigma_ref = np.sqrt(np.clip(np.diag(postfit_covariance), 0.0, np.inf))
 
-        print("Finished looping over checkpoints.")
+        for _idx in marginal_scan_indices:
+            data = epoch_marginal_payloads.get(_idx, [])
+            if not data:
+                print(f"  scan: no data collected for index {_idx}, skipping.", flush=True)
+                continue
+            data_sorted = sorted(data, key=lambda t: t[0])
+            label = labels_ref[_idx] if 0 <= _idx < len(labels_ref) else f"param_{_idx}"
+            mu_i = float(mu_ref[_idx]) if 0 <= _idx < len(mu_ref) else float("nan")
+            sig_i = float(sigma_ref[_idx]) if 0 <= _idx < len(sigma_ref) else float("nan")
+            safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", str(label))
+            out_path = scan_dir / f"param_{_idx:03d}_{safe_label}.png"
+            _plot_marginal_epoch_panel(
+                data_sorted,
+                mu_i,
+                sig_i,
+                str(label),
+                out_path,
+                bins=marginal_scan_bins,
+            )
+            print(f"  scan: wrote {out_path}  (epochs={[e for e,_,_ in data_sorted]})", flush=True)
 
+        print(f"Marginal-evolution scan plots saved in {scan_dir}.", flush=True)
 
 
 
