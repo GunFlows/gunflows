@@ -369,9 +369,9 @@ def _plot_combined_one_level(
     centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths  = bin_edges[1:] - bin_edges[:-1]
 
-    fig, (ax, ax_mean, ax_sig) = plt.subplots(
-        3, 1, figsize=(10, 10),
-        gridspec_kw={"height_ratios": [3, 1, 1]},
+    fig, (ax, ax_bot) = plt.subplots(
+        2, 1, figsize=(10, 8),
+        gridspec_kw={"height_ratios": [3, 1]},
         sharex=True,
     )
     fig.subplots_adjust(hspace=0.05)
@@ -379,23 +379,14 @@ def _plot_combined_one_level(
     COLORS = {"Gaussian": "#d62728", "NF": "#1f77b4", "MCMC": "#2ca02c"}
     BAND_ALPHA = 0.32
 
-    # Collect per-label mean and std of bin counts (used for bottom panels)
-    means_raw: dict[str, np.ndarray] = {}
-    stds_raw:  dict[str, np.ndarray] = {}
-
     for label in ("Gaussian", "NF", "MCMC"):
         if label not in results:
             continue
         color = COLORS[label]
         hists_arr = results[label]
 
-        mean_raw = hists_arr.mean(axis=0)
-        means_raw[label] = mean_raw
-        stds_raw[label]  = hists_arr.std(axis=0)
-
-        mean = mean_raw / widths
-        bands_raw = _compute_bands(hists_arr, method=ci_method, levels=(level,))
-        lo_raw, hi_raw = bands_raw[0]
+        mean = hists_arr.mean(axis=0) / widths
+        lo_raw, hi_raw = _compute_bands(hists_arr, method=ci_method, levels=(level,))[0]
         lo = lo_raw / widths
         hi = hi_raw / widths
 
@@ -417,59 +408,38 @@ def _plot_combined_one_level(
             sx, sy = _step_xy(bin_edges, mean)
             ax.plot(sx, sy, color=color, linewidth=1.4, label=legend_label)
 
+        mean_raw = hists_arr.mean(axis=0)
+        rel = np.where(mean_raw > 0, (hi_raw - lo_raw) / (2.0 * mean_raw), 0.0)
+        if smooth:
+            x_d, rel_d = _smooth_curve(centers, rel)
+            ax_bot.plot(x_d, rel_d, color=color, linewidth=1.3, label=label)
+        else:
+            bx, by = _step_xy(bin_edges, rel)
+            ax_bot.plot(bx, by, color=color, linewidth=1.2, label=label)
+
     pct = 100.0 * level
     stream_str = f" — {stream}"   if stream   else ""
     vname_str  = f" ({var_name})" if var_name else ""
     title = (f"CI band: {pct:.2f}%{stream_str}{vname_str}  "
              f"(method: {ci_method}" + (", smoothed)" if smooth else ")"))
     ax.set_title(title, fontsize=10, loc="right", color="gray")
-    ax.set_ylabel(r"Event yield / bin width  [GeV$^{-1}$]", fontsize=13)
+    ax.set_ylabel("Event yield / bin width", fontsize=13)
     ax.set_ylim(bottom=0)
     ax.legend(fontsize=11)
     ax.tick_params(axis="both", labelsize=11)
 
-    # ── Bottom panels: NF vs Gaussian relative differences ──────────────────
-    _nf_present = "NF" in means_raw
-    _ga_present = "Gaussian" in means_raw
-
-    if _nf_present and _ga_present:
-        mn = means_raw["NF"];   mg = means_raw["Gaussian"]
-        sn = stds_raw["NF"];    sg = stds_raw["Gaussian"]
-
-        denom_m = 0.5 * (mn + mg)
-        rel_mean_pct = np.where(denom_m != 0.0, (mn - mg) / denom_m * 100.0, 0.0)
-
-        denom_s = 0.5 * (sn + sg)
-        rel_sig_pct  = np.where(denom_s != 0.0, (sn - sg) / denom_s * 100.0, 0.0)
-    else:
-        rel_mean_pct = np.zeros(len(centers))
-        rel_sig_pct  = np.zeros(len(centers))
-
-    bar_kw = dict(align="center", edgecolor="none", alpha=0.8)
-
-    ax_mean.bar(centers, rel_mean_pct, width=widths, color="#1f77b4", **bar_kw)
-    ax_mean.axhline(0, color="k", lw=0.8)
-    ax_mean.set_ylabel("$\\Delta$ mean [%]", fontsize=10)
-    ax_mean.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
-    ax_mean.grid(True, alpha=0.25, axis="y")
-    ax_mean.tick_params(axis="both", labelsize=9)
-
-    ax_sig.bar(centers, rel_sig_pct, width=widths, color="#d62728", **bar_kw)
-    ax_sig.axhline(0, color="k", lw=0.8)
-    ax_sig.set_ylabel("$\\Delta\\sigma$ [%]", fontsize=10)
-    ax_sig.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
-    ax_sig.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
-    ax_sig.grid(True, alpha=0.25, axis="y")
-    ax_sig.tick_params(axis="both", labelsize=9)
-    ax_sig.set_xlim(bin_edges[0], bin_edges[-1])
-
-    if _nf_present and _ga_present:
-        ax_mean.set_title("(NF − Gaussian) / mean(NF, Gaussian)", fontsize=8,
-                          loc="right", color="gray")
+    ax_bot.set_xlabel(var_name if var_name else "variable", fontsize=13)
+    ax_bot.set_ylabel(f"{pct:.1f}% half-width\n/ mean", fontsize=10)
+    ax_bot.set_ylim(bottom=0)
+    ax_bot.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    ax_bot.legend(fontsize=9)
+    ax_bot.tick_params(axis="both", labelsize=10)
+    ax_bot.set_xlim(bin_edges[0], bin_edges[-1])
 
     tag = f"{pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
     stream_suffix = f"_{stream.lower()}" if stream else ""
-    out = save_dir / f"enu_histogram{stream_suffix}_combined_ci{tag}.png"
+    vname_suffix  = f"_{var_name.lower()}" if var_name else ""
+    out = save_dir / f"combined_ci{tag}{vname_suffix}{stream_suffix}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -511,11 +481,14 @@ def plot_correlation_matrix(
     plt.colorbar(im, ax=ax, label="Pearson r")
     ax.set_xticks(range(n)); ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
     ax.set_yticks(range(n)); ax.set_yticklabels(labels, fontsize=7)
-    title_prefix = f"{stream} — " if stream else ""
-    ax.set_title(f"Bin-content correlation — {title_prefix}{label}")
+    stream_str = f" — {stream}" if stream else ""
+    vname_str  = f" ({var_name})" if var_name else ""
+    ax.set_title(f"Bin correlation — {label}{stream_str}{vname_str}")
     fig.tight_layout()
-    file_suffix = f"_{stream.lower()}" if stream else ""
-    fig.savefig(save_dir / f"correlation_matrix{file_suffix}_{label.lower()}.png", dpi=150)
+    stream_suffix = f"_{stream.lower()}" if stream else ""
+    vname_suffix  = f"_{var_name.lower()}" if var_name else ""
+    fig.savefig(save_dir / f"correlation_matrix_{label.lower()}{vname_suffix}{stream_suffix}.png",
+                dpi=150)
     plt.close(fig)
 
 
@@ -533,8 +506,9 @@ def plot_corner(
     bin_labels = _bin_labels(bin_edges)
 
     fig, axes = plt.subplots(n_bins, n_bins, figsize=(2.2 * n_bins, 2.2 * n_bins))
-    title_prefix = f"{stream} — " if stream else ""
-    fig.suptitle(f"Corner plot — {title_prefix}{label}", y=1.01)
+    stream_str = f" — {stream}" if stream else ""
+    vname_str  = f" ({var_name})" if var_name else ""
+    fig.suptitle(f"Corner plot — {label}{stream_str}{vname_str}", y=1.01)
 
     for row in range(n_bins):
         for col in range(n_bins):
@@ -552,8 +526,79 @@ def plot_corner(
             ax.tick_params(labelsize=5)
 
     fig.tight_layout()
-    file_suffix = f"_{stream.lower()}" if stream else ""
-    fig.savefig(save_dir / f"corner{file_suffix}_{label.lower()}.png", dpi=150)
+    stream_suffix = f"_{stream.lower()}" if stream else ""
+    vname_suffix  = f"_{var_name.lower()}" if var_name else ""
+    fig.savefig(save_dir / f"corner_{label.lower()}{vname_suffix}{stream_suffix}.png", dpi=150)
+    plt.close(fig)
+
+
+def plot_violin(
+    results: dict[str, np.ndarray],  # {label: hists_arr (n_throws, n_bins)}
+    bin_edges: np.ndarray,
+    save_dir: Path,
+    var_name: str = "",
+    stream: str = "",
+) -> None:
+    """
+    Comparison violin plot: one violin per source (Gaussian / NF / MCMC) side
+    by side within each bin.  Violins are offset proportionally to each bin's
+    width so non-uniform binning is correctly represented.  The median is marked
+    inside each violin.  Output: violin_<var>_<stream>.png.
+    """
+    if not results:
+        return
+
+    n_bins  = next(iter(results.values())).shape[1]
+    centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    widths  = bin_edges[1:] - bin_edges[:-1]
+
+    SOURCE_ORDER = [l for l in ("Gaussian", "NF", "MCMC") if l in results]
+    COLORS = {"Gaussian": "#d62728", "NF": "#1f77b4", "MCMC": "#2ca02c"}
+    n_src = len(SOURCE_ORDER)
+
+    # Each violin is offset by a fraction of its bin width.
+    # Total spread covers ±spread of bin width; individual width uses the rest.
+    spread   = 0.28
+    offsets  = np.linspace(-spread, spread, n_src) if n_src > 1 else np.array([0.0])
+    vw_frac  = (2 * spread / max(n_src, 1)) * 0.80
+
+    fig, ax = plt.subplots(figsize=(max(8, n_bins), 5))
+
+    for j, label in enumerate(SOURCE_ORDER):
+        hists_arr = results[label]
+        density   = hists_arr / widths[np.newaxis, :]
+        positions = centers + offsets[j] * widths
+        vwidths   = widths * vw_frac
+
+        vp = ax.violinplot(
+            [density[:, i] for i in range(n_bins)],
+            positions=positions,
+            widths=vwidths,
+            showmedians=True,
+            showextrema=False,
+        )
+        color = COLORS.get(label, f"C{j}")
+        for body in vp["bodies"]:
+            body.set_facecolor(color)
+            body.set_alpha(0.65)
+        vp["cmedians"].set_color(color)
+        vp["cmedians"].set_linewidth(1.5)
+        # invisible patch for the legend
+        ax.fill_between([], [], [], color=color, alpha=0.65, label=label)
+
+    stream_str = f" — {stream}" if stream else ""
+    vname_str  = f" ({var_name})" if var_name else ""
+    ax.set_title(f"Per-bin yield distribution{stream_str}{vname_str}")
+    ax.set_xlabel(var_name if var_name else "variable", fontsize=12)
+    ax.set_ylabel("Event yield / bin width", fontsize=12)
+    ax.set_xlim(bin_edges[0], bin_edges[-1])
+    ax.set_yscale("log")
+    ax.legend(fontsize=11)
+    fig.tight_layout()
+
+    stream_suffix = f"_{stream.lower()}" if stream else ""
+    vname_suffix  = f"_{var_name.lower()}" if var_name else ""
+    fig.savefig(save_dir / f"violin{vname_suffix}{stream_suffix}.png", dpi=150)
     plt.close(fig)
 
 

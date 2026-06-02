@@ -4,7 +4,7 @@ phase_space_dim:
     [100,101,102,103,104,105,106,107,108,109]
 
   # starting_folder is where the initial samples are saved
-starting_folder: /workspace/config/GundamWorkspace/datasets_sb_configToyOANoMirrorFakeData_100plus10
+starting_folder: /workspace/config/Config100p10_noDet/datasets_sb_configToyOA_100plus10_noDet
 with_sampler: true
 nf_ckpt: null                     # path to NF checkpoint if available
 data_dir: ${hydra:runtime.output_dir}/generated_samples
@@ -12,7 +12,7 @@ gen_batch_size: 10000
 max_batches: 50
 num_samplers: 10
 
-llh_config: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOANoMirrorFakeData_100plus10.root
+llh_config: /workspace/config/Config100p10_noDet/gundamFitter_configToyOA_100plus10_noDet.root
 llh_overrides: []
 llh_cwd: /workspace/config/GundamWorkspace
 

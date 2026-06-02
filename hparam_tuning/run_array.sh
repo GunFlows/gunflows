@@ -6,7 +6,7 @@
 #SBATCH --gres-flags=enforce-binding   
 #SBATCH --gpu-bind=single:1            
 #SBATCH --ntasks=1    
-#SBATCH --time=12:00:00
+#SBATCH --time=6:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=10
 #SBATCH --output=/home/shares/sanchezf/gundam_n_flow/GuNFlows/hparam_tuning/logs/%x_%A_%a.log
@@ -40,11 +40,25 @@ chmod 600 "$TMPDB"
 export OPTUNA_STUDY_NAME=$STUDY
 export OPTUNA_STORAGE="sqlite:///$TMPDB"
 export TOTAL_TRIALS=$TRIALS_PER_JOB
+export OPTUNA_EXPERIMENT=$EXPERIMENT
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 DONEFLAG="$DB_BASE/tmp_dbs/done_${STUDY}_${STAGE}_${SLURM_ARRAY_TASK_ID}.flag"
-trap 'touch "$DONEFLAG"' EXIT
 
-python -u worker.py
+# _cleanup must be idempotent: EXIT fires after TERM if we call `exit` there.
+_cleaned=0
+_cleanup() {
+    [[ $_cleaned -eq 1 ]] && return; _cleaned=1
+    # Wait for the worker to finish writing its optuna DB before copying.
+    wait "${WORKER_PID:-}" 2>/dev/null || true
+    cp "$TMPDB" "$DB_BASE/tmp_dbs/" 2>/dev/null || true
+    touch "$DONEFLAG"
+}
+trap '_cleanup' EXIT
+# Explicit TERM trap so bash waits for python to drain output + write DB
+# before the shell exits (without this, bash dies immediately on SIGTERM).
+trap '_cleanup; exit 143' TERM
 
-cp "$TMPDB" "$DB_BASE/tmp_dbs/"
+python -u worker.py &
+WORKER_PID=$!
+wait $WORKER_PID

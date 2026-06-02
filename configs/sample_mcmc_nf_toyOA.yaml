@@ -6,25 +6,26 @@
 # mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 # mcmc_chain: /workspace/trained_models/MCMC_100p10_Toy50.root
 
-training_folder: /workspace/work/GuNFlows/outputs/2026-05-16/02-52-50/
-mcmc_chain: /workspace/trained_models/mcmc_output/toyfit_100p10_noasimov_7982456.root
+training_folder: /workspace/trained_models/fakedata_toyfit_100p10_mathias
+mcmc_chain: /workspace/trained_models/mcmc/gundamMcmc_100p10_FakeDataNoMirror.root
 
 
 # save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
-save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10Toy50_NF0516_MCMC7954250
+save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10_Fakedata
 
-num_samples: 200
+num_samples: 20000
 batch_size: 4098
 bins: 200
 plot_workers: 0
+
 do_reweight_nf: true
 do_plot_mcmc: true
 
 mcmc_burnin_frac: 0. # no need if I take only the last 200k steps
 mcmc_thin: 1
-mcmc_max_steps: 200
+mcmc_max_steps: 200000
 
-reweight_num_workers: 2
+reweight_num_workers: 10
 
 do_mcmc_step_lh_nf_eval: true
 mcmc_delta_lh_p_3sigma: 0.95
@@ -33,7 +34,25 @@ mcmc_delta_lh_p_3sigma: 0.95
  # 3 sigma: 0.9973002039
 mcmc_nf_eval_batch_size: 2048
 
-select_regex: 
+# Save NF samples + log-weights + param names to nf_samples_with_weights.npz
+save_samples: true
+
+# 2D correlation plots: specify parameter index ranges (e.g. "0:5,60:66,100:110")
+# null → auto-select up to 5 params per group (physics/detector/nonlinear)
+# These are used for both NF-only plots (always generated) and NF-vs-MCMC (if do_plot_mcmc=true)
+corr2d_dims: "0:5,60:66,100:110"
+corr2d_bins: 60
+
+# Diagnostics histogram bins for NLL/logq plots
+mcmc_diag_bins: 80
+delta_nll_bins: 80
+
+# Fraction clipped from each tail of log_weight for display (the weight spread is very large;
+# extreme outliers are removed only for visualisation — the actual reweighting uses all samples).
+# e.g. 0.02 removes the bottom/top 2% of log_weight values from diagnostic plots.
+diag_clip_q: 0.02
+
+select_regex:
 
 device: cuda
 

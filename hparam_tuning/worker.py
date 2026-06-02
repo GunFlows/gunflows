@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
-import uuid, os, sys, subprocess, yaml, optuna, re, datetime, getpass
+import uuid, os, sys, subprocess, yaml, optuna, re, datetime, getpass, signal
 
-STUDY  = os.getenv("OPTUNA_STUDY_NAME", "hk_study")
-STORE  = os.getenv("OPTUNA_STORAGE",   "sqlite:///optuna_hk.db")
-BUDGET = int(os.getenv("TOTAL_TRIALS", "100"))
+STUDY      = os.getenv("OPTUNA_STUDY_NAME",  "hk_study")
+STORE      = os.getenv("OPTUNA_STORAGE",     "sqlite:///optuna_hk.db")
+BUDGET     = int(os.getenv("TOTAL_TRIALS",   "100"))
+EXPERIMENT = os.getenv("OPTUNA_EXPERIMENT",  "demonstrator_100plus10_fakedata")
 
 with open("search_space.yaml") as f:
     SPACE = yaml.safe_load(f)["parameters"]
+
+_current_proc: "subprocess.Popen | None" = None
+
+def _sigterm_handler(signum, frame):
+    # Let the subprocess die (it also received SIGTERM from SLURM);
+    # do NOT exit here so the readline loop can drain and we can parse the loss.
+    if _current_proc is not None:
+        _current_proc.terminate()
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
 
 def sug(t, n, c):
     if c["type"] == "float":       return t.suggest_float(n, c["min"], c["max"], log=c.get("log", False))
@@ -33,6 +44,7 @@ CMD_BASE = [
     "apptainer","exec","--nv",
     "--pwd","/workspace/work/GuNFlows",
     "--bind","/home/shares/sanchezf/gundam_n_flow/GuNFlows:/workspace/work/GuNFlows",
+    "--bind","/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev:/workspace/gunflows_dev",
     "--bind","/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace:/workspace/config",
     "--bind","/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace/DATA:/workspace/data",
     "--env","PYTHONPATH=/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows",
@@ -41,6 +53,7 @@ CMD_BASE = [
 ]
 
 def run(overrides):
+    global _current_proc
     cmd = CMD_BASE + [
         "source /workspace/work/GuNFlows/setup_nosubshell.sh && "
         "HYDRA_FULL_ERROR=1 "
@@ -57,11 +70,13 @@ def run(overrides):
         stderr=subprocess.STDOUT,
         bufsize=1,
     ) as p:
+        _current_proc = p
         for raw in iter(p.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace")
             sys.stderr.write(line)
             lines.append(line)
         p.wait()
+        _current_proc = None
         if p.returncode:
             print(f"[worker] process exited with code {p.returncode} — attempting to parse partial loss", file=sys.stderr)
 
@@ -74,7 +89,7 @@ def objective(trial):
     uid  = uuid.uuid4().hex[:8]
     run_base = f"hparam_tuning/databases/{STUDY}/runs/{user}"
     outdir   = f"{run_base}/{now:%Y-%m-%d}_{now:%H-%M-%S}_{uid}"
-    ov = ["experiment=demonstrator_100plus10_fakedata"]
+    ov = [f"experiment={EXPERIMENT}"]
     ov += [f"{k}={sug(trial, k, c)}" for k, c in SPACE.items()]
     ov.append(f"hydra.run.dir={outdir}")
     out = run(ov)

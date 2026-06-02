@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # it looks like thisbecause it's supposed to run in a container
-export WORK_DIR="/workspace/work/GuNFlows/"
+export WORK_DIR="/workspace/gunflows_dev"
 export INSTALL_DIR="$WORK_DIR/software/install/"
 export BUILD_DIR="$WORK_DIR/software/build/"
 export REPO_DIR="$WORK_DIR/software/repo/"
