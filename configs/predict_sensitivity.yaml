@@ -1,0 +1,68 @@
+# predict_sensitivity.yaml
+# Configuration for predict_sensitivity.py
+# Generates 2D oscillation sensitivity contours in (sin²θ₂₃, Δm²₃₂) by:
+#  1. Sampling N toys from the NF / Gaussian surrogate and propagating through GUNDAM.
+#  2. Applying oscillation reweighting at each grid point.
+#  3. Computing FC and/or Wilks chi-square contours.
+
+# training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
+training_folder: /workspace/work/GuNFlows/outputs/2026-05-13/17-17-08/
+save_dir: ${training_folder}/predict_sensitivity
+
+# ── Sampling ───────────────────────────────────────────────────────────────
+num_samples: 300      # number of toy parameter vectors per surrogate
+batch_size: 512
+save_every: 100       # checkpoint histograms every N valid throws
+seed: 0
+device: cuda
+threads: 24
+
+# ── GUNDAM / likelihood ─────────────────────────────────────────────────────
+# llh_config, llh_cwd, etc. are inherited from the training config.
+# Add extra override files here (must include Enu storage).
+llh_extra_overrides:
+  - "override/mcEnuStorage.yaml"
+
+# ── E_nu binning ────────────────────────────────────────────────────────────
+# Must match (or be compatible with) the binning used in the training likelihood.
+bin_edges_list: [0.0, 0.2, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 2.0, 5.0]
+enu_var: "Enu"
+
+# ── Surrogate selection ──────────────────────────────────────────────────────
+use_nf: true
+use_gaussian: true
+
+# ── Oscillation sensitivity ──────────────────────────────────────────────────
+
+# Nominal oscillation parameters (T2K best-fit, used as the "true" point)
+# Latest PDG 2023 θ₁₃: sin²(2θ₁₃) = 0.0851 (stored for reference, 2-flavor unused)
+osc_nominal:
+  sin2_theta23: 0.512      # T2K 2024 best-fit sin²θ₂₃
+  dm2_32: 2.45e-3          # eV²  T2K 2024 best-fit Δm²₃₂
+  L_km: 295.0              # T2K baseline [km]
+  sin2_2theta13: 0.0851    # PDG 2023, sin²(2θ₁₃)
+
+# 2D scan grid
+grid:
+  sin2_theta23_range: [0.3, 0.7]
+  sin2_theta23_n: 51
+  dm2_32_range: [1.5e-3, 3.5e-3]
+  dm2_32_n: 51
+
+# Confidence levels: 1σ, 2σ, 3σ Gaussian-equivalent
+ci_levels: [0.6827, 0.9545, 0.9973]
+
+# Floor for P_osc_nominal in reweighting denominator (avoids blow-up near osc. minimum)
+min_ref_prob: 0.01
+
+# Chunk size for the chi-square matrix computation (trades memory vs speed)
+# Each chunk uses roughly  chunk_size × n_grid × n_bins × 8 bytes
+sensitivity_chunk_size: 500
+
+# ── Hydra output ──────────────────────────────────────────────────────────────
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: true
