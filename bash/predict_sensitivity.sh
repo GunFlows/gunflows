@@ -13,9 +13,7 @@
 #SBATCH --mail-type=ALL
 
 set -euo pipefail
-
 module load apptainer 2>/dev/null || true
-
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
@@ -24,13 +22,11 @@ HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 HOST_MODELS="/home/shares/sanchezf/gundam_n_flow/trained_models"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
-# Container mount points
 IN_WORKDIR="/workspace/work/GuNFlows"
 IN_SETUP="${IN_WORKDIR}/setup_nosubshell.sh"
 
-# ── Hydra overrides (use full in-container paths) ──────────────────────────
 TRAINING_FOLDER="/workspace/work/GuNFlows/outputs/2026-05-28/17-30-29"
-SAVE_DIR="${TRAINING_FOLDER}/predict_sensitivity"
+SAVE_DIR="${TRAINING_FOLDER}/predict_sensitivity_bb_zoomed"
 
 OVERRIDES=(
   "training_folder=${TRAINING_FOLDER}"
@@ -40,8 +36,6 @@ OVERRIDES=(
   "threads=${SLURM_CPUS_PER_TASK:-24}"
   "device=cuda"
   "save_every=50"
-  "grid.sin2_theta23_n=51"
-  "grid.dm2_32_n=51"
   "sensitivity_chunk_size=500"
 )
 
