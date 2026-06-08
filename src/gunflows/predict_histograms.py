@@ -457,7 +457,7 @@ def _plot_combined_one_level(
     ax_sig.bar(centers, rel_sig_pct, width=widths, color="#d62728", **bar_kw)
     ax_sig.axhline(0, color="k", lw=0.8)
     ax_sig.set_ylabel("$\\Delta\\sigma$ [%]", fontsize=10)
-    ax_sig.set_xlabel(r"$E_\nu^{\mathrm{rec}}$ [GeV]", fontsize=13)
+    ax_sig.set_xlabel(var_name if var_name else "variable", fontsize=13)
     ax_sig.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.1f}%"))
     ax_sig.grid(True, alpha=0.25, axis="y")
     ax_sig.tick_params(axis="both", labelsize=9)
@@ -469,7 +469,8 @@ def _plot_combined_one_level(
 
     tag = f"{pct:.2f}".rstrip("0").rstrip(".").replace(".", "p")
     stream_suffix = f"_{stream.lower()}" if stream else ""
-    out = save_dir / f"enu_histogram{stream_suffix}_combined_ci{tag}.png"
+    vname_suffix  = f"_{var_name.lower()}" if var_name else ""
+    out = save_dir / f"combined_ci{tag}{vname_suffix}{stream_suffix}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
