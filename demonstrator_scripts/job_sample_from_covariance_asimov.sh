@@ -21,17 +21,19 @@ SEED=42
 #INPUT_IDENTIFIER="configToyOA_22plus3_Asimov"
 INPUT_IDENTIFIER="configToyOANoMirrorFakeData_100plus10"
 
+INPUT_IDENTIFIER="configToyOANoMirrorFakeData_100plus10" 
 #INPUT_IDENTIFIER="configToyOA_100plus10_Asimov_ToyFit_${SEED}"
 # this is the second part of the Gundam fitter output filename, without extension:
 # gundamFitter_configToyOA_60plus6_Asimov.root -> configToyOA_60plus6_Asimov
 
 CONFIG_FILE="output/gundamFitter_${INPUT_IDENTIFIER}.root"
-CONFIG_FOLDER_LOCAL="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/GundamWorkspace"
+### check if exist 
+CONFIG_FOLDER_LOCAL="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev/GundamWorkspace"
 
 OUTPUT_FOLDER="datasets_sb_${INPUT_IDENTIFIER}"
 mkdir -p ${CONFIG_FOLDER_LOCAL}/${OUTPUT_FOLDER}
 OUTPUT_FILE="${OUTPUT_FOLDER}/batch${index}.npz"
-N=50000
+N=10000
 
 
 SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE} -n ${N} -t 16 "
@@ -39,12 +41,12 @@ SCRIPTARGS="-m gunflows.make_initial_dataset -o ${OUTPUT_FILE} -c ${CONFIG_FILE}
 APPTAINER_OPTIONS="--nv --cleanenv \
   --env PYTHONNOUSERSITE=1 \
   --env PYTHONPATH=/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows \
-  --bind /home/shares/sanchezf/gundam_n_flow/GuNFlows_dev:/workspace/work/GuNFlows \
-  --bind /home/shares/sanchezf/gundam_n_flow/ToyNDFit/GundamWorkspace:/workspace/config \
-  --bind /home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA:/workspace/data \
+  --bind /home/shares/sanchezf/gundam_n_flow/GuNFlows:/workspace/work/GuNFlows \
+  --bind /home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev/GundamWorkspace:/workspace/config \
+  --bind /home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev/DATA:/workspace/data \
   --pwd /workspace/config/"
 
-IMAGE_PATH="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev/env/containers/ml_image2.sif"
+IMAGE_PATH="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
 
 
 echo "Starting job: " `date`

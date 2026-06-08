@@ -175,99 +175,6 @@ def sample_nf_physical_with_logq(
     return s, lq
 
 
-def _compute_mcmc_ess(samples: np.ndarray, max_lag: int | None = None) -> np.ndarray:
-    """Per-parameter ESS for an MCMC chain via integrated autocorrelation time.
-
-    ESS_k = N / (1 + 2 * sum_{t=1}^{T} rho_k(t))
-
-    The autocorrelation sum is truncated at the first lag where |rho| < 0.05
-    (standard early-stopping) to reduce noise from long tails.
-
-    Parameters
-    ----------
-    samples  : ndarray, shape (N, D)
-    max_lag  : int or None  — defaults to min(N//2, 2000)
-
-    Returns
-    -------
-    ess : ndarray, shape (D,)
-    """
-    n, d = samples.shape
-    if n < 4:
-        return np.full(d, float(n))
-    if max_lag is None:
-        max_lag = min(n // 2, 2000)
-    ess = np.empty(d, dtype=np.float64)
-    for k in range(d):
-        x = samples[:, k].astype(np.float64)
-        x -= x.mean()
-        var = float(np.var(x, ddof=0))
-        if var == 0.0:
-            ess[k] = 1.0
-            continue
-        tau = 1.0
-        for lag in range(1, max_lag + 1):
-            rho = float(np.dot(x[lag:], x[:-lag])) / (float(n - lag) * var)
-            if abs(rho) < 0.05:
-                break
-            tau += 2.0 * rho
-        ess[k] = max(1.0, float(n) / max(tau, 1.0))
-    return ess
-
-
-
-def _gaussian_logp(samples: np.ndarray, mu: np.ndarray, cov: np.ndarray) -> np.ndarray:
-    """Multivariate Gaussian log-density evaluated at each row of `samples` (N, D)."""
-    samples = np.asarray(samples, dtype=np.float64)
-    mu = np.asarray(mu, dtype=np.float64).reshape(-1)
-    cov = np.asarray(cov, dtype=np.float64)
-    d = mu.size
-    sign, logdet = np.linalg.slogdet(cov)
-    if sign <= 0:
-        raise RuntimeError("Covariance matrix has non-positive determinant")
-    cov_inv = np.linalg.inv(cov)
-    diff = samples - mu[None, :]
-    quad = np.einsum("ij,jk,ik->i", diff, cov_inv, diff)
-    return -0.5 * (d * np.log(2.0 * np.pi) + logdet + quad)
-
-
-def sample_gaussian_physical_with_logp(
-    mu: np.ndarray,
-    cov: np.ndarray,
-    parameter_limits: dict,
-    num_samples: int,
-    batch_size: int,
-    rng_seed: int = 0,
-):
-    """Sample from MVN(mu, cov) with rejection on parameter limits.
-
-    Returns
-    -------
-    samples : ndarray (N, D) float32
-    logp    : ndarray (N,)   float64  -- Gaussian log-density (NOT clipped for limits)
-    """
-    rng = np.random.default_rng(int(rng_seed))
-    mu = np.asarray(mu, dtype=np.float64).reshape(-1)
-    cov = np.asarray(cov, dtype=np.float64)
-    need_total = int(num_samples)
-    b = max(int(batch_size), 16)
-
-    samples_list = []
-    while len(samples_list) < need_total:
-        batch = rng.multivariate_normal(mean=mu, cov=cov, size=b).astype(np.float32)
-        mask = check_parameters_array_limits(batch, parameter_limits)
-        accepted = batch[mask]
-        for row in accepted:
-            if len(samples_list) >= need_total:
-                break
-            samples_list.append(row)
-        print(f" Gauss: accepted {int(mask.sum())}/{b}  -> total {len(samples_list)}/{need_total}", flush=True)
-
-    samples = np.asarray(samples_list[:need_total], dtype=np.float32)
-    logp = _gaussian_logp(samples, mu, cov)
-    return samples, logp
-
-
 def _init_reweight_worker(llh_config, llh_overrides, data_is_asimov, threads, llh_cwd):
     global _REWEIGHT_LIKELIHOOD_SAMPLER
     _REWEIGHT_LIKELIHOOD_SAMPLER = LikelihoodSampler(
@@ -412,50 +319,41 @@ def read_param_names_parameterSets(tfile: ROOT.TFile, base_dir: str) -> tuple[li
     return names, cyc
 
 
-def _uniform_thin_indices(n_total, max_steps) -> list[int]:
-    """Entry indices for uniform thinning across the FULL chain.
-
-    Returns up to ``max_steps`` indices evenly spaced over [0, n_total) with a
-    constant stride. If ``max_steps`` is None / <= 0 / >= n_total, every entry
-    is kept. No deduplication: rejected/repeated MCMC steps are real posterior
-    mass and are retained. Uniform thinning (rather than a contiguous tail)
-    makes the selection represent the whole posterior instead of a short,
-    autocorrelated segment of the chain.
-    """
-    n_total = int(n_total)
-    if n_total <= 0:
-        return []
-    if max_steps is None or int(max_steps) <= 0 or int(max_steps) >= n_total:
-        return list(range(n_total))
-    max_steps = int(max_steps)
-    stride = n_total // max_steps  # >= 1
-    return list(range(0, n_total, stride))[:max_steps]
-
-
 def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
-    """Read MCMC Points with uniform thinning across the full chain.
-
-    No deduplication: rejected MCMC proposals keep the chain at the current
-    state and are valid samples (counted once per iteration). When ``max_steps``
-    is set, that many entries are selected uniformly (constant stride) over the
-    whole chain instead of taking a contiguous tail.
-    """
     n_total = int(t_mcmc.GetEntries())
     if not t_mcmc.GetBranch("Points"):
         raise RuntimeError("MCMC tree has no 'Points' branch.")
 
-    kept = _uniform_thin_indices(n_total, max_steps)
-    n = len(kept)
+    # Deduplicate consecutive entries based on the first Points component
+    # and keep only the first entry of each repeated run.
+
+    kept_entry_indices: list[int] = []
+    prev_key = None
+    for entry_idx in range(n_total):
+        t_mcmc.GetEntry(entry_idx)
+        v = getattr(t_mcmc, "Points")
+        if int(v.size()) <= 0:
+            continue
+        key_val = float(v.at(0))
+        if prev_key is None or key_val != prev_key:
+            kept_entry_indices.append(entry_idx)
+            prev_key = key_val
+
+    if max_steps is not None:
+        n = min(len(kept_entry_indices), int(max_steps))
+        kept_entry_indices = kept_entry_indices[-n:]
+    else:
+        n = len(kept_entry_indices)
 
     if n == 0:
         t_mcmc.GetEntry(0)
         d0 = int(getattr(t_mcmc, "Points").size())
         return np.empty((0, d0), dtype=np.float64)
 
-    t_mcmc.GetEntry(kept[0])
+    t_mcmc.GetEntry(kept_entry_indices[0])
     d = int(getattr(t_mcmc, "Points").size())
     pts = np.empty((n, d), dtype=np.float64)
-    for i, entry_idx in enumerate(kept):
+    for i, entry_idx in enumerate(kept_entry_indices):
         t_mcmc.GetEntry(entry_idx)
         v = getattr(t_mcmc, "Points")
         for j in range(d):
@@ -464,18 +362,35 @@ def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
 
 
 def read_ttree_nll_from_llh_branches(t_mcmc, max_steps: int | None) -> np.ndarray:
-    """Read TTree NLL proxy = (LLHStatistical + LLHPenalty)/2 for selected entries.
+    """Read TTree NLL proxy defined as (LLHStatistical + LLHPenalty) / 2.
 
-    Uses the SAME uniform-thinning index selection as read_points_vector_tree
-    (no deduplication) so points and NLL stay aligned.
+    Uses the same deduplication/capping convention as read_points_vector_tree:
+    deduplicate consecutive entries by Points[0], then apply max_steps on tail.
     """
     n_total = int(t_mcmc.GetEntries())
+    if not t_mcmc.GetBranch("Points"):
+        raise RuntimeError("MCMC tree has no 'Points' branch.")
     if not t_mcmc.GetBranch("LLHStatistical") or not t_mcmc.GetBranch("LLHPenalty"):
         raise RuntimeError("MCMC tree must contain branches 'LLHStatistical' and 'LLHPenalty'.")
 
-    kept = _uniform_thin_indices(n_total, max_steps)
-    out = np.empty(len(kept), dtype=np.float64)
-    for i, entry_idx in enumerate(kept):
+    kept_entry_indices: list[int] = []
+    prev_key = None
+    for entry_idx in range(n_total):
+        t_mcmc.GetEntry(entry_idx)
+        v = getattr(t_mcmc, "Points")
+        if int(v.size()) <= 0:
+            continue
+        key_val = float(v.at(0))
+        if prev_key is None or key_val != prev_key:
+            kept_entry_indices.append(entry_idx)
+            prev_key = key_val
+
+    if max_steps is not None:
+        n = min(len(kept_entry_indices), int(max_steps))
+        kept_entry_indices = kept_entry_indices[-n:]
+
+    out = np.empty(len(kept_entry_indices), dtype=np.float64)
+    for i, entry_idx in enumerate(kept_entry_indices):
         t_mcmc.GetEntry(entry_idx)
         llh_stat = float(getattr(t_mcmc, "LLHStatistical"))
         llh_pen = float(getattr(t_mcmc, "LLHPenalty"))
@@ -543,9 +458,6 @@ def parse_dim_list(cfg_val, ndim: int) -> list[int]:
     s = str(cfg_val).strip()
     if not s:
         return []
-    # Tolerate "[1,2,3]" string form that Hydra sometimes serialises lists into.
-    if s.startswith("[") and s.endswith("]"):
-        s = s[1:-1].strip()
     out: list[int] = []
     for part in s.split(","):
         part = part.strip()
@@ -645,54 +557,6 @@ def compute_delta_nll_cutoff(p_3sigma: float, ndim: int) -> float:
     return 0.5 * delta2
 
 
-
-def plot_nll_diff_histogram(
-    nll_computed: np.ndarray,
-    nll_tree: np.ndarray,
-    outpath: Path,
-    bins: int = 100,
-) -> None:
-    """Histogram of (computed NLL - TTree NLL) over all MCMC steps.
-
-    Annotates: variance, mean, min/max, n_finite.  Useful to check whether
-    the GUNDAM LH evaluated freshly at each chain point reproduces the value
-    stored by GUNDAM in the MCMC TTree.
-    """
-    a = np.asarray(nll_computed, dtype=np.float64).reshape(-1)
-    b = np.asarray(nll_tree,    dtype=np.float64).reshape(-1)
-    n = min(a.size, b.size)
-    diff = a[:n] - b[:n]
-    finite = np.isfinite(diff)
-    diff_f = diff[finite]
-
-    fig, ax = plt.subplots(figsize=(7, 4.5))
-    if diff_f.size == 0:
-        ax.text(0.5, 0.5, "no finite diffs", ha="center", transform=ax.transAxes)
-    else:
-        var = float(np.var(diff_f, ddof=1)) if diff_f.size > 1 else 0.0
-        mean = float(np.mean(diff_f))
-        ax.hist(diff_f, bins=bins, histtype="step", linewidth=1.4, color="C0",
-                label=f"diff (N={diff_f.size})")
-        ax.axvline(0.0, color="k", linestyle="--", linewidth=0.7, alpha=0.6)
-        ax.axvline(mean, color="C3", linestyle=":", linewidth=1.0, alpha=0.8,
-                   label=f"mean = {mean:.4g}")
-        info = (f"N finite      = {diff_f.size}\n"
-                f"mean (diff)   = {mean:.6g}\n"
-                f"variance      = {var:.6g}\n"
-                f"stddev        = {np.sqrt(var):.6g}\n"
-                f"min / max     = {diff_f.min():.4g} / {diff_f.max():.4g}")
-        ax.text(0.02, 0.97, info, transform=ax.transAxes, va="top", ha="left",
-                fontsize=9, family="monospace",
-                bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="0.7", alpha=0.85))
-        ax.legend(loc="upper right", fontsize=9)
-    ax.set_xlabel(r"NLL$_\mathrm{computed}$  -  NLL$_\mathrm{TTree}$  (per MCMC step)")
-    ax.set_ylabel("entries")
-    ax.set_title("MCMC: freshly-computed LH vs stored TTree LH")
-    plt.tight_layout()
-    fig.savefig(outpath, dpi=150)
-    plt.close(fig)
-
-
 def plot_nll_vs_neglogq(
     nll: np.ndarray,
     neglogq: np.ndarray,
@@ -705,15 +569,11 @@ def plot_nll_vs_neglogq(
     neglogq = np.asarray(neglogq, dtype=np.float64).reshape(-1)
     keep_mask = np.asarray(keep_mask, dtype=bool).reshape(-1)
 
-    # Shift both NLL and -log_q by their respective medians so the cloud
-    # lands on the x=y diagonal (removes the normalisation offset).
-    finite_nll_m = np.isfinite(nll)
-    median_nll = float(np.median(nll[finite_nll_m])) if finite_nll_m.any() else 0.0
-    nll = nll - median_nll
-
+    # Shift -log_q by its median, same convention as logq_nf shifting.
     finite_neglogq = np.isfinite(neglogq)
-    median_neglogq = float(np.median(neglogq[finite_neglogq])) if finite_neglogq.any() else 0.0
-    neglogq = neglogq - median_neglogq
+    if finite_neglogq.any():
+        median_neglogq = np.median(neglogq[finite_neglogq])
+        neglogq = neglogq - median_neglogq
 
     finite_mask = np.isfinite(nll) & np.isfinite(neglogq)
     all_nll = nll[finite_mask]
@@ -748,9 +608,9 @@ def plot_nll_vs_neglogq(
         fig.colorbar(mesh, ax=ax)
 
     _plot_hist2d_log(ax1, all_nll, all_nq)
-    ax1.set_title(f"All MCMC steps  [NLL shift: {median_nll:.4g}, -logq shift: {median_neglogq:.4g}]", fontsize=9)
-    ax1.set_xlabel("NLL  (median-centred)")
-    ax1.set_ylabel("-log q_NF  (median-centred)")
+    ax1.set_title("All MCMC steps")
+    ax1.set_xlabel("NLL")
+    ax1.set_ylabel("-log q_NF")
     # Add y=x diagonal line
     lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), 
         np.max([ax1.get_xlim(), ax1.get_ylim()])]
@@ -758,9 +618,9 @@ def plot_nll_vs_neglogq(
 
     if kept_nll.size > 0:
         _plot_hist2d_log(ax2, kept_nll, kept_nq)
-    ax2.set_title(f"Kept steps (ΔNLL <= {delta_nll_cut:.3g})  [same shifts]", fontsize=9)
-    ax2.set_xlabel("NLL  (median-centred)")
-    ax2.set_ylabel("-log q_NF  (median-centred)")
+    ax2.set_title(f"Kept steps (ΔNLL <= {delta_nll_cut:.3g})")
+    ax2.set_xlabel("NLL")
+    ax2.set_ylabel("-log q_NF")
     # Add y=x diagonal line
     lims = [np.min([ax2.get_xlim(), ax2.get_ylim()]), 
         np.max([ax2.get_xlim(), ax2.get_ylim()])]
@@ -918,157 +778,842 @@ def plot_2d_hist_nf_only(x_nf: np.ndarray, y_nf: np.ndarray, xlabel: str, ylabel
     plt.close(fig)
 
 
-def _infer_blocks(labels: "list[str]") -> "tuple[list[str], dict[str, str]]":
-    """Return (block_ids, block_color_map) inferred from parameter names.
-
-    Blocks are detected by the first token before '/' in the label, or
-    by keyword matching for known T2K set names.  A color is assigned from
-    a fixed palette cycling over however many distinct blocks are found.
-    Unknown / new blocks get the next palette color automatically.
-    """
-    _PALETTE = ["C0", "C3", "C2", "C1", "C4", "C5", "C6", "C7", "C8", "C9"]
-
-    block_ids: list[str] = []
-    block_order: list[str] = []   # preserves first-seen order
-
-    for lbl in labels:
-        # Try to extract set name from "Set Name/#index" format
-        if "/" in lbl:
-            set_name = lbl.split("/")[0].strip()
-            # Shorten well-known long names for display
-            if "Detector" in set_name:
-                block = "DET"
-            elif "Non-Linear" in set_name or "Spline" in set_name:
-                block = "SPL"
-            elif "Linear" in set_name:
-                block = "LIN"
-            else:
-                block = set_name[:8]   # truncate for display
-        else:
-            # No '/' → assume it's a plain index label → LIN-style block
-            block = "LIN"
-
-        block_ids.append(block)
-        if block not in block_order:
-            block_order.append(block)
-
-    block_color_map = {b: _PALETTE[i % len(_PALETTE)] for i, b in enumerate(block_order)}
-    return block_ids, block_color_map
+_CLIP_QUANTILE_DEFAULT = 0.02  # fraction clipped from each tail for display
 
 
-def _plot_marginal_shift(
-    samples_gauss: np.ndarray,            # (N, d)  physical space, drawn from MVN(bestfit, postfit_cov)
-    logratio_gauss: np.ndarray,           # (N,)    log IS weights (Gauss → LH)
-    outlier_mask_g: np.ndarray,           # (N,)    bool
-    samples_nf: "np.ndarray | None",      # (M, d)  physical space, or None
-    logratio_nf: "np.ndarray | None",     # (M,)    log IS weights (NF → LH), or None
-    outlier_mask_nf: "np.ndarray | None", # (M,)    bool or None
-    bestfit: np.ndarray,                  # (d,)    MAP values
-    sig: np.ndarray,                      # (d,)    postfit sigma (for normalisation)
-    labels: "list[str]",
-    out_dir: "Path",
+def _clip_logw(log_weights: np.ndarray, q: float = _CLIP_QUANTILE_DEFAULT) -> tuple[np.ndarray, float, float]:
+    """Return (clipped_array, lo, hi) where lo/hi are the quantile boundaries used."""
+    lw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    finite = lw[np.isfinite(lw)]
+    if finite.size == 0:
+        return lw, float("nan"), float("nan")
+    lo = float(np.quantile(finite, q))
+    hi = float(np.quantile(finite, 1.0 - q))
+    return np.clip(lw, lo, hi), lo, hi
+
+
+# ---------------------------------------------------------------------------
+# Weight distribution diagnostics
+# ---------------------------------------------------------------------------
+
+def plot_weight_summary(
+    log_weights: np.ndarray,
+    outlier_mask: np.ndarray,
+    clip_q: float,
+    outpath: Path,
 ) -> None:
-    """Compute and plot per-parameter IS-mean shift relative to the MAP.
+    """4-panel weight summary figure.
 
-    Works for any number of parameter blocks — blocks are auto-detected from
-    label names; each gets a distinct color.  Produces two PNGs in ``out_dir``:
-    - ``marginal_shift_per_param.png``: bar chart across all d parameters.
-    - ``marginal_shift_per_block.png``: mean ± std per block, quick sanity check.
+    Panel 1 — full log_weight histogram (marks clip bounds).
+    Panel 2 — log_weight histogram clipped to [clip_q, 1-clip_q] quantile (bulk view).
+    Panel 3 — Lorenz curve: x = cumulative sample fraction sorted by weight ascending,
+               y = cumulative weight fraction.  ESS corresponds to the Gini area.
+    Panel 4 — cumulative fraction of total weight carried by top-k% of samples.
     """
+    lw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    finite_mask = np.isfinite(lw)
+    lw_f = lw[finite_mask]
+    if lw_f.size == 0:
+        return
 
-    def _stable_weights(lr: np.ndarray) -> np.ndarray:
-        lr = lr - float(np.max(lr))
-        w = np.exp(lr)
-        s = float(w.sum())
-        return w / s if (s > 0 and np.isfinite(s)) else np.ones_like(lr) / lr.size
+    _, lo, hi = _clip_logw(lw_f, q=clip_q)
+    lw_clip = np.clip(lw_f, lo, hi)
 
-    block_ids, block_color_map = _infer_blocks(labels)
-    block_ids_arr = np.array(block_ids)
-    blocks_present = list(dict.fromkeys(block_ids))   # unique, first-seen order
-    d = len(labels)
-    sig = np.where(sig > 0, sig, 1.0)  # avoid division by zero
+    w = np.exp(lw_f - np.max(lw_f))  # numerically stable
+    w_norm = w / float(np.sum(w))
+    w_sorted = np.sort(w_norm)
+    cumw = np.cumsum(w_sorted)
+    cum_frac = np.linspace(0, 1, len(w_sorted) + 1)[1:]
 
-    # ── compute IS-mean shifts ───────────────────────────────────────────────
-    results: dict[str, np.ndarray] = {}
+    w_sort_desc = np.sort(w_norm)[::-1]
+    cumw_desc = np.cumsum(w_sort_desc)
+    cum_frac_desc = np.linspace(0, 1, len(w_sort_desc) + 1)[1:]
 
-    sg = samples_gauss[outlier_mask_g]
-    wg = _stable_weights(logratio_gauss[outlier_mask_g])
-    delta_g = (sg * wg[:, None]).sum(axis=0) - bestfit
-    results["Gauss→LH"] = delta_g / sig
+    eff = float((np.sum(w) ** 2) / np.sum(w ** 2))
+    eff_frac = eff / len(lw_f)
+    n_out = int((~finite_mask).sum()) + int((~outlier_mask).sum())
 
-    if samples_nf is not None and logratio_nf is not None and outlier_mask_nf is not None:
-        sn = samples_nf[outlier_mask_nf]
-        wn = _stable_weights(logratio_nf[outlier_mask_nf])
-        delta_n = (sn * wn[:, None]).sum(axis=0) - bestfit
-        results["NF→LH"] = delta_n / sig
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
-    # bar chart helpers
-    bar_w = 0.35
-    n_rw = len(results)
-    rw_offsets = np.linspace(-bar_w * (n_rw - 1) / 2, bar_w * (n_rw - 1) / 2, n_rw)
-    rw_colors = ["steelblue", "tomato", "mediumseagreen", "darkorange"]
+    # Panel 1: full distribution
+    ax = axes[0, 0]
+    ax.hist(lw_f, bins=120, histtype="step", linewidth=1.2, color="steelblue", density=True)
+    ax.axvline(lo, color="red", linestyle="--", linewidth=1.0, label=f"clip {clip_q:.0%}/{1-clip_q:.0%}")
+    ax.axvline(hi, color="red", linestyle="--", linewidth=1.0)
+    ax.axvline(float(np.median(lw_f)), color="orange", linestyle="-", linewidth=1.2, label="median")
+    ax.set_xlabel("log_weight (raw)")
+    ax.set_ylabel("Density")
+    ax.set_title("Full log-weight distribution")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-    # ── per-parameter bar chart ──────────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(max(12, d // 5), 4))
-    for idx, (key, delta_norm) in enumerate(results.items()):
-        ax.bar(np.arange(d) + rw_offsets[idx], delta_norm, width=bar_w,
-               color=rw_colors[idx % len(rw_colors)], alpha=0.75, label=key)
-    ax.axhline(0, color="k", lw=0.7)
+    # Panel 2: clipped bulk view
+    ax = axes[0, 1]
+    ax.hist(lw_clip, bins=100, histtype="stepfilled", linewidth=1.0, color="steelblue", alpha=0.6, density=True)
+    ax.set_xlabel(f"log_weight (clipped {clip_q:.0%}–{1-clip_q:.0%})")
+    ax.set_ylabel("Density")
+    ax.set_title(f"Bulk log-weight distribution\n(ESS={eff:.0f}/{len(lw_f)}  = {eff_frac:.1%})")
+    ax.grid(True, alpha=0.3)
 
-    # Shade each parameter block with its own colour and annotate at top
-    ymax = ax.get_ylim()[1]
-    ymin = ax.get_ylim()[0]
-    ytop = ymax if ymax != 0 else 0.1
-    prev_block = block_ids[0]
-    block_start = 0
-    for i, b in enumerate(block_ids + ["_end"]):
-        if b != prev_block or b == "_end":
-            ax.axvspan(block_start - 0.5, i - 0.5,
-                       alpha=0.08, color=block_color_map[prev_block])
-            if i > block_start:
-                ax.axvline(i - 0.5, color="grey", lw=0.5, ls="--")
-            mid = (block_start + i - 1) / 2
-            ax.text(mid, ytop, prev_block,
-                    ha="center", va="bottom", fontsize=8,
-                    color=block_color_map[prev_block], fontweight="bold")
-            prev_block = b
-            block_start = i
+    # Panel 3: Lorenz curve
+    ax = axes[1, 0]
+    ax.plot(cum_frac, cumw, color="steelblue", linewidth=1.5, label="Lorenz curve")
+    ax.plot([0, 1], [0, 1], "k--", linewidth=0.8, label="perfect equality")
+    ax.fill_between(cum_frac, cumw, cum_frac, alpha=0.15, color="steelblue")
+    ax.set_xlabel("Cumulative sample fraction (ascending weight)")
+    ax.set_ylabel("Cumulative weight fraction")
+    ax.set_title("Lorenz curve of weights\n(concave = weight concentrated in few samples)")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
 
-    ax.set_xlabel("parameter index")
-    ax.set_ylabel(r"$(\langle\theta\rangle_\mathrm{IS} - \theta_\mathrm{MAP})\,/\,\sigma$")
-    ax.set_title("IS marginal mean shift relative to MAP (in postfit σ units)")
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.25, axis="y")
+    # Panel 4: top-k% weight concentration
+    ax = axes[1, 1]
+    top_pct = np.array([1, 2, 5, 10, 20, 50])
+    top_w_frac = np.array([
+        float(np.sum(w_sort_desc[: max(1, int(p / 100.0 * len(w_sort_desc)))]))
+        for p in top_pct
+    ])
+    ax.bar(np.arange(len(top_pct)), top_w_frac * 100, color="steelblue", alpha=0.8)
+    ax.set_xticks(np.arange(len(top_pct)))
+    ax.set_xticklabels([f"top {p}%" for p in top_pct], fontsize=8)
+    ax.axhline(50, color="orange", linestyle="--", linewidth=1.0, label="50% of total weight")
+    ax.axhline(90, color="red", linestyle="--", linewidth=1.0, label="90% of total weight")
+    ax.set_ylabel("% of total weight")
+    ax.set_title(f"Weight concentration\n(outliers removed: {n_out})")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3, axis="y")
+
     plt.tight_layout()
-    out = out_dir / "marginal_shift_per_param.png"
-    fig.savefig(out, dpi=140)
+    fig.savefig(outpath, dpi=150)
     plt.close(fig)
-    print(f"  marginal shift plot → {out}", flush=True)
 
-    # ── per-block summary bar chart ──────────────────────────────────────────
-    fig, ax = plt.subplots(figsize=(max(5, len(blocks_present) * 2 + 1), 4))
-    for idx, (key, delta_norm) in enumerate(results.items()):
-        means = [float(delta_norm[block_ids_arr == b].mean()) for b in blocks_present]
-        stds  = [float(delta_norm[block_ids_arr == b].std())  for b in blocks_present]
-        xs = np.arange(len(blocks_present)) + rw_offsets[idx]
-        ax.bar(xs, means, width=bar_w,
-               color=rw_colors[idx % len(rw_colors)], alpha=0.75, label=key,
-               yerr=stds, capsize=4)
-    ax.axhline(0, color="k", lw=0.7)
-    ax.set_xticks(range(len(blocks_present)))
-    ax.set_xticklabels(
-        [f"{b}\n(n={int((block_ids_arr == b).sum())})" for b in blocks_present],
-        fontsize=10,
+
+# ---------------------------------------------------------------------------
+# log_weight vs parameter grids
+# ---------------------------------------------------------------------------
+
+def plot_logw_vs_param_grid(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    labels: list[str],
+    dims: list[int],
+    clip_q: float,
+    outpath: Path,
+    n_cols: int = 5,
+    bins: int = 40,
+    title: str = "",
+) -> None:
+    """Grid of 2D density histograms: x = param value, y = clipped log_weight.
+
+    A visible slope (correlation) in any panel means the NF's density
+    is systematically wrong along that parameter direction.
+    """
+    if not dims:
+        return
+
+    lw_all = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    finite_mask = np.isfinite(lw_all)
+    lw_clip, lo, hi = _clip_logw(lw_all[finite_mask], q=clip_q)
+
+    n_dims = len(dims)
+    n_rows = int(np.ceil(n_dims / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.8 * n_rows), squeeze=False)
+    axes_flat = axes.reshape(-1)
+
+    for ax_idx, k in enumerate(dims):
+        ax = axes_flat[ax_idx]
+        xk_all = samples[:, k].astype(np.float64)
+        xk = xk_all[finite_mask]
+
+        # Clip x too at 1%-99% to avoid extreme outliers dominating the range
+        xlo = float(np.quantile(xk, 0.01))
+        xhi = float(np.quantile(xk, 0.99))
+        if not (np.isfinite(xlo) and np.isfinite(xhi) and xhi > xlo):
+            xlo, xhi = float(xk.min()), float(xk.max())
+
+        h, xe, ye = np.histogram2d(
+            np.clip(xk, xlo, xhi), lw_clip,
+            bins=bins,
+            range=[[xlo, xhi], [lo, hi]],
+        )
+        h_ma = np.ma.masked_less_equal(h, 0)
+        pos = h_ma.compressed()
+        if pos.size > 0:
+            mesh = ax.pcolormesh(xe, ye, h_ma.T, cmap="viridis",
+                                 norm=LogNorm(vmin=float(pos.min()), vmax=float(pos.max())),
+                                 shading="auto")
+            fig.colorbar(mesh, ax=ax, fraction=0.04)
+        else:
+            ax.hist2d(np.clip(xk, xlo, xhi), lw_clip, bins=bins)
+
+        ax.axhline(0.0, color="white", linewidth=0.6, linestyle="--", alpha=0.7)
+
+        # Trend line (mean of y in x-bins)
+        try:
+            bin_means_x = 0.5 * (xe[:-1] + xe[1:])
+            bin_means_y = []
+            for bx in range(len(xe) - 1):
+                m = (np.clip(xk, xlo, xhi) >= xe[bx]) & (np.clip(xk, xlo, xhi) < xe[bx + 1])
+                bin_means_y.append(float(np.mean(lw_clip[m])) if m.any() else float("nan"))
+            valid = np.isfinite(bin_means_y)
+            ax.plot(bin_means_x[valid], np.array(bin_means_y)[valid],
+                    "w-", linewidth=1.2, alpha=0.9)
+        except Exception:
+            pass
+
+        corr = float(np.corrcoef(xk, lw_clip)[0, 1]) if xk.std() > 0 else 0.0
+        short_name = str(labels[k]).split("/")[-1]
+        ax.set_title(f"{short_name}\nr={corr:.3f}", fontsize=6.5)
+        ax.set_xlabel("param value", fontsize=5)
+        ax.set_ylabel("log_w", fontsize=5)
+        ax.tick_params(labelsize=4.5)
+
+    for ax_idx in range(n_dims, len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    if title:
+        fig.suptitle(title, fontsize=10)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# NF pull distributions
+# ---------------------------------------------------------------------------
+
+def plot_nf_pull_grid(
+    samples: np.ndarray,
+    mu_vec: np.ndarray,
+    sig_vec: np.ndarray,
+    labels: list[str],
+    param_groups: dict[str, list[int]],
+    outpath: Path,
+    bins: int = 50,
+) -> None:
+    """Grid of pull histograms: (x_NF - mu) / sigma per parameter.
+
+    Should follow N(0,1) if the NF perfectly reproduced the postfit Gaussian.
+    Deviations reveal the NF's intrinsic bias — independent of reweighting.
+    """
+    d = samples.shape[1]
+    group_order = [g for g in ("physics", "detector", "nonlinear") if param_groups.get(g)]
+    if not group_order:
+        return
+
+    from scipy.stats import norm as scipy_norm
+    x_std = np.linspace(-5, 5, 300)
+    pdf_std = scipy_norm.pdf(x_std)
+
+    fig, all_axes = plt.subplots(
+        1, len(group_order),
+        figsize=(5 * len(group_order), 5),
     )
-    ax.set_ylabel(r"mean $(\langle\theta\rangle_\mathrm{IS} - \theta_\mathrm{MAP})\,/\,\sigma$")
-    ax.set_title("IS shift per parameter block (mean ± std across block)")
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.25, axis="y")
+    if len(group_order) == 1:
+        all_axes = [all_axes]
+
+    for ax, group in zip(all_axes, group_order):
+        idxs = param_groups[group]
+        pulls = []
+        for k in idxs:
+            if k >= d:
+                continue
+            sig = float(sig_vec[k])
+            if not (np.isfinite(sig) and sig > 0):
+                continue
+            pulls.append((samples[:, k].astype(np.float64) - float(mu_vec[k])) / sig)
+
+        if not pulls:
+            ax.set_visible(False)
+            continue
+
+        pulls_all = np.concatenate(pulls)
+        finite = pulls_all[np.isfinite(pulls_all)]
+        pulls_clipped = np.clip(finite, -5, 5)
+
+        ax.hist(pulls_clipped, bins=bins, histtype="stepfilled", density=True,
+                alpha=0.5, color=_GROUP_COLORS.get(group, "gray"),
+                label=f"{group} (n params={len(pulls)})")
+        ax.plot(x_std, pdf_std, "k--", linewidth=1.4, label="N(0,1)")
+        ax.set_xlabel("(x_NF − μ) / σ")
+        ax.set_ylabel("Density")
+        ax.set_title(f"{group} group NF pull\n(mean={float(np.mean(finite)):.3f}, std={float(np.std(finite)):.3f})")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("NF pull distributions: deviation from postfit Gaussian (no reweighting)", fontsize=10)
     plt.tight_layout()
-    out = out_dir / "marginal_shift_per_block.png"
-    fig.savefig(out, dpi=140)
+    fig.savefig(outpath, dpi=150)
     plt.close(fig)
-    print(f"  marginal shift block summary → {out}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Correlation matrix comparison
+# ---------------------------------------------------------------------------
+
+def plot_corr_matrix_comparison(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    outlier_mask: np.ndarray,
+    postfit_cov: np.ndarray,
+    labels: list[str],
+    dims: list[int],
+    outpath: Path,
+) -> None:
+    """Side-by-side correlation matrices: NF raw, NF reweighted, postfit Gaussian, NF−postfit diff.
+
+    Focused on dims (e.g. detector + nonlinear systematics) to keep the plot readable.
+    """
+    if len(dims) < 2:
+        return
+
+    sub = samples[:, dims].astype(np.float64)
+    sub_f = sub[outlier_mask]
+    w = np.exp(log_weights[outlier_mask] - np.max(log_weights[outlier_mask]))
+    w = w / float(np.sum(w))
+
+    # Weighted correlation
+    mean_w = np.sum(sub_f * w[:, None], axis=0)
+    cov_w = np.zeros((len(dims), len(dims)))
+    for ii in range(len(dims)):
+        for jj in range(ii, len(dims)):
+            c = float(np.sum(w * (sub_f[:, ii] - mean_w[ii]) * (sub_f[:, jj] - mean_w[jj])))
+            cov_w[ii, jj] = c
+            cov_w[jj, ii] = c
+    std_w = np.sqrt(np.clip(np.diag(cov_w), 1e-12, None))
+    corr_w = cov_w / (std_w[:, None] * std_w[None, :])
+    np.fill_diagonal(corr_w, 1.0)
+
+    corr_nf = np.corrcoef(sub.T)
+    sub_cov = postfit_cov[np.ix_(dims, dims)]
+    std_pf = np.sqrt(np.clip(np.diag(sub_cov), 1e-12, None))
+    corr_pf = sub_cov / (std_pf[:, None] * std_pf[None, :])
+    np.fill_diagonal(corr_pf, 1.0)
+
+    diff = corr_nf - corr_pf
+    diff_rw = corr_w - corr_pf
+
+    short_labels = [str(labels[k]).split("/")[-1][:12] for k in dims]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+    def _heatmap(ax, mat, ttl, vmin=-1, vmax=1, cmap="RdBu_r"):
+        im = ax.imshow(mat, aspect="auto", interpolation="nearest",
+                       vmin=vmin, vmax=vmax, cmap=cmap)
+        fig.colorbar(im, ax=ax, fraction=0.046)
+        n = len(dims)
+        step = max(1, n // 15)
+        ax.set_xticks(range(0, n, step))
+        ax.set_yticks(range(0, n, step))
+        ax.set_xticklabels(short_labels[::step], fontsize=5, rotation=90)
+        ax.set_yticklabels(short_labels[::step], fontsize=5)
+        ax.set_title(ttl, fontsize=9)
+
+    _heatmap(axes[0, 0], corr_nf, "NF raw correlation")
+    _heatmap(axes[0, 1], corr_w, "NF reweighted correlation")
+    _heatmap(axes[1, 0], corr_pf, "Postfit Gaussian correlation")
+    _heatmap(axes[1, 1], diff, "NF raw − postfit\n(blue=NF under-estimates, red=over-estimates)", vmin=-0.5, vmax=0.5)
+
+    fig.suptitle(f"Correlation matrices for {len(dims)} selected parameters", fontsize=11)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=130)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Conditional high-vs-low weight marginals
+# ---------------------------------------------------------------------------
+
+def plot_high_low_weight_marginals(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    labels: list[str],
+    dims: list[int],
+    mu_vec: np.ndarray,
+    sig_vec: np.ndarray,
+    outpath: Path,
+    n_cols: int = 5,
+    bins: int = 50,
+    title: str = "",
+) -> None:
+    """Grid: for each param, overlay samples with top-25% vs bottom-25% log_weight.
+
+    Shows WHICH parameter regions are systematically up-weighted vs down-weighted,
+    giving direct intuition for why the reweighted mean shifts.
+    """
+    if not dims:
+        return
+
+    lw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(lw)
+    q25 = float(np.quantile(lw[finite], 0.25))
+    q75 = float(np.quantile(lw[finite], 0.75))
+    mask_lo = finite & (lw <= q25)
+    mask_hi = finite & (lw >= q75)
+
+    n_dims = len(dims)
+    n_rows = int(np.ceil(n_dims / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.5 * n_rows), squeeze=False)
+    axes_flat = axes.reshape(-1)
+
+    for ax_idx, k in enumerate(dims):
+        ax = axes_flat[ax_idx]
+        x_lo = samples[:, k][mask_lo]
+        x_hi = samples[:, k][mask_hi]
+        mu = float(mu_vec[k])
+        sig = float(sig_vec[k]) if np.isfinite(sig_vec[k]) and sig_vec[k] > 0 else 0.0
+
+        all_vals = np.concatenate([x_lo, x_hi])
+        xmin = float(np.nanmin(all_vals))
+        xmax = float(np.nanmax(all_vals))
+        if sig > 0:
+            xmin = min(xmin, mu - 3.5 * sig)
+            xmax = max(xmax, mu + 3.5 * sig)
+        span = xmax - xmin
+        if span <= 0:
+            xmin, xmax, span = mu - 1.0, mu + 1.0, 2.0
+        edges = np.linspace(xmin - 0.02 * span, xmax + 0.02 * span, bins + 1)
+
+        ax.hist(x_lo, bins=edges, histtype="step", density=True, color="blue",
+                linewidth=1.0, label=f"low-w (≤Q25)")
+        ax.hist(x_hi, bins=edges, histtype="step", density=True, color="red",
+                linewidth=1.0, label=f"high-w (≥Q75)")
+        ax.axvline(mu, color="green", linestyle=":", linewidth=0.8)
+
+        mean_lo = float(np.mean(x_lo))
+        mean_hi = float(np.mean(x_hi))
+        ax.axvline(mean_lo, color="blue", linestyle="--", linewidth=0.8, alpha=0.7)
+        ax.axvline(mean_hi, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
+
+        shift = (mean_hi - mean_lo) / sig if sig > 0 else 0.0
+        short_name = str(labels[k]).split("/")[-1]
+        ax.set_title(f"{short_name}\nΔμ/σ={shift:.3f}", fontsize=6.5)
+        ax.tick_params(labelsize=5)
+        ax.grid(True, alpha=0.15)
+
+    for ax_idx in range(n_dims, len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    h, l = axes_flat[0].get_legend_handles_labels()
+    if h:
+        axes_flat[0].legend(h, l, fontsize=5)
+
+    if title:
+        fig.suptitle(title, fontsize=9)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Sorted correlation summary (annotated)
+# ---------------------------------------------------------------------------
+
+def plot_sorted_corr_summary(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    labels: list[str],
+    param_groups: dict[str, list[int]],
+    clip_q: float,
+    outpath: Path,
+) -> None:
+    """Horizontal bar chart of |corr(log_w, x_k)| sorted descending.
+
+    Shows the top-N most important parameters driving the reweight.
+    Each bar is annotated with the parameter name and colored by group.
+    """
+    lw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(lw)
+    lw_clip, _, _ = _clip_logw(lw[finite], q=clip_q)
+    lw_c = lw_clip - lw_clip.mean()
+    lw_std = float(lw_clip.std())
+    if lw_std < 1e-12:
+        return
+
+    n, d = samples.shape
+    corrs = np.zeros(d)
+    for k in range(d):
+        xk = samples[:, k][finite].astype(np.float64)
+        xk_std = float(xk.std())
+        if xk_std < 1e-12:
+            continue
+        xk_c = xk - xk.mean()
+        corrs[k] = float(np.mean(lw_c * xk_c)) / (lw_std * xk_std)
+
+    abs_corrs = np.abs(corrs)
+    order = np.argsort(abs_corrs)[::-1]
+    top_n = min(40, d)
+    top_idx = order[:top_n]
+
+    colors = _group_color_array(d, param_groups)
+    top_colors = [colors[i] for i in top_idx]
+    top_corrs = corrs[top_idx]
+    top_names = [str(labels[i]).split("/")[-1][:30] for i in top_idx]
+
+    fig, ax = plt.subplots(figsize=(8, max(6, top_n * 0.3)))
+    ys = np.arange(top_n)
+    bars = ax.barh(ys, top_corrs, color=top_colors, alpha=0.85)
+    ax.set_yticks(ys)
+    ax.set_yticklabels(top_names, fontsize=7)
+    ax.axvline(0, color="black", linewidth=0.8)
+    for thr in (0.1, -0.1, 0.2, -0.2):
+        ax.axvline(thr, color="red", linewidth=0.5, linestyle="--", alpha=0.4)
+    ax.set_xlabel("Pearson corr(log_weight_clipped, x_k)")
+    ax.set_title(
+        f"Top-{top_n} parameters by |corr(log_w, x_k)|\n"
+        f"(log_weight clipped at [{clip_q:.0%}, {1-clip_q:.0%}])\n"
+        "positive = parameter gets up-weighted by reweighting"
+    )
+    ax.invert_yaxis()
+    ax.grid(True, alpha=0.3, axis="x")
+    handles = [Patch(facecolor=_GROUP_COLORS[g], label=g) for g in param_groups if param_groups[g]]
+    ax.legend(handles=handles, fontsize=8, loc="lower right")
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _classify_param_groups(labels: list[str]) -> dict[str, list[int]]:
+    """Split parameter indices into physics / detector / nonlinear groups."""
+    groups: dict[str, list[int]] = {"physics": [], "detector": [], "nonlinear": []}
+    for i, lab in enumerate(labels):
+        s = str(lab)
+        if "Detector Systematics" in s:
+            groups["detector"].append(i)
+        elif "Non-Linear Systematics" in s:
+            groups["nonlinear"].append(i)
+        else:
+            groups["physics"].append(i)
+    return groups
+
+
+_GROUP_COLORS = {"physics": "steelblue", "detector": "darkorange", "nonlinear": "forestgreen"}
+
+
+def _group_color_array(n: int, groups: dict[str, list[int]]) -> list[str]:
+    colors = ["gray"] * n
+    for g, idxs in groups.items():
+        for i in idxs:
+            if i < n:
+                colors[i] = _GROUP_COLORS.get(g, "gray")
+    return colors
+
+
+def plot_reweight_mean_shift_summary(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    labels: list[str],
+    mu_vec: np.ndarray,
+    sig_vec: np.ndarray,
+    param_groups: dict[str, list[int]],
+    outpath: Path,
+) -> None:
+    """Bar chart of (weighted_mean - raw_mean) / sigma for every parameter.
+
+    A non-zero bar means the reweighting shifts the NF mean for that parameter,
+    which is the primary symptom the user is investigating.
+    """
+    n, d = samples.shape
+    if log_weights.shape[0] != n or d == 0:
+        return
+
+    lw = log_weights.astype(np.float64)
+    # Numerically stable softmax for weights
+    lw_stable = lw - np.max(lw)
+    w = np.exp(lw_stable)
+    w_sum = float(np.sum(w))
+    if w_sum <= 0:
+        return
+
+    raw_means = np.mean(samples, axis=0)
+    weighted_means = np.sum(samples * w[:, None], axis=0) / w_sum
+    sigma = np.where(np.isfinite(sig_vec) & (sig_vec > 0), sig_vec, 1.0)
+    shifts = (weighted_means[:d] - raw_means[:d]) / sigma[:d]
+
+    colors = _group_color_array(d, param_groups)
+    fig, ax = plt.subplots(figsize=(max(14, d // 4), 4))
+    ax.bar(np.arange(d), shifts, color=colors, alpha=0.85, width=0.85)
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.axhline(0.1, color="red", linewidth=0.6, linestyle="--", alpha=0.5)
+    ax.axhline(-0.1, color="red", linewidth=0.6, linestyle="--", alpha=0.5)
+    ax.set_xlabel("Parameter index")
+    ax.set_ylabel(r"$(μ_{weighted} - μ_{raw})\ /\ σ$")
+    ax.set_title("Mean shift per parameter after NF→LH reweighting\n(non-zero = NF sampling is biased for this parameter)")
+    ax.grid(True, alpha=0.3, axis="y")
+    handles = [Patch(facecolor=_GROUP_COLORS[g], label=g) for g in param_groups if param_groups[g]]
+    ax.legend(handles=handles, fontsize=9)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+def plot_reweight_logw_param_corr(
+    samples: np.ndarray,
+    log_weights: np.ndarray,
+    labels: list[str],
+    param_groups: dict[str, list[int]],
+    outpath: Path,
+) -> None:
+    """Bar chart of Pearson corr(log_weight, x_k) per parameter.
+
+    A large |corr| means the NF's density is systematically wrong in the
+    direction of that parameter — positive = NF under-samples high x_k,
+    negative = NF over-samples high x_k.
+    """
+    n, d = samples.shape
+    if log_weights.shape[0] != n or n < 4:
+        return
+
+    lw = log_weights.astype(np.float64)
+    lw_c = lw - lw.mean()
+    lw_std = float(np.std(lw))
+    if lw_std < 1e-12:
+        return
+
+    corrs = np.zeros(d, dtype=np.float64)
+    for k in range(d):
+        xk = samples[:, k].astype(np.float64)
+        if not np.isfinite(xk).all():
+            continue
+        xk_std = float(np.std(xk))
+        if xk_std < 1e-12:
+            continue
+        xk_c = xk - xk.mean()
+        corrs[k] = float(np.mean(lw_c * xk_c)) / (lw_std * xk_std)
+
+    colors = _group_color_array(d, param_groups)
+    fig, ax = plt.subplots(figsize=(max(14, d // 4), 4))
+    ax.bar(np.arange(d), corrs, color=colors, alpha=0.85, width=0.85)
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    for thr in (0.1, -0.1, 0.2, -0.2):
+        ax.axhline(thr, color="red", linewidth=0.5, linestyle="--", alpha=0.4)
+    ax.set_xlabel("Parameter index")
+    ax.set_ylabel("Pearson corr(log_weight, x_k)")
+    ax.set_title(
+        "Correlation of reweight factor with each parameter\n"
+        "positive → NF under-estimates LH at high x_k (parameter gets up-weighted)"
+    )
+    ax.grid(True, alpha=0.3, axis="y")
+    handles = [Patch(facecolor=_GROUP_COLORS[g], label=g) for g in param_groups if param_groups[g]]
+    ax.legend(handles=handles, fontsize=9)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+def plot_reweight_decomposition(
+    log_weights: np.ndarray,
+    logq_nf: np.ndarray,
+    lh_values: np.ndarray,
+    outpath: Path,
+    bins: int = 80,
+) -> None:
+    """Three 2D histograms: log_w vs logq, log_w vs LH, and LH vs logq.
+
+    Shows whether weight variance is driven by the NF (logq) or the LH.
+    """
+    lw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    lq = np.asarray(logq_nf, dtype=np.float64).reshape(-1)
+    lh = np.asarray(lh_values, dtype=np.float64).reshape(-1)
+
+    finite = np.isfinite(lw) & np.isfinite(lq) & np.isfinite(lh)
+    lw, lq, lh = lw[finite], lq[finite], lh[finite]
+    if lw.size == 0:
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    def _hist2d_ax(ax, x, y, xl, yl, ttl):
+        h, xe, ye = np.histogram2d(x, y, bins=bins)
+        h_ma = np.ma.masked_less_equal(h, 0)
+        pos = h_ma.compressed()
+        if pos.size > 0:
+            mesh = ax.pcolormesh(xe, ye, h_ma.T, cmap="viridis",
+                                 norm=LogNorm(vmin=float(pos.min()), vmax=float(pos.max())),
+                                 shading="auto")
+            fig.colorbar(mesh, ax=ax)
+        else:
+            ax.hist2d(x, y, bins=bins)
+        ax.set_xlabel(xl)
+        ax.set_ylabel(yl)
+        ax.set_title(ttl)
+
+    _hist2d_ax(axes[0], lq, lw, "logq_NF (shifted)", "log_weight (shifted)",
+               "log_weight vs logq_NF\n(slope → NF density drives reweight)")
+    _hist2d_ax(axes[1], lh, lw, "log LH (shifted)", "log_weight (shifted)",
+               "log_weight vs LH\n(slope → LH landscape drives reweight)")
+    _hist2d_ax(axes[2], lq, lh, "logq_NF (shifted)", "log LH (shifted)",
+               "LH vs logq_NF\n(perfect NF would give diagonal)")
+
+    # Diagonal reference on the NF vs LH panel
+    xlim = axes[2].get_xlim()
+    ylim = axes[2].get_ylim()
+    lo = max(xlim[0], ylim[0])
+    hi = min(xlim[1], ylim[1])
+    if hi > lo:
+        axes[2].plot([lo, hi], [lo, hi], "r--", linewidth=1.2, alpha=0.7, label="ideal")
+        axes[2].legend(fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+
+def plot_marginals_group_grid(
+    samples_nf: np.ndarray,
+    log_weights: np.ndarray | None,
+    outlier_mask: np.ndarray | None,
+    labels: list[str],
+    dims: list[int],
+    mu_vec: np.ndarray,
+    sig_vec: np.ndarray,
+    outpath: Path,
+    n_cols: int = 5,
+    bins: int = 60,
+    title: str = "",
+    samples_mcmc: np.ndarray | None = None,
+) -> None:
+    """Grid page of marginals for a list of parameter indices.
+
+    Shows NF (blue), NF reweighted (red dashed), MCMC (gray, optional),
+    and the postfit Gaussian (green) on every panel.
+    """
+    if not dims:
+        return
+
+    n_dims = len(dims)
+    n_rows = int(np.ceil(n_dims / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.5 * n_rows), squeeze=False)
+    axes_flat = axes.reshape(-1)
+
+    for ax_idx, k in enumerate(dims):
+        ax = axes_flat[ax_idx]
+        x_n = samples_nf[:, k]
+        mu = float(mu_vec[k])
+        sig = float(sig_vec[k]) if np.isfinite(sig_vec[k]) and sig_vec[k] > 0 else 0.0
+
+        xmin_v = float(np.min(x_n))
+        xmax_v = float(np.max(x_n))
+        if samples_mcmc is not None:
+            xmin_v = min(xmin_v, float(np.min(samples_mcmc[:, k])))
+            xmax_v = max(xmax_v, float(np.max(samples_mcmc[:, k])))
+        if sig > 0:
+            xmin_v = min(xmin_v, mu - 4.0 * sig)
+            xmax_v = max(xmax_v, mu + 4.0 * sig)
+        span = xmax_v - xmin_v
+        if span <= 0:
+            xmin_v, xmax_v, span = mu - 1.0, mu + 1.0, 2.0
+        xmin_v -= 0.05 * span
+        xmax_v += 0.05 * span
+        edges = np.linspace(xmin_v, xmax_v, bins + 1)
+        xgrid = np.linspace(xmin_v, xmax_v, 200)
+
+        ax.hist(x_n, bins=edges, histtype="step", density=True, linewidth=1.0,
+                color="steelblue", label="NF")
+
+        if log_weights is not None and outlier_mask is not None:
+            nf_f = x_n[outlier_mask]
+            w = np.exp(log_weights[outlier_mask])
+            # density=True with weights: matplotlib normalises by total weight * bin_width
+            ax.hist(nf_f, bins=edges, weights=w, histtype="step", density=True,
+                    linewidth=1.2, linestyle="--", color="red", label="NF reweighted")
+
+        if samples_mcmc is not None:
+            ax.hist(samples_mcmc[:, k], bins=edges, histtype="stepfilled", density=True,
+                    alpha=0.25, color="gray", label="MCMC")
+
+        pdf = gaussian_pdf(xgrid, mu, sig)
+        if pdf.max() > 0:
+            ax.plot(xgrid, pdf, linewidth=1.0, color="green")
+        ax.axvline(mu, linestyle=":", linewidth=0.8, color="green")
+
+        short_name = str(labels[k]).split("/")[-1]
+        ax.set_title(short_name, fontsize=7)
+        ax.tick_params(labelsize=5)
+        ax.grid(True, alpha=0.15)
+
+    for ax_idx in range(n_dims, len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    # Single legend on first panel
+    h, l = axes_flat[0].get_legend_handles_labels()
+    if h:
+        axes_flat[0].legend(h, l, fontsize=5, loc="upper right")
+
+    if title:
+        fig.suptitle(title, fontsize=10)
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_nf_only_corr2d(
+    samples_nf: np.ndarray,
+    labels: list[str],
+    dims: list[int],
+    outpath_dir: Path,
+    bins: int = 60,
+    log_weights: np.ndarray | None = None,
+    outlier_mask: np.ndarray | None = None,
+) -> None:
+    """NF-only 2D histograms for all pairs in dims.
+
+    When log_weights / outlier_mask are provided a second panel shows the
+    reweighted distribution side-by-side.
+    """
+    if len(dims) < 2:
+        return
+
+    do_reweight_panel = log_weights is not None and outlier_mask is not None
+    n_panels = 2 if do_reweight_panel else 1
+
+    for ii in range(len(dims)):
+        for jj in range(ii + 1, len(dims)):
+            a, b = dims[ii], dims[jj]
+            x_nf = samples_nf[:, a]
+            y_nf = samples_nf[:, b]
+
+            xmin = float(np.nanmin(x_nf))
+            xmax = float(np.nanmax(x_nf))
+            ymin = float(np.nanmin(y_nf))
+            ymax = float(np.nanmax(y_nf))
+            if not (np.isfinite(xmin) and np.isfinite(xmax) and xmax > xmin):
+                xmin, xmax = 0.0, 1.0
+            if not (np.isfinite(ymin) and np.isfinite(ymax) and ymax > ymin):
+                ymin, ymax = 0.0, 1.0
+
+            fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5), squeeze=False)
+
+            def _fill(ax, x, y, w=None, title="NF"):
+                h, xe, ye = np.histogram2d(x, y, bins=bins,
+                                           range=[[xmin, xmax], [ymin, ymax]],
+                                           weights=w)
+                h_ma = np.ma.masked_less_equal(h, 0)
+                pos = h_ma.compressed()
+                if pos.size > 0:
+                    mesh = ax.pcolormesh(xe, ye, h_ma.T, cmap="viridis",
+                                         norm=LogNorm(vmin=float(pos.min()), vmax=float(pos.max())),
+                                         shading="auto")
+                    fig.colorbar(mesh, ax=ax)
+                else:
+                    ax.hist2d(x, y, bins=bins, range=[[xmin, xmax], [ymin, ymax]])
+                ax.set_xlabel(_short(labels[a], 40))
+                ax.set_ylabel(_short(labels[b], 40))
+                ax.set_title(title)
+
+            _fill(axes[0, 0], x_nf, y_nf, title="NF (unweighted)")
+            if do_reweight_panel:
+                w_vals = np.exp(log_weights[outlier_mask])
+                _fill(axes[0, 1], x_nf[outlier_mask], y_nf[outlier_mask],
+                      w=w_vals, title="NF (reweighted)")
+
+            plt.tight_layout()
+            outp = outpath_dir / f"nf_{a:03d}_{b:03d}.png"
+            fig.savefig(outp, dpi=120)
+            plt.close(fig)
 
 
 @hydra.main(config_path="/workspace/work/GuNFlows/configs", config_name="sample_mcmc_nf_toyOA", version_base=None)
@@ -1078,10 +1623,6 @@ def main(cfg: DictConfig) -> None:
 
     do_plot_mcmc = bool(getattr(cfg, "do_plot_mcmc", True))
     do_reweight_nf = bool(getattr(cfg, "do_reweight_nf", False))
-    do_reweight_gauss = bool(getattr(cfg, "do_reweight_gauss", do_reweight_nf))
-    fake_zero_weights = bool(getattr(cfg, "fake_zero_weights", False))
-    if fake_zero_weights:
-        do_reweight_gauss = False  # the Gaussian path always evaluates GUNDAM; disable in sanity mode
     reweight_num_workers = int(getattr(cfg, "reweight_num_workers", 1))
     do_mcmc_step_lh_nf_eval = bool(getattr(cfg, "do_mcmc_step_lh_nf_eval", True))
     mcmc_delta_lh_p_3sigma = float(getattr(cfg, "mcmc_delta_lh_p_3sigma", getattr(cfg, "mcmc_lh_keep_quantile", 0.95)))
@@ -1102,8 +1643,6 @@ def main(cfg: DictConfig) -> None:
     print(f"save_dir: {save_dir}", flush=True)
     print(f"do_plot_mcmc: {do_plot_mcmc}", flush=True)
     print(f"do_reweight_nf: {do_reweight_nf}", flush=True)
-    print(f"do_reweight_gauss: {do_reweight_gauss}", flush=True)
-    print(f"fake_zero_weights (sanity test d): {fake_zero_weights}", flush=True)
     print(f"reweight_num_workers: {reweight_num_workers}", flush=True)
     print(f"do_mcmc_step_lh_nf_eval: {do_mcmc_step_lh_nf_eval}", flush=True)
     print(f"mcmc_delta_lh_p_3sigma: {mcmc_delta_lh_p_3sigma}", flush=True)
@@ -1273,36 +1812,6 @@ def main(cfg: DictConfig) -> None:
     mcmc_keep_threshold = None
     mcmc_post_all = None
 
-    mcmc_neglogq_all = None  # ALWAYS_PRODUCE_MCMC_NEGLOGQ_PLOT
-    if (do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] > 0
-            and mcmc_post.shape[1] == bestfit_parameter_values.shape[0]):
-        print("Computing NF -log q for all MCMC points (default diagnostic)...", flush=True)
-        _t_nf_def = time.time()
-        mcmc_neglogq_all = eval_nf_neglogq_on_physical_points(
-            model=model, dataset=dataset, points_physical=mcmc_post,
-            batch_size=mcmc_nf_eval_batch_size, device=str(cfg.device),
-        )
-        print(f"  done in {time.time()-_t_nf_def:.1f}s", flush=True)
-
-        if mcmc_nll_tree_post is not None:
-            # Fallback keep-mask based on TTree NLL (used only if no LH-eval below).
-            _nll_min = float(np.min(mcmc_nll_tree_post[np.isfinite(mcmc_nll_tree_post)]))
-            _keep_tree = (np.isfinite(mcmc_nll_tree_post)
-                          & (mcmc_nll_tree_post <= _nll_min + float(delta_nll_cut)))
-            print(f"  default keep-mask from TTree NLL: {int(_keep_tree.sum())}/{len(_keep_tree)} steps "
-                  f"(cut: NLL <= {_nll_min:.4f} + {float(delta_nll_cut):.4f})", flush=True)
-            # Produce the plot now (will be overridden later if LH-eval block runs)
-            plot_nll_vs_neglogq(
-                nll=mcmc_nll_tree_post,
-                neglogq=mcmc_neglogq_all,
-                keep_mask=_keep_tree,
-                delta_nll_cut=float(delta_nll_cut),
-                outpath=out_dir / "mcmc_nll_vs_neglogq_kept.png",
-                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
-            )
-            mcmc_keep_mask = _keep_tree
-            mcmc_keep_threshold = float(_nll_min + delta_nll_cut)
-
     if do_plot_mcmc and do_mcmc_step_lh_nf_eval:
         if mcmc_post.shape[1] != bestfit_parameter_values.shape[0]:
             print(
@@ -1423,13 +1932,6 @@ def main(cfg: DictConfig) -> None:
                 bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
             )
 
-            plot_nll_diff_histogram(
-                nll_computed=mcmc_nll_all,
-                nll_tree=mcmc_nll_tree_post,
-                outpath=out_dir / "mcmc_nll_diff_computed_minus_tree.png",
-                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
-            )
-
             np.savez(
                 out_dir / "mcmc_lh_nf_eval_kept.npz",
                 nll=mcmc_nll,
@@ -1444,9 +1946,7 @@ def main(cfg: DictConfig) -> None:
                 keep_threshold=float(mcmc_keep_threshold),
             )
 
-    if do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] > 0:
-        # Use whatever survives: if do_mcmc_step_lh_nf_eval=True, mcmc_post has
-        # already been filtered by the LH-keep mask; otherwise it is the full chain.
+    if do_plot_mcmc and mcmc_keep_mask is not None:
         samples_mcmc_c = mcmc_post[:, :d]
     else:
         samples_mcmc_c = None
@@ -1499,26 +1999,7 @@ def main(cfg: DictConfig) -> None:
         reweight_nf_to_lh_list = []
         lh_values = []
 
-        if fake_zero_weights:
-            n_print = int(getattr(cfg, "fake_zero_weights_print_n", 10))
-            n_print = max(0, min(n_print, samples_nf_c.shape[0]))
-            print(f"  >>> fake_zero_weights=True: histogram uses weights=1 (rw_val=0 for all).", flush=True)
-            print(f"  >>> But will evaluate real LH for the first {n_print} samples for printout.", flush=True)
-            for it_print in range(n_print):
-                nfv = samples_nf_c[it_print]
-                lq  = float(logq_nf[it_print])
-                lp, ns, nsy = likelihood_sampler.inject_params_and_compute_likelihood(nfv, extend_continue=False)
-                lp = float(lp); ns = float(ns); nsy = float(nsy)
-                rw_val_true = -lq - lp
-                print(f"    sample {it_print:03d}: NLL_total={lp:.4f}  stat={ns:.4f}  syst={nsy:.4f}"
-                      f"  log_q_NF={lq:.4f}   rw(real)={rw_val_true:+.4f}", flush=True)
-            print(f"  >>> done with LH printout; now zeroing all rw_vals for the histogram.", flush=True)
-            reweight_nf_to_lh_list = [0.0 for _ in range(samples_nf_c.shape[0])]
-            lh_values = [0.0 for _ in range(samples_nf_c.shape[0])]
-        elif False:
-            pass  # placeholder so the elif chain below stays syntactically valid
-
-        elif reweight_num_workers <= 1:
+        if reweight_num_workers <= 1:
             for it, (nf_vector, logq) in enumerate(zip(samples_nf_c, logq_nf)):
                 logp, nll_stat, nll_syst = likelihood_sampler.inject_params_and_compute_likelihood(
                     nf_vector, extend_continue=False
@@ -1622,157 +2103,177 @@ def main(cfg: DictConfig) -> None:
         )
         print(f"Reweighting done in {time.time() - t_rw:.1f}s", flush=True)
 
+        # ---- Save samples + weights as npz ----
+        if save_samples:
+            npz_path = out_dir / "nf_samples_with_weights.npz"
+            print(f"Saving samples+weights to {npz_path} ...", flush=True)
+            np.savez(
+                npz_path,
+                samples_nf=samples_nf,
+                logq_nf=logq_nf,
+                log_weights=reweight_nf_to_lh,
+                weights=np.exp(reweight_nf_to_lh),
+                outlier_mask=outlier_mask,
+                param_names=np.array(labels, dtype=object),
+                bestfit=mu_vec,
+                sigma=sig_vec,
+            )
+            print("Saved.", flush=True)
 
-    # -------------------------
-    # Gaussian -> LH reweighting (importance sampling, used for ESS)
-    # -------------------------
-    reweight_gauss_to_lh = None
-    eff_gauss = None
-    eff_gauss_f = None
-    n_gauss_filtered = 0
-    samples_gauss = None
-    if do_reweight_gauss:
-        print(f"Sampling {num_samples} points from multivariate Gaussian (mu, postfit cov)...", flush=True)
-        t_g = time.time()
-        _rng_seed = int(getattr(cfg, "seed", 0))
-        samples_gauss, logp_gauss = sample_gaussian_physical_with_logp(
-            mu_vec, cov_mat,
-            parameter_limits=parameter_limits,
-            num_samples=num_samples,
-            batch_size=int(getattr(cfg, "batch_size", 4098)),
-            rng_seed=_rng_seed,
-        )
-        print(f"Gaussian sampling done in {time.time()-t_g:.1f}s; shape={samples_gauss.shape}", flush=True)
-
-        print("Computing reweighting factors from Gaussian to LH...", flush=True)
-        t_rw_g = time.time()
-        rw_gauss_list = []
-        if reweight_num_workers <= 1:
-            for it, (gvec, gq) in enumerate(zip(samples_gauss, logp_gauss)):
-                logp_lh, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(gvec, extend_continue=False)
-                rw_gauss_list.append(-float(gq) - float(logp_lh))
-                if (it % max(1, int(num_samples // 100)) == 0):
-                    print(f"  gauss iter {it} NLL/2: {logp_lh}, log_q_gauss: {float(gq)}", flush=True)
-        else:
-            worker_args = [
-                (int(it), np.asarray(gvec, dtype=np.float64), float(gq))
-                for it, (gvec, gq) in enumerate(zip(samples_gauss, logp_gauss))
-            ]
-            ctx = mp.get_context("spawn")
-            chunksize = max(1, len(worker_args) // (reweight_num_workers * 20))
-            with ctx.Pool(
-                processes=reweight_num_workers,
-                initializer=_init_reweight_worker,
-                initargs=(
-                    cfg.experiment.dataset.llh_config,
-                    cfg.experiment.dataset.llh_overrides,
-                    cfg.experiment.dataset.data_is_asimov,
-                    cfg.experiment.sampler.threads,
-                    cfg.experiment.dataset.llh_cwd,
-                ),
-            ) as pool:
-                for it, rw_val, lh_val, gq_val, logp_val in pool.imap(_compute_single_reweight, worker_args, chunksize=chunksize):
-                    if (it % max(1, int(num_samples // 100)) == 0):
-                        print(f"  gauss iter {it} NLL/2: {logp_val}, log_q_gauss: {float(gq_val)}", flush=True)
-                    rw_gauss_list.append(rw_val)
-
-        reweight_gauss_to_lh = np.asarray(rw_gauss_list, dtype=np.float64).reshape(-1)
-        if reweight_gauss_to_lh.size > 0:
-            reweight_gauss_to_lh = reweight_gauss_to_lh - float(np.median(reweight_gauss_to_lh))
-
-        lo_g = float(np.quantile(reweight_gauss_to_lh, 0.001))
-        hi_g = float(np.quantile(reweight_gauss_to_lh, 0.999))
-        outlier_mask_g = (reweight_gauss_to_lh >= lo_g) & (reweight_gauss_to_lh <= hi_g)
-        n_gauss_filtered = int(outlier_mask_g.sum())
-
-        w_g = np.exp(reweight_gauss_to_lh)
-        eff_gauss = float((np.sum(w_g) ** 2) / np.sum(w_g ** 2)) if np.sum(w_g ** 2) > 0 else 0.0
-        w_gf = np.exp(reweight_gauss_to_lh[outlier_mask_g])
-        eff_gauss_f = float((np.sum(w_gf) ** 2) / np.sum(w_gf ** 2)) if np.sum(w_gf ** 2) > 0 else 0.0
-
-        print(f"Effective sample size (Gauss to LH): {eff_gauss:.1f} / {len(reweight_gauss_to_lh)}", flush=True)
-        print(f"Effective sample size (Gauss to LH, filtered): {eff_gauss_f:.1f} / {n_gauss_filtered}", flush=True)
-        print(f"Gaussian reweighting done in {time.time()-t_rw_g:.1f}s", flush=True)
-
-        np.savez(
-            out_dir / "gauss_reweight.npz",
-            samples_gauss=samples_gauss,
-            logp_gauss=logp_gauss,
-            reweight_gauss_to_lh=reweight_gauss_to_lh,
-            outlier_mask=outlier_mask_g,
-            eff=eff_gauss,
-            eff_filtered=eff_gauss_f,
-            labels=np.array(list(labels), dtype=object),
-            bestfit=mu_vec,
-            sig=sig_vec,
-        )
-
-        # ── marginal shift plots (IS mean − MAP, normalised by postfit σ) ──
-        print("Plotting marginal shift...", flush=True)
-        _plot_marginal_shift(
-            samples_gauss=samples_gauss[:, :d],
-            logratio_gauss=reweight_gauss_to_lh,
-            outlier_mask_g=outlier_mask_g,
-            samples_nf=samples_nf_c if do_reweight_nf and reweight_nf_to_lh is not None else None,
-            logratio_nf=reweight_nf_to_lh if do_reweight_nf and reweight_nf_to_lh is not None else None,
-            outlier_mask_nf=outlier_mask if do_reweight_nf and outlier_mask is not None else None,
-            bestfit=mu_vec,
-            sig=sig_vec,
-            labels=list(labels),
-            out_dir=out_dir,
-        )
-
-    # -------------------------
-    # Effective Sample Size
-    # -------------------------
-    ess_lines: list[str] = []
-
-    # --- MCMC ESS (autocorrelation-based, computed on full post-burnin chain) ---
-    if do_plot_mcmc and mcmc_post is not None and mcmc_post.shape[0] >= 4:
-        print("Computing MCMC ESS (autocorrelation)...", flush=True)
-        t_ess = time.time()
-        ess_mcmc = _compute_mcmc_ess(mcmc_post)
+        # ---- Reweighting diagnostics ----
+        param_groups = _classify_param_groups(labels)
         print(
-            f"  MCMC ESS: min={ess_mcmc.min():.1f}  median={np.median(ess_mcmc):.1f}"
-            f"  max={ess_mcmc.max():.1f}  (chain N={mcmc_post.shape[0]}, {time.time()-t_ess:.1f}s)",
+            f"Parameter groups: physics={len(param_groups['physics'])}, "
+            f"detector={len(param_groups['detector'])}, "
+            f"nonlinear={len(param_groups['nonlinear'])}",
             flush=True,
         )
-        ess_lines.append(f"# MCMC ESS (autocorrelation, integrated tau, chain N={mcmc_post.shape[0]})")
-        ess_lines.append(f"mcmc_ess_min:    {ess_mcmc.min():.2f}")
-        ess_lines.append(f"mcmc_ess_median: {np.median(ess_mcmc):.2f}")
-        ess_lines.append(f"mcmc_ess_mean:   {ess_mcmc.mean():.2f}")
-        ess_lines.append(f"mcmc_ess_max:    {ess_mcmc.max():.2f}")
-        ess_lines.append("# Per-parameter MCMC ESS:")
-        for _i in range(len(ess_mcmc)):
-            _pname = labels[_i] if _i < len(labels) else str(_i)
-            ess_lines.append(f"  mcmc_ess_{_i:03d}  {ess_mcmc[_i]:9.2f}  {_pname}")
-    else:
-        ess_lines.append("# MCMC ESS: not computed (do_plot_mcmc=False or chain unavailable)")
 
-    # --- NF reweighting ESS (importance-sampling weights) ---
-    if do_reweight_nf and reweight_nf_to_lh is not None:
-        ess_lines.append(f"# NF->LH reweighting ESS (importance sampling, N={len(reweight_nf_to_lh)})")
-        ess_lines.append(f"nf_ess:               {eff:.2f}  ({100.0 * eff / len(reweight_nf_to_lh):.2f}%)")
-        ess_lines.append(f"nf_ess_filtered:      {eff_f:.2f}"
-                         f"  ({100.0 * eff_f / max(1, int(outlier_mask.sum())):.2f}%"
-                         f", filtered N={int(outlier_mask.sum())})")
-    else:
-        ess_lines.append("# NF reweighting ESS: not computed (do_reweight_nf=False)")
+        # --- weights/ subdir ---
+        print("Plotting weight summary (distribution + Lorenz curve + concentration)...", flush=True)
+        plot_weight_summary(
+            log_weights=reweight_nf_to_lh,
+            outlier_mask=outlier_mask,
+            clip_q=diag_clip_q,
+            outpath=diag_weights_dir / "weight_summary.png",
+        )
 
-    # --- Gaussian reweighting ESS ---
-    if do_reweight_gauss and reweight_gauss_to_lh is not None:
-        ess_lines.append(f"# Gauss->LH reweighting ESS (importance sampling, N={len(reweight_gauss_to_lh)})")
-        ess_lines.append(f"gauss_ess:            {eff_gauss:.2f}  ({100.0 * eff_gauss / len(reweight_gauss_to_lh):.2f}%)")
-        ess_lines.append(f"gauss_ess_filtered:   {eff_gauss_f:.2f}"
-                         f"  ({100.0 * eff_gauss_f / max(1, n_gauss_filtered):.2f}%, filtered N={n_gauss_filtered})")
-    else:
-        ess_lines.append("# Gaussian reweighting ESS: not computed (do_reweight_gauss=False)")
+        print("Plotting sorted parameter-weight correlation (top-40)...", flush=True)
+        plot_sorted_corr_summary(
+            samples=samples_nf_c,
+            log_weights=reweight_nf_to_lh,
+            labels=labels,
+            param_groups=param_groups,
+            clip_q=diag_clip_q,
+            outpath=diag_weights_dir / "sorted_corr_summary.png",
+        )
 
-    ess_path = out_dir / "ess.txt"
-    with open(ess_path, "w") as f:
-        f.write("\n".join(ess_lines) + "\n")
-    print(f"ESS written to: {ess_path}", flush=True)
+        print("Plotting reweight mean-shift summary bar chart...", flush=True)
+        plot_reweight_mean_shift_summary(
+            samples=samples_nf_c,
+            log_weights=reweight_nf_to_lh,
+            labels=labels,
+            mu_vec=mu_vec,
+            sig_vec=sig_vec,
+            param_groups=param_groups,
+            outpath=diag_weights_dir / "reweight_mean_shift.png",
+        )
 
+        print("Plotting Pearson corr(log_w, x_k) per parameter...", flush=True)
+        plot_reweight_logw_param_corr(
+            samples=samples_nf_c,
+            log_weights=reweight_nf_to_lh,
+            labels=labels,
+            param_groups=param_groups,
+            outpath=diag_weights_dir / "reweight_logw_param_corr.png",
+        )
+
+        if rw_lh_values is not None:
+            print("Plotting reweight decomposition (logq vs LH contribution)...", flush=True)
+            plot_reweight_decomposition(
+                log_weights=reweight_nf_to_lh,
+                logq_nf=logq_nf,
+                lh_values=rw_lh_values,
+                outpath=diag_weights_dir / "reweight_decomposition.png",
+                bins=int(getattr(cfg, "mcmc_diag_bins", 80)),
+            )
+
+        # --- params/ subdir ---
+        print("Plotting NF pull distributions...", flush=True)
+        plot_nf_pull_grid(
+            samples=samples_nf_c,
+            mu_vec=mu_vec,
+            sig_vec=sig_vec,
+            labels=labels,
+            param_groups=param_groups,
+            outpath=diag_params_dir / "nf_pull_distributions.png",
+            bins=60,
+        )
+
+        for _group_name, _n_cols in [("detector", 5), ("nonlinear", 5), ("physics", 10)]:
+            _gdims = param_groups.get(_group_name, [])
+            if not _gdims:
+                continue
+            _title_base = f"{_group_name} systematics" if _group_name != "physics" else "physics parameters"
+
+            print(f"Plotting {_group_name} marginals grid ({len(_gdims)} params)...", flush=True)
+            plot_marginals_group_grid(
+                samples_nf=samples_nf_c,
+                log_weights=reweight_nf_to_lh,
+                outlier_mask=outlier_mask,
+                labels=labels,
+                dims=_gdims,
+                mu_vec=mu_vec,
+                sig_vec=sig_vec,
+                outpath=diag_params_dir / f"{_group_name}_marginals_grid.png",
+                n_cols=_n_cols,
+                bins=60,
+                title=f"{_title_base}: NF (blue) vs NF-reweighted (red dashed) vs postfit Gaussian (green)",
+                samples_mcmc=samples_mcmc_c,
+            )
+
+            print(f"Plotting log_w vs {_group_name} params 2D grid...", flush=True)
+            plot_logw_vs_param_grid(
+                samples=samples_nf_c,
+                log_weights=reweight_nf_to_lh,
+                labels=labels,
+                dims=_gdims,
+                clip_q=diag_clip_q,
+                outpath=diag_params_dir / f"{_group_name}_logw_vs_param_grid.png",
+                n_cols=_n_cols,
+                bins=40,
+                title=(
+                    f"log_weight vs {_title_base}\n"
+                    f"(white line = conditional mean, r = Pearson corr  |  "
+                    f"log_w clipped at [{diag_clip_q:.0%}, {1-diag_clip_q:.0%}])"
+                ),
+            )
+
+            print(f"Plotting high vs low weight marginals for {_group_name}...", flush=True)
+            plot_high_low_weight_marginals(
+                samples=samples_nf_c,
+                log_weights=reweight_nf_to_lh,
+                labels=labels,
+                dims=_gdims,
+                mu_vec=mu_vec,
+                sig_vec=sig_vec,
+                outpath=diag_params_dir / f"{_group_name}_high_vs_low_weight.png",
+                n_cols=_n_cols,
+                bins=50,
+                title=(
+                    f"{_title_base}: samples with bottom-25% weight (blue) vs top-25% weight (red)\n"
+                    "Δμ/σ annotated per panel — shows WHICH parameter regions get up/down-weighted"
+                ),
+            )
+
+        # --- correlations/ subdir ---
+        # Correlation matrix for the detector+nonlinear block (most relevant)
+        _corr_dims = param_groups.get("detector", []) + param_groups.get("nonlinear", [])
+        if len(_corr_dims) >= 2:
+            print(f"Plotting correlation matrix comparison ({len(_corr_dims)} dims)...", flush=True)
+            plot_corr_matrix_comparison(
+                samples=samples_nf_c,
+                log_weights=reweight_nf_to_lh,
+                outlier_mask=outlier_mask,
+                postfit_cov=cov_mat,
+                labels=labels,
+                dims=_corr_dims,
+                outpath=diag_corr_dir / "corr_matrix_detector_nonlinear.png",
+            )
+
+        # Also do physics block if it fits
+        _phys_dims = param_groups.get("physics", [])
+        if len(_phys_dims) >= 2:
+            print(f"Plotting correlation matrix for physics params ({len(_phys_dims)} dims)...", flush=True)
+            plot_corr_matrix_comparison(
+                samples=samples_nf_c,
+                log_weights=reweight_nf_to_lh,
+                outlier_mask=outlier_mask,
+                postfit_cov=cov_mat,
+                labels=labels,
+                dims=_phys_dims,
+                outpath=diag_corr_dir / "corr_matrix_physics.png",
+            )
 
     # -------------------------
     # Report
@@ -1942,28 +2443,32 @@ def main(cfg: DictConfig) -> None:
         if (k + 1) % 10 == 0 or (k + 1) == d:
             print(f"  Plotted {k+1}/{d}", flush=True)
 
-    # 2D correlations for user-specified pairs.
-    # If MCMC is available -> side-by-side NF vs MCMC.
-    # If MCMC is unavailable -> NF-only 2D histogram (still useful to see
-    # marginal correlation structure in the NF samples themselves).
-    _mcmc_available = bool(do_plot_mcmc) and (samples_mcmc_c is not None)
+    # -------------------------
+    # 2D correlation plots
+    # -------------------------
     corr2d_bins = int(getattr(cfg, "corr2d_bins", 60))
     dims_cfg = getattr(cfg, "corr2d_dims", None)
 
-    if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and dims_cfg.strip() == ""):
-        dims = list(range(max(0, d - 6), d))
+    if dims_cfg is None or (isinstance(dims_cfg, (list, tuple)) and len(dims_cfg) == 0) or (isinstance(dims_cfg, str) and str(dims_cfg).strip() == ""):
+        # Default: sample a cross-section across parameter groups
+        _pg = _classify_param_groups(labels) if not do_reweight_nf else param_groups
+        _default_dims = []
+        for _g in ("physics", "detector", "nonlinear"):
+            _gd = _pg.get(_g, [])
+            _default_dims += _gd[:5]
+        dims = _default_dims if len(_default_dims) >= 2 else list(range(max(0, d - 6), d))
     else:
         dims = parse_dim_list(dims_cfg, d)
 
     if len(dims) >= 2:
-        mode = "NF-vs-MCMC" if _mcmc_available else "NF-only"
-        print(f"Plotting 2D correlations ({mode}) for dims: {dims}", flush=True)
-        for i in range(len(dims)):
-            for j in range(i + 1, len(dims)):
-                a = dims[i]
-                b = dims[j]
-                outp = corr2d_dir / f"corr2d_{a:03d}_{b:03d}.png"
-                if _mcmc_available:
+        # NF-vs-MCMC side-by-side (only when MCMC is available)
+        if do_plot_mcmc and samples_mcmc_c is not None:
+            print(f"Plotting NF-vs-MCMC 2D correlations for dims: {dims}", flush=True)
+            for i in range(len(dims)):
+                for j in range(i + 1, len(dims)):
+                    a = dims[i]
+                    b = dims[j]
+                    outp = corr2d_dir / f"nfvsmcmc_{a:03d}_{b:03d}.png"
                     plot_2d_hist_side_by_side(
                         samples_nf_c[:, a], samples_nf_c[:, b],
                         samples_mcmc_c[:, a], samples_mcmc_c[:, b],
@@ -1971,104 +2476,22 @@ def main(cfg: DictConfig) -> None:
                         outp,
                         bins=corr2d_bins,
                     )
-                else:
-                    plot_2d_hist_nf_only(
-                        samples_nf_c[:, a], samples_nf_c[:, b],
-                        labels[a], labels[b],
-                        outp,
-                        bins=corr2d_bins,
-                    )
+        else:
+            print("do_plot_mcmc=False or no filtered MCMC samples, skipping NF-vs-MCMC 2D plots.", flush=True)
+
+        # NF-only 2D correlations (always generated)
+        print(f"Plotting NF-only 2D correlations for {len(dims)} dims ({len(dims)*(len(dims)-1)//2} pairs)...", flush=True)
+        plot_nf_only_corr2d(
+            samples_nf=samples_nf_c,
+            labels=labels,
+            dims=dims,
+            outpath_dir=corr2d_dir,
+            bins=corr2d_bins,
+            log_weights=reweight_nf_to_lh if do_reweight_nf else None,
+            outlier_mask=outlier_mask if do_reweight_nf else None,
+        )
     else:
-        print("corr2d_dims has <2 dims, skipping 2D plots.", flush=True)
-
-
-    # ------------------------------------------------------------------
-    # (c) Detector-correlation diagnostic
-    # ------------------------------------------------------------------
-    if bool(getattr(cfg, "corr2d_diagnose_detectors", False)):
-        det_range = getattr(cfg, "corr2d_diagnose_det_range", [60, 100])
-        det_start = int(det_range[0]); det_end = int(det_range[1])
-        det_start = max(0, min(det_start, d)); det_end = max(det_start, min(det_end, d))
-        top_k = int(getattr(cfg, "corr2d_diagnose_top_k", 3))
-        diag_bins = int(getattr(cfg, "corr2d_diagnose_bins", 60))
-
-        diag_dir = out_dir / "corr2d_diagnose"
-        diag_dir.mkdir(parents=True, exist_ok=True)
-
-        # Pearson correlation matrix from NF samples (uses all d dims)
-        ns_arr = np.asarray(samples_nf_c, dtype=np.float64)
-        # subtract mean
-        ns_mean = ns_arr.mean(axis=0, keepdims=True)
-        ns_c = ns_arr - ns_mean
-        std_ = ns_c.std(axis=0, ddof=0)
-        safe_std = np.where(std_ > 0, std_, 1.0)
-        ns_n = ns_c / safe_std[None, :]
-        corr = (ns_n.T @ ns_n) / float(ns_n.shape[0])
-
-        # If reweighted samples & weights available, also compute weighted samples
-        have_rw = (do_reweight_nf and reweight_nf_to_lh is not None and outlier_mask is not None)
-        if have_rw:
-            x_rw = samples_nf_c[outlier_mask]
-            w_rw = np.exp(reweight_nf_to_lh[outlier_mask])
-            w_rw = w_rw / w_rw.sum()
-        else:
-            x_rw = None; w_rw = None
-
-        # Gaussian samples if computed
-        if 'samples_gauss' in dir() and samples_gauss is not None:
-            x_gauss = samples_gauss[:, :d]
-        else:
-            x_gauss = None
-
-        print(f"Diagnose-detectors: scanning idx [{det_start},{det_end})  top_k={top_k}", flush=True)
-        for idx in range(det_start, det_end):
-            row = corr[idx].copy()
-            row[idx] = 0.0  # exclude self
-            order = np.argsort(np.abs(row))[::-1]
-            partners = [int(p) for p in order[:top_k]]
-            print(f"  det idx={idx} ({_short(labels[idx], 35)}) -> partners (by |corr|): "
-                  + ", ".join(f"{p}:{corr[idx,p]:+.2f}" for p in partners), flush=True)
-
-            for p in partners:
-                a, b = idx, p
-                fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-                # axis ranges from NF spread
-                xs_n = samples_nf_c[:, a]; ys_n = samples_nf_c[:, b]
-                xr = float(xs_n.min()), float(xs_n.max())
-                yr = float(ys_n.min()), float(ys_n.max())
-
-                # 1) NF
-                axes[0].hist2d(xs_n, ys_n, bins=diag_bins, range=(xr, yr), cmap="viridis")
-                axes[0].set_title(f"NF (n={len(xs_n)})")
-
-                # 2) NF reweighted
-                if x_rw is not None:
-                    axes[1].hist2d(x_rw[:, a], x_rw[:, b], bins=diag_bins, range=(xr, yr),
-                                   weights=w_rw, cmap="viridis")
-                    axes[1].set_title(f"NF reweighted (filt n={len(x_rw)})")
-                else:
-                    axes[1].text(0.5, 0.5, "no reweighted samples", ha="center", transform=axes[1].transAxes)
-
-                # 3) Gaussian
-                if x_gauss is not None:
-                    axes[2].hist2d(x_gauss[:, a], x_gauss[:, b], bins=diag_bins, range=(xr, yr), cmap="viridis")
-                    axes[2].set_title(f"Gaussian (n={len(x_gauss)})")
-                else:
-                    axes[2].text(0.5, 0.5, "no Gaussian samples", ha="center", transform=axes[2].transAxes)
-
-                # Best-fit marker
-                bf_a = float(mu_vec[a]); bf_b = float(mu_vec[b])
-                for ax in axes:
-                    ax.axvline(bf_a, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
-                    ax.axhline(bf_b, color="red", linestyle="--", linewidth=0.8, alpha=0.7)
-                    ax.set_xlabel(_short(labels[a], 30))
-                    ax.set_ylabel(_short(labels[b], 30))
-                fig.suptitle(f"idx {a} vs {b}  (Pearson corr in NF = {corr[a,b]:+.3f})", fontsize=10)
-                plt.tight_layout()
-                fig.savefig(diag_dir / f"corr2d_diag_{a:03d}_{b:03d}.png", dpi=130)
-                plt.close(fig)
-
-        print(f"Detector-correlation diagnostics written to {diag_dir}", flush=True)
+        print("corr2d_dims resolved to <2 dims, skipping all 2D correlation plots.", flush=True)
 
     print(f"Done. Outputs in: {str(out_dir)}", flush=True)
 
