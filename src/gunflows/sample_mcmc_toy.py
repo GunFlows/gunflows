@@ -412,37 +412,51 @@ def read_param_names_parameterSets(tfile: ROOT.TFile, base_dir: str) -> tuple[li
     return names, cyc
 
 
+def _uniform_thin_indices(n_total, max_steps) -> list[int]:
+    """Entry indices for uniform thinning across the FULL chain.
+
+    Returns up to ``max_steps`` indices evenly spaced over [0, n_total) with a
+    constant stride. If ``max_steps`` is None / <= 0 / >= n_total, every entry
+    is kept. No deduplication: rejected/repeated MCMC steps are real posterior
+    mass and are retained. Uniform thinning (rather than a contiguous tail)
+    makes the selection represent the whole posterior instead of a short,
+    autocorrelated segment of the chain.
+    """
+    n_total = int(n_total)
+    if n_total <= 0:
+        return []
+    if max_steps is None or int(max_steps) <= 0 or int(max_steps) >= n_total:
+        return list(range(n_total))
+    max_steps = int(max_steps)
+    stride = n_total // max_steps  # >= 1
+    return list(range(0, n_total, stride))[:max_steps]
+
+
 def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
-    """Read every MCMC entry (no deduplication).
+    """Read MCMC Points with uniform thinning across the full chain.
 
-    Rejected MCMC proposals keep the chain at the current state, so an entry
-    that is identical to the previous one is a *valid* sample: it must be
-    counted once per iteration to give correct posterior marginals.
-
-    `max_steps`, if not None, keeps the *last* max_steps entries (so a long
-    burn-in is naturally truncated on the left).
+    No deduplication: rejected MCMC proposals keep the chain at the current
+    state and are valid samples (counted once per iteration). When ``max_steps``
+    is set, that many entries are selected uniformly (constant stride) over the
+    whole chain instead of taking a contiguous tail.
     """
     n_total = int(t_mcmc.GetEntries())
     if not t_mcmc.GetBranch("Points"):
         raise RuntimeError("MCMC tree has no 'Points' branch.")
 
-    if max_steps is not None and max_steps > 0:
-        n = min(n_total, int(max_steps))
-        start = n_total - n
-    else:
-        n = n_total
-        start = 0
+    kept = _uniform_thin_indices(n_total, max_steps)
+    n = len(kept)
 
     if n == 0:
         t_mcmc.GetEntry(0)
         d0 = int(getattr(t_mcmc, "Points").size())
         return np.empty((0, d0), dtype=np.float64)
 
-    t_mcmc.GetEntry(start)
+    t_mcmc.GetEntry(kept[0])
     d = int(getattr(t_mcmc, "Points").size())
     pts = np.empty((n, d), dtype=np.float64)
-    for i in range(n):
-        t_mcmc.GetEntry(start + i)
+    for i, entry_idx in enumerate(kept):
+        t_mcmc.GetEntry(entry_idx)
         v = getattr(t_mcmc, "Points")
         for j in range(d):
             pts[i, j] = float(v.at(j))
@@ -450,25 +464,19 @@ def read_points_vector_tree(t_mcmc, max_steps: int | None) -> np.ndarray:
 
 
 def read_ttree_nll_from_llh_branches(t_mcmc, max_steps: int | None) -> np.ndarray:
-    """Read TTree NLL proxy = (LLHStatistical + LLHPenalty)/2 for every entry.
+    """Read TTree NLL proxy = (LLHStatistical + LLHPenalty)/2 for selected entries.
 
-    No deduplication: each chain entry contributes once.  `max_steps`, if set,
-    keeps the last `max_steps` entries (matching read_points_vector_tree).
+    Uses the SAME uniform-thinning index selection as read_points_vector_tree
+    (no deduplication) so points and NLL stay aligned.
     """
     n_total = int(t_mcmc.GetEntries())
     if not t_mcmc.GetBranch("LLHStatistical") or not t_mcmc.GetBranch("LLHPenalty"):
         raise RuntimeError("MCMC tree must contain branches 'LLHStatistical' and 'LLHPenalty'.")
 
-    if max_steps is not None and max_steps > 0:
-        n = min(n_total, int(max_steps))
-        start = n_total - n
-    else:
-        n = n_total
-        start = 0
-
-    out = np.empty(n, dtype=np.float64)
-    for i in range(n):
-        t_mcmc.GetEntry(start + i)
+    kept = _uniform_thin_indices(n_total, max_steps)
+    out = np.empty(len(kept), dtype=np.float64)
+    for i, entry_idx in enumerate(kept):
+        t_mcmc.GetEntry(entry_idx)
         llh_stat = float(getattr(t_mcmc, "LLHStatistical"))
         llh_pen = float(getattr(t_mcmc, "LLHPenalty"))
         out[i] = 0.5 * (llh_stat + llh_pen)
