@@ -1,6 +1,6 @@
 # Streaming training: covariance first, then NF-refresh each stage
 defaults:
-  - /dataset: systematic_dataset_100plus10_fakedata_det_spline
+  - /dataset: systematic_dataset_100plus10_paper_fakedata
   - /sampler: llhsampler
   - /model: model_toyOA_100p10
   - /optim: adam
