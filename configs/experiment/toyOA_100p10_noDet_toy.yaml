@@ -1,0 +1,13 @@
+defaults:
+  - /dataset: systematic_dataset_toyOA_100p10_noDet_toy
+  - /sampler: llhsampler
+  - /model: model_toyOA_100p10
+  - /optim: adam
+  - /scheduler: exponential
+  - /trainer: oa2022_pygundam
+  - _self_
+
+seed: 42
+
+paths:
+  checkpoints_dir: ${hydra:runtime.output_dir}/checkpoints
