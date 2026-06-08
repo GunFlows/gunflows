@@ -3,14 +3,18 @@
 #SBATCH --partition=private-dpnc-gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
-#SBATCH --mem-per-cpu=16G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem-per-cpu=8G
 #SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/sample_nf_mcmc_toy_%j.out
 #SBATCH --error=logs/sample_nf_mcmc_toy_%j.err
 #SBATCH --mail-type=ALL
+
+# Variant of sample_and_compare.sh that binds ToyNDFit/GundamWorkspace
+# (the workspace where the noDetCorrelation fit + training live), so the
+# LikelihoodSampler can read the matching postfit ROOT and configs.
 
 set -euo pipefail
 
@@ -19,10 +23,7 @@ module load apptainer 2>/dev/null || true
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
-# HOST_CONFIG="/srv/beegfs/scratch/groups/dpnc/neutrinos" # belong to OA config
-# HOST_DATA="/srv/beegfs/scratch/shares/sanchezf/gundam_n_flow/tmp_inputs/nextcloud" # belong to OA config
-# HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit_dev"
-HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace"
+HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/ToyNDFit"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 trained_models="/home/shares/sanchezf/gundam_n_flow/trained_models"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"

@@ -6,12 +6,12 @@
 # mcmc_chain: /workspace/config/GundamWorkspace/output/gundamFitter_configToyOA_With_configMcmcToy_Asimov.root
 # mcmc_chain: /workspace/trained_models/MCMC_100p10_Toy50.root
 
-training_folder: /workspace/work/GuNFlows/outputs/2026-05-16/02-52-50/
-mcmc_chain: /workspace/trained_models/mcmc_output/toyfit_100p10_noasimov_7982456.root
+training_folder: /workspace/config/Config100p10_noDet/17-30-29
+mcmc_chain: /workspace/config/DemoMCMC_configToyOA_100plus10_noDet_8185923.root
 
 
 # save_dir: /home/shares/sanchezf/gundam_n_flow/trained_models/outputs_sample_and_compare/100p10Asimov
-save_dir: /workspace/trained_models/outputs_sample_and_compare/100p10Toy50_NF0516_MCMC7954250
+save_dir: ${training_folder}/sample_and_compare
 
 num_samples: 200
 batch_size: 4098
