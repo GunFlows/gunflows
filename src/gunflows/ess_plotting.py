@@ -138,23 +138,23 @@ def make_ess_plots(results: dict, out_dir, num_samples=None) -> list[Path]:
         ("", ess, "C0", "ESS (NF)", "Effective sample size"),
         ("_filtered", essf, "C1", "ESS filtered (NF)", "Effective sample size (filtered)"),
     ]
-    # (key, x, xlabel) -- only included when x is valid
-    x_variants = [("epoch", epochs, "Epoch")]
+    # (key, x, xlabel, title_noun) -- only included when x is valid
+    x_variants = [("epoch", epochs, "Epoch", "epoch")]
     if time_hours is not None and time_hours.size == epochs.size and np.isfinite(time_hours).any():
-        x_variants.append(("time", time_hours, "Training time [hours]"))
+        x_variants.append(("time", time_hours, "Training time [hours]", "training time"))
     if n_samp is not None and n_samp.size == epochs.size and np.isfinite(n_samp).any():
-        x_variants.append(("samplings", n_samp, "Number of LH samplings"))
+        x_variants.append(("samplings", n_samp, "Number of LH samplings", "number of LH samplings"))
 
     written: list[Path] = []
     for suffix, yvals, color, plabel, tprefix in ess_variants:
         if yvals.size != epochs.size:
             continue
-        for xkey, xvals, xlabel in x_variants:
+        for xkey, xvals, xlabel, tnoun in x_variants:
             out_path = out_dir / f"ess{suffix}_vs_{xkey}.png"
             _plot_one(
                 xvals, yvals, gauss_mask,
                 xlabel=xlabel, ylabel=ylabel,
-                title=f"{tprefix} vs {xlabel.split(' [')[0].lower()}{ns}",
+                title=f"{tprefix} vs {tnoun}{ns}",
                 out_path=out_path, color=color, point_label=plabel,
             )
             written.append(out_path)
