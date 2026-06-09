@@ -68,9 +68,18 @@ def epoch_to_n_samplings(epochs, samplings_base: float, sum_generated: float,
 # -----------------------------------------------------------------------------
 # Plotting
 # -----------------------------------------------------------------------------
+# Relative ESS definition, shown as a text box on every plot.
+_RESS_FORMULA = r"$rESS = \dfrac{1}{N}\,\dfrac{\left(\sum w\right)^2}{\sum w^2}$"
+
+
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
-              color="C0", point_label="ESS (NF)"):
-    """Single ESS-vs-x plot: NF points as a line, Gaussian (epoch 0) as a star."""
+              color="#2563eb", point_label="NF checkpoints",
+              gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True):
+    """Single rESS-vs-x plot (log y by default).
+
+    NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
+    is a triangle, joined to the first NF checkpoint by a segment.
+    """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     gauss_mask = np.asarray(gauss_mask, dtype=bool)
@@ -78,27 +87,40 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
     # sort the NF points by x for a clean connecting line
     order = np.argsort(x[nf_mask]) if nf_mask.any() else np.array([], dtype=int)
+    xs = x[nf_mask][order] if nf_mask.any() else np.array([])
+    ys = y[nf_mask][order] if nf_mask.any() else np.array([])
 
-    fig, ax = plt.subplots(figsize=(8.0, 5.5))
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
     if nf_mask.any():
-        xs = x[nf_mask][order]
-        ys = y[nf_mask][order]
         ax.plot(xs, ys, marker="o", markersize=6, linewidth=1.8,
                 color=color, label=point_label, zorder=3)
 
     if gauss_mask.any():
-        ax.scatter(x[gauss_mask], y[gauss_mask], marker="*", s=260,
-                   color=color, edgecolor="k", linewidth=0.6, zorder=5,
-                   label="Gaussian (epoch 0)")
+        gx = x[gauss_mask]
+        gy = y[gauss_mask]
+        # connect the Gaussian point to the first NF checkpoint
+        if nf_mask.any():
+            ax.plot([gx[0], xs[0]], [gy[0], ys[0]], color=color,
+                    linewidth=1.8, zorder=4)
+        ax.scatter(gx, gy, marker="^", s=160, color=color,
+                   edgecolor="k", linewidth=0.6, zorder=5, label=gauss_label)
 
+    if log_y:
+        ax.set_yscale("log")
     ax.set_xlabel(xlabel, fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=13)
-    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.4)
     ax.tick_params(axis="both", labelsize=10)
-    ax.set_ylim(bottom=0.0)
-    ax.legend(fontsize=10, framealpha=0.9)
+    ax.legend(fontsize=10, framealpha=0.9, loc="best")
+
+    if show_formula:
+        ax.text(0.97, 0.05, _RESS_FORMULA, transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=13,
+                bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                          alpha=0.8, edgecolor="gray"))
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -131,12 +153,13 @@ def make_ess_plots(results: dict, out_dir, num_samples=None) -> list[Path]:
     gauss_mask = epochs == 0
 
     ns = "" if num_samples is None else f" ({int(num_samples)} samples)"
-    ylabel = "Effective sample size (fraction)"
+    ylabel = "rESS (log scale)"
 
     # (suffix, y, color, point_label, title_prefix)
     ess_variants = [
-        ("", ess, "C0", "ESS (NF)", "Effective sample size"),
-        ("_filtered", essf, "C1", "ESS filtered (NF)", "Effective sample size (filtered)"),
+        ("", ess, "#2563eb", "NF checkpoints", "Relative effective sample size"),
+        ("_filtered", essf, "#ea580c", "NF checkpoints (filtered)",
+         "Relative effective sample size (filtered)"),
     ]
     # (key, x, xlabel, title_noun) -- only included when x is valid
     x_variants = [("epoch", epochs, "Epoch", "epoch")]
