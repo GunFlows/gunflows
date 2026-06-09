@@ -240,8 +240,10 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                               alpha=0.8, edgecolor="gray"))
 
         # In paper style, force explicit sizes after layout (paper convention).
+        # Tick labels a touch smaller than the default (label-2) so dense log
+        # y-axes (e.g. 4..100) don't crowd.
         if paper_style:
-            _ax_fontsize(ax, label_fontsize)
+            _ax_fontsize(ax, label_fontsize, tick_fs=label_fontsize - 4)
 
         fig.tight_layout()
         if paper_style:
