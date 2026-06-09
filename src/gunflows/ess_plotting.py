@@ -148,12 +148,20 @@ def epoch_to_n_samplings(epochs, samplings_base: float, sum_generated: float,
 _RESS_FORMULA = r"$rESS = \dfrac{1}{N}\,\dfrac{\left(\sum w\right)^2}{\sum w^2}$"
 
 
+def _fmt_millions(v) -> str:
+    """Format a count in millions, e.g. 2.5e6 -> '2.5M'."""
+    return f"{float(v) / 1e6:.3g}M"
+
+
+_MILLIONS_FMT = FuncFormatter(lambda v, _: _fmt_millions(v))
+
+
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", gauss_color=None, point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
               y_percent=False, log_x=False, show_title=True, label_fontsize=12,
               paper_style=False, usetex=None, secondary_xaxes=None,
-              x_minor_ticks=False):
+              x_minor_ticks=False, x_major_formatter=None):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
@@ -233,6 +241,10 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                 ax.xaxis.set_major_locator(FixedLocator(ticks))
                 ax.xaxis.set_minor_locator(NullLocator())
                 ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.2g}"))
+        # Optional custom primary-x formatter (e.g. millions for #LH-samplings);
+        # applied last so it overrides the defaults above.
+        if x_major_formatter is not None:
+            ax.xaxis.set_major_formatter(x_major_formatter)
         # With usetex, a bare '%' starts a LaTeX comment and eats the rest of the
         # string -> escape it.
         def _esc(s):
@@ -274,11 +286,14 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
             secax = ax.secondary_xaxis(spec.get("location", 1.0),
                                        functions=(spec["forward"], spec["inverse"]))
             secax.set_xlabel(_esc(spec["label"]), fontsize=label_fontsize)
+            _sfmt = spec.get("formatter")  # callable(v)->str, optional
             if log_x and _log_ticks is not None:
                 vals = np.asarray(spec["forward"](_log_ticks), dtype=float)
                 secax.set_xticks(vals)
-                secax.set_xticklabels([f"{v:.3g}" for v in vals])
+                secax.set_xticklabels([(_sfmt(v) if _sfmt else f"{v:.3g}") for v in vals])
                 secax.xaxis.set_minor_locator(NullLocator())
+            elif _sfmt is not None:
+                secax.xaxis.set_major_formatter(FuncFormatter(lambda v, _, f=_sfmt: f(v)))
             secax_list.append(secax)
 
         # In paper style, force explicit sizes after layout (paper convention).
@@ -355,18 +370,19 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
         ("_filtered", essf, nf_color_f, "NF checkpoints (filtered)",
          "Relative effective sample size (filtered)"),
     ]
-    # (key, x, xlabel, title_noun) -- only included when x is valid
-    x_variants = [("epoch", epochs, "Epoch", "epoch")]
+    # (key, x, xlabel, title_noun, x_formatter) -- only included when x is valid
+    x_variants = [("epoch", epochs, "Epoch", "epoch", None)]
     if time_hours is not None and time_hours.size == epochs.size and np.isfinite(time_hours).any():
-        x_variants.append(("time", time_hours, "Training time [hours]", "training time"))
+        x_variants.append(("time", time_hours, "Training time [hours]", "training time", None))
     if n_samp is not None and n_samp.size == epochs.size and np.isfinite(n_samp).any():
-        x_variants.append(("samplings", n_samp, "Number of LH samplings", "number of LH samplings"))
+        x_variants.append(("samplings", n_samp, "Number of LH samplings",
+                           "number of LH samplings", _MILLIONS_FMT))
 
     written: list[Path] = []
     for suffix, yvals, color, plabel, tprefix in ess_variants:
         if yvals.size != epochs.size:
             continue
-        for xkey, xvals, xlabel, tnoun in x_variants:
+        for xkey, xvals, xlabel, tnoun, xfmt in x_variants:
             # linear-x, plus an optional log-x ("_loglog") counterpart
             modes = [("", False)]
             if also_loglog:
@@ -382,6 +398,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                     y_percent=y_percent, log_x=log_x,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
+                    x_major_formatter=xfmt,
                 )
                 written.append(out_path)
 
@@ -408,7 +425,8 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
         fs, isf = _mk(a_s, b_s)
         sec_specs = [
             {"label": "Training time [hours]", "forward": ft, "inverse": it, "location": 1.0},
-            {"label": "Number of LH samplings", "forward": fs, "inverse": isf, "location": 1.22},
+            {"label": "Number of LH samplings", "forward": fs, "inverse": isf,
+             "location": 1.22, "formatter": _fmt_millions},
         ]
 
         for suffix, yvals, color, plabel, tprefix in ess_variants:
