@@ -23,7 +23,7 @@ import glob
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, FixedLocator, NullLocator
 
 
 # -----------------------------------------------------------------------------
@@ -212,6 +212,16 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                 ax.yaxis.set_minor_formatter(plain)
         if log_x:
             ax.set_xscale("log")
+            # When the x range spans less than a decade (e.g. #LH-samplings,
+            # 2.5-3.3M), matplotlib labels every sub-decade tick and they
+            # overlap -> use a handful of evenly log-spaced ticks instead.
+            xpos = x[pos]
+            if xpos.size and np.isfinite(xpos).all() and xpos.min() > 0 \
+                    and (xpos.max() / xpos.min()) < 10.0:
+                ticks = np.geomspace(xpos.min(), xpos.max(), 5)
+                ax.xaxis.set_major_locator(FixedLocator(ticks))
+                ax.xaxis.set_minor_locator(NullLocator())
+                ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.2g}"))
         ax.set_xlabel(xlabel, fontsize=label_fontsize)
         ax.set_ylabel(ylabel, fontsize=label_fontsize)
         if show_title:
@@ -278,10 +288,10 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
     # when paper_style, else the previous scheme.
     if paper_style:
         nf_color, nf_color_f = PAPER_COLORS["NF"], PAPER_COLORS["MCMC"]
-        gauss_color = PAPER_COLORS["Gaussian"]
     else:
         nf_color, nf_color_f = "#2563eb", "#ea580c"
-        gauss_color = None  # same as NF color
+    # Gaussian drawn in the same color as its NF curve (per-variant).
+    gauss_color = None  # None -> _plot_one uses the NF color
     # (suffix, y, nf_color, point_label, title_prefix)
     ess_variants = [
         ("", ess, nf_color, "NF checkpoints", "Relative effective sample size"),
