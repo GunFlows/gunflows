@@ -23,7 +23,8 @@ import glob
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter, FixedLocator, NullLocator
+from matplotlib.ticker import (FuncFormatter, FixedLocator, NullLocator,
+                               NullFormatter, LogLocator, MaxNLocator)
 
 
 # -----------------------------------------------------------------------------
@@ -151,7 +152,8 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", gauss_color=None, point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
               y_percent=False, log_x=False, show_title=True, label_fontsize=12,
-              paper_style=False, usetex=None):
+              paper_style=False, usetex=None, secondary_xaxes=None,
+              x_minor_ticks=False):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
@@ -162,6 +164,10 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
     Gaussian at epoch/time 0) are dropped since they cannot sit on a log axis.
     If ``paper_style`` is True the figure is rendered with make_paper_plots.py
     rcParams (serif/CM fonts, in-ticks, ...) via a local rc_context.
+    ``secondary_xaxes``: optional list of dicts, each
+    {"label", "forward", "inverse", "location"}, drawn as extra x-axes on top
+    (e.g. show epoch, time and #LH-samplings together).
+    ``x_minor_ticks``: show minor tick marks on the x-axis (and secondaries).
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -248,6 +254,33 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                     bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
                               alpha=0.8, edgecolor="gray"))
 
+        # Minor tick MARKS (no labels) on the primary x-axis, e.g. for log-log.
+        if x_minor_ticks and log_x:
+            ax.xaxis.set_minor_locator(
+                LogLocator(base=10, subs=tuple(np.arange(2, 10) * 0.1)))
+            ax.xaxis.set_minor_formatter(NullFormatter())
+            ax.tick_params(axis="x", which="minor", bottom=True, top=False,
+                           length=4, width=1.0)
+
+        # Extra x-axes (e.g. epoch / time / #LH-samplings shown together).
+        secax_list = []
+        # On a log primary, a linear secondary quantity bunches up where the
+        # log axis compresses. Drive the secondary tick POSITIONS from
+        # log-spaced primary values so they stay evenly spread and aligned.
+        _xpos = x[pos]
+        _log_ticks = (np.geomspace(_xpos.min(), _xpos.max(), 5)
+                      if (log_x and _xpos.size and _xpos.min() > 0) else None)
+        for spec in (secondary_xaxes or []):
+            secax = ax.secondary_xaxis(spec.get("location", 1.0),
+                                       functions=(spec["forward"], spec["inverse"]))
+            secax.set_xlabel(_esc(spec["label"]), fontsize=label_fontsize)
+            if log_x and _log_ticks is not None:
+                vals = np.asarray(spec["forward"](_log_ticks), dtype=float)
+                secax.set_xticks(vals)
+                secax.set_xticklabels([f"{v:.3g}" for v in vals])
+                secax.xaxis.set_minor_locator(NullLocator())
+            secax_list.append(secax)
+
         # In paper style, force explicit sizes after layout (paper convention).
         # Tick labels a touch smaller than the default (label-2) so dense log
         # y-axes (e.g. 4..100) don't crowd.
@@ -259,6 +292,9 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
             ax.tick_params(axis="both", which="minor", labelsize=tick_fs)
             for t in (ax.get_xticklabels(minor=True) + ax.get_yticklabels(minor=True)):
                 t.set_fontsize(tick_fs)
+            for secax in secax_list:
+                secax.xaxis.label.set_size(label_fontsize)
+                secax.tick_params(axis="x", labelsize=tick_fs)
 
         fig.tight_layout()
         if paper_style:
@@ -270,7 +306,8 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
 def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                    show_title=True, label_fontsize=12, also_loglog=False,
-                   paper_style=False, fmt="png", usetex=None) -> list[Path]:
+                   paper_style=False, fmt="png", usetex=None,
+                   also_combined=False) -> list[Path]:
     """Produce ESS plots from a results dict.
 
     results must contain "epochs", "ess", "ess_filtered"; optionally
@@ -345,6 +382,50 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                     y_percent=y_percent, log_x=log_x,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
+                )
+                written.append(out_path)
+
+    # ---- combined plot: epoch + time + #LH-samplings on stacked x-axes -------
+    # Requires both time and samplings, which are affine in epoch -> use linear
+    # fits to build the secondary-axis transforms.
+    have_combo = (
+        also_combined
+        and time_hours is not None and time_hours.size == epochs.size
+        and n_samp is not None and n_samp.size == epochs.size
+        and epochs.size >= 2
+    )
+    if have_combo:
+        a_t, b_t = np.polyfit(epochs, time_hours, 1)
+        a_s, b_s = np.polyfit(epochs, n_samp, 1)
+
+        def _mk(a, b):
+            fwd = (lambda e, a=a, b=b: a * np.asarray(e, dtype=float) + b)
+            inv = (lambda v, a=a, b=b: (np.asarray(v, dtype=float) - b) / a
+                   if a != 0 else np.zeros_like(np.asarray(v, dtype=float)))
+            return fwd, inv
+
+        ft, it = _mk(a_t, b_t)
+        fs, isf = _mk(a_s, b_s)
+        sec_specs = [
+            {"label": "Training time [hours]", "forward": ft, "inverse": it, "location": 1.0},
+            {"label": "Number of LH samplings", "forward": fs, "inverse": isf, "location": 1.22},
+        ]
+
+        for suffix, yvals, color, plabel, tprefix in ess_variants:
+            if yvals.size != epochs.size:
+                continue
+            for msuffix, log_x in ([("", False), ("_loglog", True)] if also_loglog else [("", False)]):
+                out_path = out_dir / f"ess{suffix}_combined{msuffix}.{fmt}"
+                _plot_one(
+                    epochs, yvals, gauss_mask,
+                    xlabel="Epoch", ylabel=ylabel,
+                    title=f"{tprefix}{ns}",
+                    out_path=out_path, color=color, gauss_color=gauss_color,
+                    point_label=plabel,
+                    y_percent=y_percent, log_x=log_x,
+                    show_title=show_title, label_fontsize=label_fontsize,
+                    paper_style=paper_style, usetex=usetex,
+                    secondary_xaxes=sec_specs, x_minor_ticks=log_x,
                 )
                 written.append(out_path)
     return written
