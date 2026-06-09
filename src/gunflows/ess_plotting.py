@@ -447,7 +447,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
             {"label": "Training time", "forward": ft, "inverse": it,
              "location": 1.0, "formatter": _fmt_hm},
             {"label": "Number of LH samplings", "forward": fs, "inverse": isf,
-             "location": 1.32, "formatter": _fmt_millions},
+             "location": 1.17, "formatter": _fmt_millions},
         ]
 
         for suffix, yvals, color, plabel, tprefix in ess_variants:
