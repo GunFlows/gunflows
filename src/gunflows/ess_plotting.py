@@ -119,6 +119,14 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
         ax.scatter(gx, gy, marker="^", s=160, color=color,
                    edgecolor="k", linewidth=0.6, zorder=5, label=gauss_label)
 
+    # Gaussian points that cannot sit on a log x-axis (x<=0): show their rESS as
+    # a horizontal dashed reference line instead of a (missing) point.
+    if log_x:
+        dropped = gauss_mask & ~pos
+        for k, gy_val in enumerate(y[dropped]):
+            ax.axhline(gy_val, color=color, linestyle="--", linewidth=1.5,
+                       zorder=2, label=(gauss_label if k == 0 else None))
+
     if log_y:
         ax.set_yscale("log")
         if y_percent:
