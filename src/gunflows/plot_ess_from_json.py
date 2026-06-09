@@ -74,7 +74,8 @@ def main(cfg: DictConfig) -> None:
         results["n_samplings"] = epoch_to_n_samplings(
             epochs, samplings_base, sum_generated, samplings_ref_epoch).tolist()
 
-    written = make_ess_plots(results, out_dir, num_samples=num_samples)
+    y_percent = bool(getattr(cfg, "y_percent", True))
+    written = make_ess_plots(results, out_dir, num_samples=num_samples, y_percent=y_percent)
     print(f"Wrote {len(written)} ESS plots to {out_dir}:", flush=True)
     for p in written:
         print(f"  {Path(p).name}", flush=True)

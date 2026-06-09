@@ -74,14 +74,19 @@ _RESS_FORMULA = r"$rESS = \dfrac{1}{N}\,\dfrac{\left(\sum w\right)^2}{\sum w^2}$
 
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", point_label="NF checkpoints",
-              gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True):
+              gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
+              y_percent=False):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
     is a triangle, joined to the first NF checkpoint by a segment.
+
+    If ``y_percent`` is True the y values are shown as percentages (x100).
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
+    if y_percent:
+        y = y * 100.0
     gauss_mask = np.asarray(gauss_mask, dtype=bool)
     nf_mask = ~gauss_mask
 
@@ -126,7 +131,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
     plt.close(fig)
 
 
-def make_ess_plots(results: dict, out_dir, num_samples=None) -> list[Path]:
+def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False) -> list[Path]:
     """Produce up to 6 ESS plots from a results dict.
 
     results must contain "epochs", "ess", "ess_filtered"; optionally
@@ -153,7 +158,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None) -> list[Path]:
     gauss_mask = epochs == 0
 
     ns = "" if num_samples is None else f" ({int(num_samples)} samples)"
-    ylabel = "rESS (log scale)"
+    ylabel = "rESS [%] (log scale)" if y_percent else "rESS (log scale)"
 
     # (suffix, y, color, point_label, title_prefix)
     ess_variants = [
@@ -179,6 +184,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None) -> list[Path]:
                 xlabel=xlabel, ylabel=ylabel,
                 title=f"{tprefix} vs {tnoun}{ns}",
                 out_path=out_path, color=color, point_label=plabel,
+                y_percent=y_percent,
             )
             written.append(out_path)
     return written
