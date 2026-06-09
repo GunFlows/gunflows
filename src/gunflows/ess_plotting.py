@@ -23,6 +23,7 @@ import glob
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 
 
 # -----------------------------------------------------------------------------
@@ -113,6 +114,11 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
     if log_y:
         ax.set_yscale("log")
+        if y_percent:
+            # plain (non-exponential) tick labels on the log axis, e.g. 40, 60, 100
+            plain = FuncFormatter(lambda v, _: f"{v:g}")
+            ax.yaxis.set_major_formatter(plain)
+            ax.yaxis.set_minor_formatter(plain)
     ax.set_xlabel(xlabel, fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=13)
