@@ -78,9 +78,12 @@ def main(cfg: DictConfig) -> None:
     show_title = bool(getattr(cfg, "show_title", False))
     label_fontsize = int(getattr(cfg, "label_fontsize", 16))
     also_loglog = bool(getattr(cfg, "also_loglog", True))
+    paper_style = bool(getattr(cfg, "paper_style", True))
+    fmt = str(getattr(cfg, "fmt", "png"))
     written = make_ess_plots(
         results, out_dir, num_samples=num_samples, y_percent=y_percent,
         show_title=show_title, label_fontsize=label_fontsize, also_loglog=also_loglog,
+        paper_style=paper_style, fmt=fmt,
     )
     print(f"Wrote {len(written)} ESS plots to {out_dir}:", flush=True)
     for p in written:

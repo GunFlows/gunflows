@@ -8,6 +8,8 @@ y_percent: true         # show rESS y-axis as a percentage (x100), keeping log s
 show_title: false        # draw the main title above each plot
 label_fontsize: 16       # font size for the x/y axis labels
 also_loglog: true        # also emit a log-x ("_loglog") version of every plot
+paper_style: true        # use make_paper_plots.py style (serif/CM fonts, in-ticks, palette)
+fmt: png                 # output image format/extension (e.g. png, pdf)
 
 # By default the time/samplings x-axes are taken straight from the json. Set
 # recompute_conversions=true to re-derive them from the stored epochs using the
