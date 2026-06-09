@@ -156,12 +156,27 @@ def _fmt_millions(v) -> str:
 _MILLIONS_FMT = FuncFormatter(lambda v, _: _fmt_millions(v))
 
 
+def _fmt_hm(v) -> str:
+    """Format decimal hours as hours/minutes, e.g. 1.67 -> '1h40m', 0.2 -> '12m'."""
+    total_min = int(round(float(v) * 60.0))
+    h, m = divmod(total_min, 60)
+    if h > 0 and m > 0:
+        return f"{h}h{m:02d}m"
+    if h > 0:
+        return f"{h}h"
+    return f"{m}m"
+
+
+_HM_FMT = FuncFormatter(lambda v, _: _fmt_hm(v))
+
+
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", gauss_color=None, point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
               y_percent=False, log_x=False, show_title=True, label_fontsize=12,
               paper_style=False, usetex=None, secondary_xaxes=None,
-              x_minor_ticks=False, x_major_formatter=None):
+              x_minor_ticks=False, x_major_formatter=None,
+              figsize=(8.0, 5.0), square_box=False):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
@@ -198,7 +213,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
     rc = _paper_rc(usetex=usetex) if paper_style else {}
     with plt.rc_context(rc=rc):
-        fig, ax = plt.subplots(figsize=(8.0, 5.0))
+        fig, ax = plt.subplots(figsize=figsize)
 
         if nf_sel.any():
             ax.plot(xs, ys, marker="o", markersize=6, linewidth=1.8,
@@ -311,6 +326,10 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                 secax.xaxis.label.set_size(label_fontsize)
                 secax.tick_params(axis="x", labelsize=tick_fs)
 
+        if square_box:
+            # Square data box (excluding the stacked top x-axes).
+            ax.set_box_aspect(1)
+
         fig.tight_layout()
         if paper_style:
             fig.savefig(out_path)  # dpi/bbox come from the paper rcParams
@@ -373,7 +392,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
     # (key, x, xlabel, title_noun, x_formatter) -- only included when x is valid
     x_variants = [("epoch", epochs, "Epoch", "epoch", None)]
     if time_hours is not None and time_hours.size == epochs.size and np.isfinite(time_hours).any():
-        x_variants.append(("time", time_hours, "Training time [hours]", "training time", None))
+        x_variants.append(("time", time_hours, "Training time", "training time", _HM_FMT))
     if n_samp is not None and n_samp.size == epochs.size and np.isfinite(n_samp).any():
         x_variants.append(("samplings", n_samp, "Number of LH samplings",
                            "number of LH samplings", _MILLIONS_FMT))
@@ -399,6 +418,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
                     x_major_formatter=xfmt,
+                    x_minor_ticks=(xkey == "time" and log_x),
                 )
                 written.append(out_path)
 
@@ -424,9 +444,10 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
         ft, it = _mk(a_t, b_t)
         fs, isf = _mk(a_s, b_s)
         sec_specs = [
-            {"label": "Training time [hours]", "forward": ft, "inverse": it, "location": 1.0},
+            {"label": "Training time", "forward": ft, "inverse": it,
+             "location": 1.0, "formatter": _fmt_hm},
             {"label": "Number of LH samplings", "forward": fs, "inverse": isf,
-             "location": 1.22, "formatter": _fmt_millions},
+             "location": 1.32, "formatter": _fmt_millions},
         ]
 
         for suffix, yvals, color, plabel, tprefix in ess_variants:
@@ -444,6 +465,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
                     secondary_xaxes=sec_specs, x_minor_ticks=log_x,
+                    figsize=(7.0, 8.0), square_box=True,
                 )
                 written.append(out_path)
     return written
