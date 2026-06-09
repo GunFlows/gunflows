@@ -243,7 +243,13 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
         # Tick labels a touch smaller than the default (label-2) so dense log
         # y-axes (e.g. 4..100) don't crowd.
         if paper_style:
-            _ax_fontsize(ax, label_fontsize, tick_fs=label_fontsize - 4)
+            tick_fs = label_fontsize - 4
+            _ax_fontsize(ax, label_fontsize, tick_fs=tick_fs)
+            # On log axes the crowded labels (e.g. 4,5,6,...) are MINOR ticks,
+            # which _ax_fontsize/tick_params(which="major") don't touch.
+            ax.tick_params(axis="both", which="minor", labelsize=tick_fs)
+            for t in (ax.get_xticklabels(minor=True) + ax.get_yticklabels(minor=True)):
+                t.set_fontsize(tick_fs)
 
         fig.tight_layout()
         if paper_style:
