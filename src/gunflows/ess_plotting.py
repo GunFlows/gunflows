@@ -222,15 +222,19 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                 ax.xaxis.set_major_locator(FixedLocator(ticks))
                 ax.xaxis.set_minor_locator(NullLocator())
                 ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.2g}"))
-        ax.set_xlabel(xlabel, fontsize=label_fontsize)
-        ax.set_ylabel(ylabel, fontsize=label_fontsize)
+        # With usetex, a bare '%' starts a LaTeX comment and eats the rest of the
+        # string -> escape it.
+        def _esc(s):
+            return s.replace("%", r"\%") if plt.rcParams.get("text.usetex") else s
+        ax.set_xlabel(_esc(xlabel), fontsize=label_fontsize)
+        ax.set_ylabel(_esc(ylabel), fontsize=label_fontsize)
         if show_title:
-            ax.set_title(title, fontsize=13)
+            ax.set_title(_esc(title), fontsize=13)
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.4)
         ax.tick_params(axis="both", labelsize=max(10, label_fontsize - 2))
         # Legend pinned to the middle height on the right edge. This also keeps
         # it clear of the rESS formula box (anchored at the lower-right corner).
-        ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.5),
+        ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.65),
                   framealpha=(None if paper_style else 0.9))
 
         if show_formula:
