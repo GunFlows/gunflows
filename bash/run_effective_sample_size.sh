@@ -19,6 +19,9 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
    
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 MATHIAS_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
+# GUNDAM install lives in HOST_REPO/software/install/gundam, but setup_nosubshell.sh
+# expects it at /workspace/gunflows_dev/... -> bind the repo there so `import GUNDAM` works.
+GUNDAM_DEV="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
 SIF="/home/shares/sanchezf/gundam_n_flow/GuNFlows/env/containers/ml_image2.sif"
@@ -38,6 +41,7 @@ srun --ntasks=1 apptainer exec --nv \
   --env OMP_NUM_THREADS="${OMP_NUM_THREADS}" \
   --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
   --bind "${HOST_REPO}:${IN_CONTAINER_WORKDIR}" \
+  --bind "${GUNDAM_DEV}:/workspace/gunflows_dev" \
   --bind "${MATHIAS_REPO}:/workspace/work/GuNFlows_M" \
   --bind "${HOST_CONFIG}:/workspace/config" \
   --bind "${HOST_DATA}:/workspace/data" \
