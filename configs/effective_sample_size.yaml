@@ -8,8 +8,25 @@ batch_size: 4098
 bins: 200
 plot_workers: 0
 llh_workers: 10 # if 0, do not use multiprocessing for llh computation
-n_checkpoints: 10 # number of NF checkpoints to evaluate (roughly equally spaced)
-max_epoch: null # if set (real epochs, e.g. 20000), ignore later checkpoints and pick n_checkpoints within [0, max_epoch]
+
+# --- Checkpoint selection -----------------------------------------------------
+# custom_epochs: explicit list of REAL epoch numbers to evaluate (epoch 0 is the
+# Gaussian baseline, always included). Checkpoints are sampler_epoch<EPOCH>.pt,
+# e.g. epoch 500 -> sampler_epoch00500.pt. Set to null (or remove) to fall back
+# to the equally-spaced n_checkpoints selection below.
+custom_epochs: [0, 500, 1000, 2000, 4000, 8000, 16000, 32000]
+n_checkpoints: 10 # used only when custom_epochs is null: number of NF checkpoints (roughly equally spaced)
+max_epoch: null # used only when custom_epochs is null: if set (real epochs), ignore later checkpoints and pick n_checkpoints within [0, max_epoch]
+
+# --- Epoch -> x-axis linear conversions (y = A*epoch + b) ---------------------
+# Wall-clock time [hours]: A = time_ref_hours / time_ref_epochs, b = 0.
+time_ref_epochs: 56000
+time_ref_hours: 23.333333333  # 23 h 20 min
+# Number of LH samplings: b = samplings_base (samples present at epoch 0),
+# A = (sum of "generated" over samplings_progress_glob) / samplings_ref_epoch.
+samplings_base: 2500000
+samplings_progress_glob: ${training_folder}/generated_samples/progress_*.json
+samplings_ref_epoch: null  # null -> use the maximum available checkpoint epoch as the training span
 
 # Marginal-evolution scan: one figure per index, one subpanel per checkpoint epoch.
 # Indices span LIN (0-59), DET (60-99 -- the band with the right-shift bias),
