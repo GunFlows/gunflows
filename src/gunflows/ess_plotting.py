@@ -228,11 +228,10 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
             ax.set_title(title, fontsize=13)
         ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.4)
         ax.tick_params(axis="both", labelsize=max(10, label_fontsize - 2))
-        # The rESS formula box is anchored at the lower-right corner; when it is
-        # shown, place the legend on the mid-right band (above the box, below the
-        # top plateau) so it never overlaps the box regardless of the data.
-        legend_loc = "center right" if show_formula else "best"
-        ax.legend(loc=legend_loc, framealpha=(None if paper_style else 0.9))
+        # Legend pinned to the middle height on the right edge. This also keeps
+        # it clear of the rESS formula box (anchored at the lower-right corner).
+        ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.5),
+                  framealpha=(None if paper_style else 0.9))
 
         if show_formula:
             ax.text(0.97, 0.05, _RESS_FORMULA, transform=ax.transAxes,
