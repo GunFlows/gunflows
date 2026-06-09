@@ -33,19 +33,24 @@ from matplotlib.ticker import FuncFormatter, FixedLocator, NullLocator
 PAPER_COLORS = {"NF": "#1f77b4", "Gaussian": "#d62728", "MCMC": "#2ca02c"}
 
 
-def _paper_rc() -> dict:
+def _paper_rc(usetex=None) -> dict:
     """rcParams matching make_paper_plots.py (serif/CM, in-ticks, etc.).
 
     Returns a dict to be used with ``plt.rc_context`` so the global state (and
     the main effective_sample_size.py output) is never mutated.
+
+    ``usetex``: None -> auto-detect a ``latex`` binary; True/False -> force.
+    Forcing False (the replot default) makes output identical on every machine
+    and avoids LaTeX-only quirks (e.g. '%' starting a comment).
     """
-    usetex = False
-    try:
-        import subprocess
-        subprocess.run(["latex", "--version"], capture_output=True, check=True)
-        usetex = True
-    except Exception:
-        pass
+    if usetex is None:
+        usetex = False
+        try:
+            import subprocess
+            subprocess.run(["latex", "--version"], capture_output=True, check=True)
+            usetex = True
+        except Exception:
+            pass
     rc = {
         "text.usetex":          usetex,
         "mathtext.fontset":     "cm",
@@ -146,7 +151,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", gauss_color=None, point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
               y_percent=False, log_x=False, show_title=True, label_fontsize=12,
-              paper_style=False):
+              paper_style=False, usetex=None):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
@@ -177,7 +182,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
     xs = x[nf_sel][order] if nf_sel.any() else np.array([])
     ys = y[nf_sel][order] if nf_sel.any() else np.array([])
 
-    rc = _paper_rc() if paper_style else {}
+    rc = _paper_rc(usetex=usetex) if paper_style else {}
     with plt.rc_context(rc=rc):
         fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
@@ -265,7 +270,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
 def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                    show_title=True, label_fontsize=12, also_loglog=False,
-                   paper_style=False, fmt="png") -> list[Path]:
+                   paper_style=False, fmt="png", usetex=None) -> list[Path]:
     """Produce ESS plots from a results dict.
 
     results must contain "epochs", "ess", "ess_filtered"; optionally
@@ -339,7 +344,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                     point_label=plabel,
                     y_percent=y_percent, log_x=log_x,
                     show_title=show_title, label_fontsize=label_fontsize,
-                    paper_style=paper_style,
+                    paper_style=paper_style, usetex=usetex,
                 )
                 written.append(out_path)
     return written

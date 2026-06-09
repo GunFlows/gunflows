@@ -80,10 +80,17 @@ def main(cfg: DictConfig) -> None:
     also_loglog = bool(getattr(cfg, "also_loglog", True))
     paper_style = bool(getattr(cfg, "paper_style", True))
     fmt = str(getattr(cfg, "fmt", "png"))
+    # usetex: "auto" -> detect latex; true/false -> force. Default false so the
+    # output is identical on every machine (and '%' needs no special handling).
+    _usetex_cfg = getattr(cfg, "usetex", False)
+    if isinstance(_usetex_cfg, str) and _usetex_cfg.lower() == "auto":
+        usetex = None
+    else:
+        usetex = bool(_usetex_cfg)
     written = make_ess_plots(
         results, out_dir, num_samples=num_samples, y_percent=y_percent,
         show_title=show_title, label_fontsize=label_fontsize, also_loglog=also_loglog,
-        paper_style=paper_style, fmt=fmt,
+        paper_style=paper_style, fmt=fmt, usetex=usetex,
     )
     print(f"Wrote {len(written)} ESS plots to {out_dir}:", flush=True)
     for p in written:
