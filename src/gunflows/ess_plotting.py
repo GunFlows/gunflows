@@ -76,13 +76,15 @@ _RESS_FORMULA = r"$rESS = \dfrac{1}{N}\,\dfrac{\left(\sum w\right)^2}{\sum w^2}$
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
-              y_percent=False):
+              y_percent=False, log_x=False, show_title=True, label_fontsize=12):
     """Single rESS-vs-x plot (log y by default).
 
     NF checkpoints are drawn as a connected line; the Gaussian (epoch 0) point
     is a triangle, joined to the first NF checkpoint by a segment.
 
     If ``y_percent`` is True the y values are shown as percentages (x100).
+    If ``log_x`` is True the x axis is logarithmic; points with x<=0 (e.g. the
+    Gaussian at epoch/time 0) are dropped since they cannot sit on a log axis.
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
@@ -91,22 +93,27 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
     gauss_mask = np.asarray(gauss_mask, dtype=bool)
     nf_mask = ~gauss_mask
 
+    # On a log x-axis, x<=0 cannot be shown -> drop those points.
+    pos = x > 0 if log_x else np.ones_like(x, dtype=bool)
+    nf_sel = nf_mask & pos
+    gauss_sel = gauss_mask & pos
+
     # sort the NF points by x for a clean connecting line
-    order = np.argsort(x[nf_mask]) if nf_mask.any() else np.array([], dtype=int)
-    xs = x[nf_mask][order] if nf_mask.any() else np.array([])
-    ys = y[nf_mask][order] if nf_mask.any() else np.array([])
+    order = np.argsort(x[nf_sel]) if nf_sel.any() else np.array([], dtype=int)
+    xs = x[nf_sel][order] if nf_sel.any() else np.array([])
+    ys = y[nf_sel][order] if nf_sel.any() else np.array([])
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
 
-    if nf_mask.any():
+    if nf_sel.any():
         ax.plot(xs, ys, marker="o", markersize=6, linewidth=1.8,
                 color=color, label=point_label, zorder=3)
 
-    if gauss_mask.any():
-        gx = x[gauss_mask]
-        gy = y[gauss_mask]
+    if gauss_sel.any():
+        gx = x[gauss_sel]
+        gy = y[gauss_sel]
         # connect the Gaussian point to the first NF checkpoint
-        if nf_mask.any():
+        if nf_sel.any():
             ax.plot([gx[0], xs[0]], [gy[0], ys[0]], color=color,
                     linewidth=1.8, zorder=4)
         ax.scatter(gx, gy, marker="^", s=160, color=color,
@@ -119,12 +126,15 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
             plain = FuncFormatter(lambda v, _: f"{v:g}")
             ax.yaxis.set_major_formatter(plain)
             ax.yaxis.set_minor_formatter(plain)
-    ax.set_xlabel(xlabel, fontsize=12)
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(title, fontsize=13)
+    if log_x:
+        ax.set_xscale("log")
+    ax.set_xlabel(xlabel, fontsize=label_fontsize)
+    ax.set_ylabel(ylabel, fontsize=label_fontsize)
+    if show_title:
+        ax.set_title(title, fontsize=13)
     ax.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.4)
-    ax.tick_params(axis="both", labelsize=10)
-    ax.legend(fontsize=10, framealpha=0.9, loc="best")
+    ax.tick_params(axis="both", labelsize=max(10, label_fontsize - 2))
+    ax.legend(fontsize=11, framealpha=0.9, loc="best")
 
     if show_formula:
         ax.text(0.97, 0.05, _RESS_FORMULA, transform=ax.transAxes,
@@ -137,13 +147,17 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
     plt.close(fig)
 
 
-def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False) -> list[Path]:
-    """Produce up to 6 ESS plots from a results dict.
+def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
+                   show_title=True, label_fontsize=12, also_loglog=False) -> list[Path]:
+    """Produce ESS plots from a results dict.
 
     results must contain "epochs", "ess", "ess_filtered"; optionally
     "time_hours" and "n_samplings" (same length as "epochs"). For each of the
     two ESS variants (non-filtered / filtered) up to three x-axes are drawn
     (epoch, time, LH samplings) when the corresponding array is available.
+
+    If ``also_loglog`` is True, an additional log-x ("_loglog") version of every
+    plot is produced (the Gaussian point at x=0 is dropped on those).
 
     Returns the list of written file paths.
     """
@@ -184,13 +198,19 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False) ->
         if yvals.size != epochs.size:
             continue
         for xkey, xvals, xlabel, tnoun in x_variants:
-            out_path = out_dir / f"ess{suffix}_vs_{xkey}.png"
-            _plot_one(
-                xvals, yvals, gauss_mask,
-                xlabel=xlabel, ylabel=ylabel,
-                title=f"{tprefix} vs {tnoun}{ns}",
-                out_path=out_path, color=color, point_label=plabel,
-                y_percent=y_percent,
-            )
-            written.append(out_path)
+            # linear-x, plus an optional log-x ("_loglog") counterpart
+            modes = [("", False)]
+            if also_loglog:
+                modes.append(("_loglog", True))
+            for msuffix, log_x in modes:
+                out_path = out_dir / f"ess{suffix}_vs_{xkey}{msuffix}.png"
+                _plot_one(
+                    xvals, yvals, gauss_mask,
+                    xlabel=xlabel, ylabel=ylabel,
+                    title=f"{tprefix} vs {tnoun}{ns}",
+                    out_path=out_path, color=color, point_label=plabel,
+                    y_percent=y_percent, log_x=log_x,
+                    show_title=show_title, label_fontsize=label_fontsize,
+                )
+                written.append(out_path)
     return written

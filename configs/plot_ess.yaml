@@ -5,6 +5,9 @@ json_path: ???          # path to ess_vs_epoch.json
 out_dir: null           # null -> directory containing json_path
 num_samples: null       # null -> read from json ("num_samples"), used only for plot titles
 y_percent: true         # show rESS y-axis as a percentage (x100), keeping log scale
+show_title: false        # draw the main title above each plot
+label_fontsize: 16       # font size for the x/y axis labels
+also_loglog: true        # also emit a log-x ("_loglog") version of every plot
 
 # By default the time/samplings x-axes are taken straight from the json. Set
 # recompute_conversions=true to re-derive them from the stored epochs using the
