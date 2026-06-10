@@ -30,6 +30,12 @@ if [ "$#" -lt 1 ]; then
   exit 1
 fi
 JSON="$1"; shift
+# Multiple comma-separated files -> Hydra list syntax json_path=[a,b].
+if [[ "$JSON" == *,* ]]; then
+  JSON_ARG="json_path=[${JSON}]"
+else
+  JSON_ARG="json_path=${JSON}"
+fi
 
 module load apptainer 2>/dev/null || true
 
@@ -52,4 +58,4 @@ apptainer exec \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' >/dev/null 2>&1 && \
                      HYDRA_FULL_ERROR=1 python -s -m gunflows.plot_ess_from_json \
-                     json_path=${JSON} ${EXTRA_ARGS}"
+                     ${JSON_ARG} ${EXTRA_ARGS}"
