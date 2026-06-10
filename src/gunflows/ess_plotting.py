@@ -230,12 +230,17 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
                        edgecolor="k", linewidth=0.6, zorder=5, label=gauss_label)
 
         # Gaussian points that cannot sit on a log x-axis (x<=0): show their rESS
-        # as a horizontal dashed reference line instead of a (missing) point.
+        # as a triangle pinned to the LEFT axis (blended transform: x in axes
+        # fraction, y in data) at the Gaussian level -- a discrete reference, not
+        # a full-width line.
         if log_x:
             dropped = gauss_mask & ~pos
+            trans = ax.get_yaxis_transform()       # x = axes-fraction, y = data
             for k, gy_val in enumerate(y[dropped]):
-                ax.axhline(gy_val, color=gauss_color, linestyle="--", linewidth=1.5,
-                           zorder=2, label=(gauss_label if k == 0 else None))
+                ax.scatter([0.0], [gy_val], transform=trans, marker="^", s=160,
+                           color=gauss_color, edgecolor="k", linewidth=0.6,
+                           zorder=6, clip_on=False,
+                           label=(gauss_label if k == 0 else None))
 
         if log_y:
             ax.set_yscale("log")
