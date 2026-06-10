@@ -792,6 +792,34 @@ def main(cfg: DictConfig) -> None:
 
 
 
+    # If no checkpoints were evaluated (e.g. custom_epochs=[0], Gaussian only),
+    # the in-loop save never ran -> write the json + plots once here.
+    if not selected and epoch_list:
+        _time_hours = epoch_to_time_hours(
+            epoch_list, time_ref_epochs, time_ref_hours).tolist()
+        _n_samplings = epoch_to_n_samplings(
+            epoch_list, samplings_base, sum_generated, samplings_ref_epoch).tolist()
+        results = {
+            "epochs": epoch_list,
+            "ess": ess_list,
+            "ess_filtered": ess_filtered_list,
+            "time_hours": _time_hours,
+            "n_samplings": _n_samplings,
+            "num_samples": int(num_samples),
+            "conversion": {
+                "time_ref_epochs": time_ref_epochs,
+                "time_ref_hours": time_ref_hours,
+                "samplings_base": samplings_base,
+                "samplings_ref_epoch": samplings_ref_epoch,
+                "sum_generated": sum_generated,
+            },
+        }
+        json_path = out_dir / "ess_vs_epoch.json"
+        with open(json_path, "w") as f:
+            json.dump(results, f, indent=4)
+        make_ess_plots(results, out_dir, num_samples=num_samples)
+        print(f"Saved Gaussian-only results to {json_path}", flush=True)
+
     if cfg.llh_workers > 0:
         pool.close()
         pool.join()
