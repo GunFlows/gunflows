@@ -12,6 +12,11 @@
 #    ./plot_ess.sh \
 #      /workspace/config/Config100p10_noDet/best_models_1day/top1/ess_5k/ess_vs_epoch.json
 #
+#  Multiple json files (epochs merged, FIRST file wins on duplicates) can be
+#  passed as one comma-separated argument (no spaces):
+#    ./plot_ess.sh /workspace/config/.../a/ess_vs_epoch.json,/workspace/config/.../b/ess_vs_epoch.json \
+#      out_dir=/workspace/config/.../combined
+#
 #  Optional overrides (forwarded to Hydra), e.g.:
 #    out_dir=/workspace/config/.../somewhere   fmt=pdf   usetex=true   label_fontsize=18
 #
