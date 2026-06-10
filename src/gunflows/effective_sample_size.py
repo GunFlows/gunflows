@@ -517,63 +517,69 @@ def main(cfg: DictConfig) -> None:
           f"(glob={_prog_glob}).", flush=True)
 
     # ── Gaussian approximation ESS (plotted at epoch 0) ──────────────────────
+    # Only evaluate the epoch-0 Gaussian baseline when custom_epochs is null
+    # (default behaviour) or when 0 is explicitly requested in custom_epochs.
     num_samples = int(cfg.num_samples)
     batch_size  = int(cfg.batch_size)
-    print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
-    _rng_g = np.random.default_rng(42)
-    _mu_g  = bestfit_parameter_values.copy()
-    _cov_g = postfit_covariance.copy()
-    _ndim  = len(_mu_g)
-    _L_g   = np.linalg.cholesky(_cov_g)
-    _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
-    _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
-    _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
+    include_gaussian = (custom_epochs is None) or (0 in custom_epochs)
+    if not include_gaussian:
+        print("Skipping Gaussian (epoch 0) ESS: custom_epochs given without 0.", flush=True)
+    if include_gaussian:
+        print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
+        _rng_g = np.random.default_rng(42)
+        _mu_g  = bestfit_parameter_values.copy()
+        _cov_g = postfit_covariance.copy()
+        _ndim  = len(_mu_g)
+        _L_g   = np.linalg.cholesky(_cov_g)
+        _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
+        _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
+        _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
 
-    _g_samples: list[np.ndarray] = []
-    _g_logqs:   list[float]      = []
-    while len(_g_samples) < num_samples:
-        take = min(batch_size, (num_samples - len(_g_samples)) * 3)
-        _z = _rng_g.standard_normal((take, _ndim))
-        _xs = _mu_g + _z @ _L_g.T
-        for _x in _xs:
-            if not check_parameters_limits(_x, parameter_limits):
-                continue
-            _diff = _x - _mu_g
-            _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
-            _g_samples.append(_x.copy())
-            if len(_g_samples) >= num_samples:
-                break
+        _g_samples: list[np.ndarray] = []
+        _g_logqs:   list[float]      = []
+        while len(_g_samples) < num_samples:
+            take = min(batch_size, (num_samples - len(_g_samples)) * 3)
+            _z = _rng_g.standard_normal((take, _ndim))
+            _xs = _mu_g + _z @ _L_g.T
+            for _x in _xs:
+                if not check_parameters_limits(_x, parameter_limits):
+                    continue
+                _diff = _x - _mu_g
+                _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
+                _g_samples.append(_x.copy())
+                if len(_g_samples) >= num_samples:
+                    break
 
-    _g_samples = np.asarray(_g_samples[:num_samples])
-    _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
+        _g_samples = np.asarray(_g_samples[:num_samples])
+        _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
 
-    print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
-    _t0_g = time.time()
-    if cfg.llh_workers > 0:
-        _g_lh = pool.map(worker, _g_samples, chunksize=32)
-        _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
-    else:
-        _g_rw_list = []
-        for _gx, _glq in zip(_g_samples, _g_logqs):
-            _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
-            _g_rw_list.append(-_glq - _glp)
-        _g_rw = np.array(_g_rw_list)
-    print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
+        print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
+        _t0_g = time.time()
+        if cfg.llh_workers > 0:
+            _g_lh = pool.map(worker, _g_samples, chunksize=32)
+            _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
+        else:
+            _g_rw_list = []
+            for _gx, _glq in zip(_g_samples, _g_logqs):
+                _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
+                _g_rw_list.append(-_glq - _glp)
+            _g_rw = np.array(_g_rw_list)
+        print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
 
-    _g_rw -= np.median(_g_rw)
-    _g_w   = np.exp(_g_rw)
-    _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
-    _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
-    _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
-    _g_fw    = np.exp(_g_rw[_g_fmask])
-    _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
-    print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
-          f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
+        _g_rw -= np.median(_g_rw)
+        _g_w   = np.exp(_g_rw)
+        _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
+        _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
+        _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
+        _g_fw    = np.exp(_g_rw[_g_fmask])
+        _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
+        print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
+              f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
 
-    epoch_list.append(0)
-    ess_list.append(_g_ess / num_samples)
-    ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
-    tot_models += 1
+        epoch_list.append(0)
+        ess_list.append(_g_ess / num_samples)
+        ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
+        tot_models += 1
     # ── end Gaussian ESS ─────────────────────────────────────────────────────
 
     for ep, fname in selected:

@@ -173,7 +173,7 @@ _HM_FMT = FuncFormatter(lambda v, _: _fmt_hm(v))
 def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
               color="#2563eb", gauss_color=None, point_label="NF checkpoints",
               gauss_label="Gaussian (epoch 0)", log_y=True, show_formula=True,
-              y_percent=False, log_x=False, show_title=True, label_fontsize=12,
+              y_percent=False, log_x=False, show_title=True, label_fontsize=16,
               paper_style=False, usetex=None, secondary_xaxes=None,
               x_minor_ticks=False, x_major_formatter=None,
               figsize=(8.0, 5.0), square_box=False):
@@ -275,11 +275,12 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
         ax.legend(loc="center right", bbox_to_anchor=(1.0, 0.65),
                   framealpha=(None if paper_style else 0.9))
 
-        if show_formula:
-            ax.text(0.97, 0.05, _RESS_FORMULA, transform=ax.transAxes,
-                    ha="right", va="bottom", fontsize=label_fontsize - 2,
-                    bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                              alpha=0.8, edgecolor="gray"))
+        # rESS formula box on the canvas -- commented out per request.
+        # if show_formula:
+        #     ax.text(0.97, 0.05, _RESS_FORMULA, transform=ax.transAxes,
+        #             ha="right", va="bottom", fontsize=label_fontsize - 2,
+        #             bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+        #                       alpha=0.8, edgecolor="gray"))
 
         # Minor tick MARKS (no labels) on the primary x-axis, e.g. for log-log.
         if x_minor_ticks and log_x:
@@ -339,7 +340,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 
 
 def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
-                   show_title=True, label_fontsize=12, also_loglog=False,
+                   show_title=True, label_fontsize=16, also_loglog=False,
                    paper_style=False, fmt="png", usetex=None,
                    also_combined=False) -> list[Path]:
     """Produce ESS plots from a results dict.
