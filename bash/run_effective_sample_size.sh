@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem-per-cpu=16G
-#SBATCH --time=18:00:00
+#SBATCH --time=11:59:00
 #SBATCH --gres=gpu:1,VramPerGpu:24G
 #SBATCH --constraint=COMPUTE_TYPE_AMPERE
 #SBATCH --output=logs/ess_%j.out

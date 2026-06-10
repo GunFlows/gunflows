@@ -387,8 +387,8 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
     # (suffix, y, nf_color, point_label, title_prefix)
     ess_variants = [
         ("", ess, nf_color, "NF checkpoints", "Relative effective sample size"),
-        ("_filtered", essf, nf_color_f, "NF checkpoints (filtered)",
-         "Relative effective sample size (filtered)"),
+        ("_filtered", essf, nf_color_f, "NF checkpoints",
+         "Relative effective sample size"),
     ]
     # (key, x, xlabel, title_noun, x_formatter) -- only included when x is valid
     x_variants = [("epoch", epochs, "Epoch", "epoch", None)]
