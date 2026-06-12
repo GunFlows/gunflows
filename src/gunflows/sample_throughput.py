@@ -123,6 +123,12 @@ def main(cfg: DictConfig) -> None:
     num_samples = int(cfg.num_samples)
     batch_size = int(cfg.batch_size)
     n_cpus = _n_cpus()
+    # Use the allocated CPUs for torch intra-op threads (matters for device=cpu,
+    # so the CPU-hour accounting reflects all CPUs actually working).
+    try:
+        torch.set_num_threads(int(n_cpus))
+    except Exception:
+        pass
 
     print(f"training_folder: {training_folder}", flush=True)
     print(f"save_dir: {save_dir}", flush=True)
