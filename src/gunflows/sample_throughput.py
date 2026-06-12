@@ -5,12 +5,14 @@
 #  Author: Lorenzo Giannessi
 #  Description:
 #   Simple timing test. Takes a training folder (like effective_sample_size.py),
-#   loads the LATEST-epoch NF model, samples N events from it, then evaluates the
-#   likelihood on those samples. Reports timing and CPU-hour throughput:
-#     - samples per CPU-hour          (NF sampling only)
-#     - (samples + evaluation) per CPU-hour  (sampling + LH evaluation)
-#   where CPU-hours = wall_time[h] * n_cpus (allocated CPUs, billing convention).
-#   Writes a json and a bar plot.
+#   loads the LATEST-epoch NF model, and times three phases on N events:
+#     1) NF sampling            (draw z ; GPU)        -> samples per GPU-hour
+#     2) NF density evaluation  (log q ; GPU)         -> density evals per GPU-hour
+#     3) LH evaluation          (GUNDAM ; CPU pool)   -> LH evals per CPU-hour
+#   (model.sample() returns log q jointly, so phase 1 already yields the density
+#   at the drawn points; phase 2 times the standalone density eval on points.)
+#   Warm-up / pool-init overheads are measured separately and EXCLUDED from the
+#   rates. <resource>-hours = wall_time[h] * #units (allocated). Writes json + plot.
 #
 #   Usage:
 #     python -m gunflows.sample_throughput training_folder=/path/to/run num_samples=100000
@@ -67,6 +69,29 @@ def init_worker(cfg, logdir):
 def worker(v):
     logp, _, _ = _sampler.inject_params_and_compute_likelihood(values=v, extend_continue=False, verbose=0)
     return logp
+
+
+def nf_logprob_physical(model, dataset, x_phys, batch_size, device):
+    """Evaluate the NF log-density log q(x) on physical-space points (GPU forward).
+
+    Mirrors the NF-density evaluation in sample_mcmc_toy.py: invert the
+    eigen->data map, split into phase/context dims, call model.log_prob.
+    """
+    phase_dims = list(dataset.phase_space_dim)
+    cond_dims = list(dataset.list_dim_conditionnal)
+    n = int(x_phys.shape[0])
+    out = np.empty(n, dtype=np.float64)
+    dev = torch.device(device)
+    with torch.no_grad():
+        mean = dataset.mean.to(device=dev, dtype=torch.float32)
+        std = dataset.std_per_dim.to(device=dev, dtype=torch.float32)
+        for start in range(0, n, int(batch_size)):
+            end = min(n, start + int(batch_size))
+            xb = torch.as_tensor(np.asarray(x_phys[start:end]), dtype=torch.float32, device=dev)
+            x_eig = (xb - mean) / std
+            logq = model.log_prob(x_eig[:, phase_dims], context=x_eig[:, cond_dims])
+            out[start:end] = logq.detach().to(device="cpu", dtype=torch.float64).numpy().reshape(-1)
+    return out
 
 
 def _n_cpus() -> int:
@@ -193,9 +218,30 @@ def main(cfg: DictConfig) -> None:
     t_sample = time.perf_counter() - t_sample0
     samples_nf = np.asarray(samples_nf[:need_total])
     print(f"Sampling done: {samples_nf.shape} in {t_sample:.2f} s", flush=True)
+    # NOTE: model.sample() also returns log q at the drawn points, so this
+    # "sampling" already yields the density at the samples for free. The phase
+    # below times the NF density evaluation as a standalone operation (log_prob
+    # on given points, the inverse pass) so the two costs can be compared.
 
-    # --- 2) likelihood evaluation (steady-state; init/warm-up excluded) -------
-    print("Evaluating likelihood on the sampled points...", flush=True)
+    # --- 2) NF probability-density evaluation (log q), GPU --------------------
+    print("Evaluating NF probability density (log q) on the sampled points...", flush=True)
+    # GPU warm-up (untimed)
+    t_dwarm0 = time.perf_counter()
+    _ = nf_logprob_physical(model, dataset,
+                            samples_nf[:min(int(samples_nf.shape[0]), batch_size)],
+                            batch_size, cfg.device)
+    if use_gpu:
+        torch.cuda.synchronize()
+    density_warmup_s = time.perf_counter() - t_dwarm0
+    t_density0 = time.perf_counter()
+    _ = nf_logprob_physical(model, dataset, samples_nf, batch_size, cfg.device)
+    if use_gpu:
+        torch.cuda.synchronize()
+    t_density = time.perf_counter() - t_density0
+    print(f"NF density eval done in {t_density:.2f} s", flush=True)
+
+    # --- 3) likelihood (GUNDAM) evaluation (steady-state; init excluded) ------
+    print("Evaluating the likelihood (GUNDAM) on the sampled points...", flush=True)
     pool_init_s = 0.0
     if int(cfg.llh_workers) > 0:
         workers_log_dir = out_dir / "llh_workers_logs"
@@ -211,72 +257,71 @@ def main(cfg: DictConfig) -> None:
             pool.map(worker, samples_nf[:n_warm], chunksize=1)
         pool_init_s = time.perf_counter() - t_init0
         # steady-state evaluation of all N points
-        t_eval0 = time.perf_counter()
+        t_lh0 = time.perf_counter()
         _ = pool.map(worker, samples_nf, chunksize=32)
-        t_eval = time.perf_counter() - t_eval0
+        t_lh = time.perf_counter() - t_lh0
         pool.close()
         pool.join()
-        n_eval = int(samples_nf.shape[0])
+        n_lh = int(samples_nf.shape[0])
     else:
         # sequential: warm up one eval (excluded), then time the rest
         t_init0 = time.perf_counter()
         if len(samples_nf) > 0:
             likelihood_sampler.inject_params_and_compute_likelihood(samples_nf[0], extend_continue=False)
         pool_init_s = time.perf_counter() - t_init0
-        t_eval0 = time.perf_counter()
+        t_lh0 = time.perf_counter()
         for v in samples_nf[1:]:
             likelihood_sampler.inject_params_and_compute_likelihood(v, extend_continue=False)
-        t_eval = time.perf_counter() - t_eval0
-        n_eval = max(0, int(samples_nf.shape[0]) - 1)
-    print(f"Evaluation done: {t_eval:.2f} s for {n_eval} evals "
+        t_lh = time.perf_counter() - t_lh0
+        n_lh = max(0, int(samples_nf.shape[0]) - 1)
+    print(f"LH eval done: {t_lh:.2f} s for {n_lh} evals "
           f"(init/warm-up excluded: {pool_init_s:.2f} s)", flush=True)
 
     # --- throughput -----------------------------------------------------------
-    # Resource accounting: <resource>-hours = wall[h] * #units (allocated).
-    # Sampling runs on the GPU (when device=cuda) -> per GPU-hour.
-    # Likelihood evaluation runs on the CPU worker pool -> per CPU-hour.
+    # <resource>-hours = wall[h] * #units (allocated). GPU work (NF sampling and
+    # NF density eval) -> per GPU-hour; LH (GUNDAM, CPU pool) -> per CPU-hour.
     N = int(samples_nf.shape[0])
     n_gpus = (max(torch.cuda.device_count(), 1) if use_gpu else 0)
-    smp_units = n_gpus if use_gpu else n_cpus
-    smp_res = "GPU" if use_gpu else "CPU"
+    gpu_units = n_gpus if use_gpu else n_cpus          # fall back to CPU accounting if no GPU
+    gpu_res = "GPU" if use_gpu else "CPU"
 
-    smp_res_hours = (t_sample / 3600.0) * smp_units
-    samples_per_smp_hour = N / smp_res_hours if smp_res_hours > 0 else float("nan")
+    def _per_hour(n, t, units):
+        h = (t / 3600.0) * units
+        return (n / h) if h > 0 else float("nan")
 
-    cpu_h_eval = (t_eval / 3600.0) * n_cpus
-    evals_per_cpu_hour = n_eval / cpu_h_eval if cpu_h_eval > 0 else float("nan")
+    samples_per_gpu_h = _per_hour(N, t_sample, gpu_units)
+    density_per_gpu_h = _per_hour(N, t_density, gpu_units)
+    lh_per_cpu_h = _per_hour(n_lh, t_lh, n_cpus)
+    # NF "sample + evaluate density" (both on GPU) -- the user's combined metric
+    sample_plus_density_per_gpu_h = _per_hour(N, t_sample + t_density, gpu_units)
 
-    # combined end-to-end (sample + evaluate one throw), steady-state
-    total_ss = t_sample + t_eval
-    samples_eval_per_smp_hour = N / ((total_ss / 3600.0) * smp_units) if total_ss > 0 and smp_units > 0 else float("nan")
-    samples_eval_per_cpu_hour = N / ((total_ss / 3600.0) * n_cpus) if total_ss > 0 else float("nan")
-
-    print(f"sampling: {samples_per_smp_hour:.4g} samples / {smp_res}-hour", flush=True)
-    print(f"evaluation: {evals_per_cpu_hour:.4g} evals / CPU-hour", flush=True)
-    print(f"sample+eval: {samples_eval_per_smp_hour:.4g} / {smp_res}-hour, "
-          f"{samples_eval_per_cpu_hour:.4g} / CPU-hour", flush=True)
+    print(f"sampling          : {samples_per_gpu_h:.4g} samples / {gpu_res}-hour", flush=True)
+    print(f"NF density eval   : {density_per_gpu_h:.4g} evals / {gpu_res}-hour", flush=True)
+    print(f"sample+density    : {sample_plus_density_per_gpu_h:.4g} / {gpu_res}-hour", flush=True)
+    print(f"LH (GUNDAM) eval  : {lh_per_cpu_h:.4g} evals / CPU-hour", flush=True)
 
     results = {
         "training_folder": training_folder,
         "epoch": int(latest_epoch),
         "n_samples": N,
-        "n_eval": int(n_eval),
+        "n_lh_eval": int(n_lh),
         "n_cpus": n_cpus,
         "n_gpus": int(n_gpus),
         "device": str(cfg.device),
-        "sampling_resource": smp_res,
-        # times (overhead excluded from the rates below)
+        "gpu_resource": gpu_res,
+        # times (steady-state; warm-up / init excluded)
         "sample_time_s": float(t_sample),
-        "eval_time_s": float(t_eval),
-        "total_time_s": float(total_ss),
+        "density_time_s": float(t_density),
+        "lh_time_s": float(t_lh),
+        # excluded overheads (reported for transparency)
         "sample_warmup_s": float(sample_warmup_s),
-        "eval_init_warmup_s": float(pool_init_s),
-        # throughput on the relevant compute resource
-        "samples_per_gpu_hour": float(samples_per_smp_hour) if use_gpu else None,
-        "samples_per_cpu_hour": float(samples_per_smp_hour) if not use_gpu else None,
-        "evals_per_cpu_hour": float(evals_per_cpu_hour),
-        "samples_plus_eval_per_gpu_hour": float(samples_eval_per_smp_hour) if use_gpu else None,
-        "samples_plus_eval_per_cpu_hour": float(samples_eval_per_cpu_hour),
+        "density_warmup_s": float(density_warmup_s),
+        "lh_init_warmup_s": float(pool_init_s),
+        # throughput
+        "samples_per_gpu_hour": float(samples_per_gpu_h),
+        "nf_density_evals_per_gpu_hour": float(density_per_gpu_h),
+        "sample_plus_density_per_gpu_hour": float(sample_plus_density_per_gpu_h),
+        "lh_evals_per_cpu_hour": float(lh_per_cpu_h),
     }
     json_path = out_dir / "sample_throughput.json"
     with open(json_path, "w") as f:
@@ -284,19 +329,19 @@ def main(cfg: DictConfig) -> None:
     print(f"Wrote {json_path}", flush=True)
 
     # --- bar plot of the timing ----------------------------------------------
-    fig, ax = plt.subplots(figsize=(7.5, 5.0))
-    labels = ["sampling", "evaluation", "eval init\n(excluded)"]
-    vals = [t_sample, t_eval, pool_init_s]
-    bars = ax.bar(labels, vals, color=["#2563eb", "#ea580c", "#9ca3af"])
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    labels = ["NF sampling", "NF density\n(log q)", "LH eval\n(GUNDAM)"]
+    vals = [t_sample, t_density, t_lh]
+    bars = ax.bar(labels, vals, color=["#2563eb", "#16a34a", "#ea580c"])
     for b, v in zip(bars, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.1f}s",
+        ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.2g}s",
                 ha="center", va="bottom", fontsize=10)
     ax.set_ylabel("wall time [s]")
     ax.set_title(
         f"NF epoch {latest_epoch}, N={N}  ({n_gpus} GPU, {n_cpus} CPU)\n"
-        f"sampling: {samples_per_smp_hour:.3g} samples/{smp_res}-h   |   "
-        f"eval: {evals_per_cpu_hour:.3g} evals/CPU-h",
-        fontsize=10)
+        f"sampling {samples_per_gpu_h:.3g} / density {density_per_gpu_h:.3g} samples·{gpu_res}-h$^{{-1}}$  |  "
+        f"LH {lh_per_cpu_h:.3g} /CPU-h",
+        fontsize=9)
     ax.grid(True, axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
     fig.savefig(out_dir / "sample_throughput.png", dpi=150)
