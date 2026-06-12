@@ -148,6 +148,18 @@ def main(cfg: DictConfig) -> None:
     model = model.to(cfg.device).eval()
     print("NF model loaded.", flush=True)
 
+    use_gpu = str(cfg.device).startswith("cuda") and torch.cuda.is_available()
+
+    # GPU warm-up (untimed): trigger CUDA context / kernel autotune so the timed
+    # sampling reflects steady-state throughput, not one-off start-up overhead.
+    print("Warming up the sampler (untimed)...", flush=True)
+    t_warm0 = time.perf_counter()
+    with torch.no_grad():
+        _ = model.sample(min(int(batch_size), 512))
+    if use_gpu:
+        torch.cuda.synchronize()
+    sample_warmup_s = time.perf_counter() - t_warm0
+
     # --- 1) timed sampling ----------------------------------------------------
     print(f"Sampling {num_samples} events from NF model...", flush=True)
     samples_nf, logqs = [], []
@@ -176,50 +188,95 @@ def main(cfg: DictConfig) -> None:
                         phys_z = dataset.transform_eigen_space_to_data_space(z).detach().cpu().numpy()[0]
                     samples_nf.append(phys_z)
                     logqs.append(float(logq.detach().cpu().numpy()[0]))
+    if use_gpu:
+        torch.cuda.synchronize()  # sampling is async on GPU -> sync before stopping the clock
     t_sample = time.perf_counter() - t_sample0
     samples_nf = np.asarray(samples_nf[:need_total])
     print(f"Sampling done: {samples_nf.shape} in {t_sample:.2f} s", flush=True)
 
-    # --- 2) timed likelihood evaluation --------------------------------------
+    # --- 2) likelihood evaluation (steady-state; init/warm-up excluded) -------
     print("Evaluating likelihood on the sampled points...", flush=True)
-    t_eval0 = time.perf_counter()
+    pool_init_s = 0.0
     if int(cfg.llh_workers) > 0:
         workers_log_dir = out_dir / "llh_workers_logs"
         workers_log_dir.mkdir(parents=True, exist_ok=True)
+        # Pool creation + a small warm-up map fully initialize every worker's
+        # GUNDAM/LikelihoodSampler. This fixed cost is timed SEPARATELY and is
+        # NOT part of the throughput.
+        t_init0 = time.perf_counter()
         pool = mp.Pool(processes=int(cfg.llh_workers), initializer=init_worker,
                        initargs=(cfg, workers_log_dir))
+        n_warm = min(len(samples_nf), int(cfg.llh_workers))
+        if n_warm > 0:
+            pool.map(worker, samples_nf[:n_warm], chunksize=1)
+        pool_init_s = time.perf_counter() - t_init0
+        # steady-state evaluation of all N points
+        t_eval0 = time.perf_counter()
         _ = pool.map(worker, samples_nf, chunksize=32)
+        t_eval = time.perf_counter() - t_eval0
         pool.close()
         pool.join()
+        n_eval = int(samples_nf.shape[0])
     else:
-        for v in samples_nf:
+        # sequential: warm up one eval (excluded), then time the rest
+        t_init0 = time.perf_counter()
+        if len(samples_nf) > 0:
+            likelihood_sampler.inject_params_and_compute_likelihood(samples_nf[0], extend_continue=False)
+        pool_init_s = time.perf_counter() - t_init0
+        t_eval0 = time.perf_counter()
+        for v in samples_nf[1:]:
             likelihood_sampler.inject_params_and_compute_likelihood(v, extend_continue=False)
-    t_eval = time.perf_counter() - t_eval0
-    print(f"Evaluation done in {t_eval:.2f} s", flush=True)
+        t_eval = time.perf_counter() - t_eval0
+        n_eval = max(0, int(samples_nf.shape[0]) - 1)
+    print(f"Evaluation done: {t_eval:.2f} s for {n_eval} evals "
+          f"(init/warm-up excluded: {pool_init_s:.2f} s)", flush=True)
 
-    # --- throughput (CPU-hours = wall[h] * n_cpus) ---------------------------
+    # --- throughput -----------------------------------------------------------
+    # Resource accounting: <resource>-hours = wall[h] * #units (allocated).
+    # Sampling runs on the GPU (when device=cuda) -> per GPU-hour.
+    # Likelihood evaluation runs on the CPU worker pool -> per CPU-hour.
     N = int(samples_nf.shape[0])
-    cpu_h_sample = (t_sample / 3600.0) * n_cpus
-    cpu_h_total = ((t_sample + t_eval) / 3600.0) * n_cpus
-    samples_per_cpu_h = N / cpu_h_sample if cpu_h_sample > 0 else float("nan")
-    samples_eval_per_cpu_h = N / cpu_h_total if cpu_h_total > 0 else float("nan")
+    n_gpus = (max(torch.cuda.device_count(), 1) if use_gpu else 0)
+    smp_units = n_gpus if use_gpu else n_cpus
+    smp_res = "GPU" if use_gpu else "CPU"
 
-    print(f"samples per CPU-hour (sampling only)      : {samples_per_cpu_h:.4g}", flush=True)
-    print(f"(samples+evaluation) per CPU-hour (total) : {samples_eval_per_cpu_h:.4g}", flush=True)
+    smp_res_hours = (t_sample / 3600.0) * smp_units
+    samples_per_smp_hour = N / smp_res_hours if smp_res_hours > 0 else float("nan")
+
+    cpu_h_eval = (t_eval / 3600.0) * n_cpus
+    evals_per_cpu_hour = n_eval / cpu_h_eval if cpu_h_eval > 0 else float("nan")
+
+    # combined end-to-end (sample + evaluate one throw), steady-state
+    total_ss = t_sample + t_eval
+    samples_eval_per_smp_hour = N / ((total_ss / 3600.0) * smp_units) if total_ss > 0 and smp_units > 0 else float("nan")
+    samples_eval_per_cpu_hour = N / ((total_ss / 3600.0) * n_cpus) if total_ss > 0 else float("nan")
+
+    print(f"sampling: {samples_per_smp_hour:.4g} samples / {smp_res}-hour", flush=True)
+    print(f"evaluation: {evals_per_cpu_hour:.4g} evals / CPU-hour", flush=True)
+    print(f"sample+eval: {samples_eval_per_smp_hour:.4g} / {smp_res}-hour, "
+          f"{samples_eval_per_cpu_hour:.4g} / CPU-hour", flush=True)
 
     results = {
         "training_folder": training_folder,
         "epoch": int(latest_epoch),
         "n_samples": N,
+        "n_eval": int(n_eval),
         "n_cpus": n_cpus,
+        "n_gpus": int(n_gpus),
         "device": str(cfg.device),
+        "sampling_resource": smp_res,
+        # times (overhead excluded from the rates below)
         "sample_time_s": float(t_sample),
         "eval_time_s": float(t_eval),
-        "total_time_s": float(t_sample + t_eval),
-        "cpu_hours_sample": float(cpu_h_sample),
-        "cpu_hours_total": float(cpu_h_total),
-        "samples_per_cpu_hour": float(samples_per_cpu_h),
-        "samples_plus_eval_per_cpu_hour": float(samples_eval_per_cpu_h),
+        "total_time_s": float(total_ss),
+        "sample_warmup_s": float(sample_warmup_s),
+        "eval_init_warmup_s": float(pool_init_s),
+        # throughput on the relevant compute resource
+        "samples_per_gpu_hour": float(samples_per_smp_hour) if use_gpu else None,
+        "samples_per_cpu_hour": float(samples_per_smp_hour) if not use_gpu else None,
+        "evals_per_cpu_hour": float(evals_per_cpu_hour),
+        "samples_plus_eval_per_gpu_hour": float(samples_eval_per_smp_hour) if use_gpu else None,
+        "samples_plus_eval_per_cpu_hour": float(samples_eval_per_cpu_hour),
     }
     json_path = out_dir / "sample_throughput.json"
     with open(json_path, "w") as f:
@@ -227,18 +284,18 @@ def main(cfg: DictConfig) -> None:
     print(f"Wrote {json_path}", flush=True)
 
     # --- bar plot of the timing ----------------------------------------------
-    fig, ax = plt.subplots(figsize=(7.0, 5.0))
-    bars = ax.bar(["sampling", "evaluation", "total"],
-                  [t_sample, t_eval, t_sample + t_eval],
-                  color=["#2563eb", "#ea580c", "#6b7280"])
-    for b, v in zip(bars, [t_sample, t_eval, t_sample + t_eval]):
+    fig, ax = plt.subplots(figsize=(7.5, 5.0))
+    labels = ["sampling", "evaluation", "eval init\n(excluded)"]
+    vals = [t_sample, t_eval, pool_init_s]
+    bars = ax.bar(labels, vals, color=["#2563eb", "#ea580c", "#9ca3af"])
+    for b, v in zip(bars, vals):
         ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.1f}s",
                 ha="center", va="bottom", fontsize=10)
     ax.set_ylabel("wall time [s]")
     ax.set_title(
-        f"NF epoch {latest_epoch}, N={N}, {n_cpus} CPU\n"
-        f"sampling: {samples_per_cpu_h:.3g} samples/CPU-h   |   "
-        f"+eval: {samples_eval_per_cpu_h:.3g} samples/CPU-h",
+        f"NF epoch {latest_epoch}, N={N}  ({n_gpus} GPU, {n_cpus} CPU)\n"
+        f"sampling: {samples_per_smp_hour:.3g} samples/{smp_res}-h   |   "
+        f"eval: {evals_per_cpu_hour:.3g} evals/CPU-h",
         fontsize=10)
     ax.grid(True, axis="y", linestyle="--", alpha=0.4)
     fig.tight_layout()
