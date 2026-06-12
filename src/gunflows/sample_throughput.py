@@ -246,6 +246,74 @@ def main(cfg: DictConfig) -> None:
     t_density = time.perf_counter() - t_density0
     print(f"NF density eval done in {t_density:.2f} s", flush=True)
 
+    # --- NF (sampling + density) throughput ----------------------------------
+    # <resource>-hours = wall[h] * #units (allocated). NF sampling and NF density
+    # eval run on the GPU (device=cuda) -> per GPU-hour (fall back to CPU if no GPU).
+    N = int(samples_nf.shape[0])
+    n_gpus = (max(torch.cuda.device_count(), 1) if use_gpu else 0)
+    gpu_units = n_gpus if use_gpu else n_cpus
+    gpu_res = "GPU" if use_gpu else "CPU"
+
+    def _per_hour(n, t, units):
+        h = (t / 3600.0) * units
+        return (n / h) if h > 0 else float("nan")
+
+    samples_per_gpu_h = _per_hour(N, t_sample, gpu_units)
+    density_per_gpu_h = _per_hour(N, t_density, gpu_units)
+    sample_plus_density_per_gpu_h = _per_hour(N, t_sample + t_density, gpu_units)
+
+    json_path = out_dir / "sample_throughput.json"
+    plot_path = out_dir / "sample_throughput.png"
+
+    def _save(results, labels, vals, colors, title):
+        with open(json_path, "w") as f:
+            json.dump(results, f, indent=4)
+        fig, ax = plt.subplots(figsize=(8.0, 5.0))
+        bars = ax.bar(labels, vals, color=colors)
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.2g}s",
+                    ha="center", va="bottom", fontsize=10)
+        ax.set_ylabel("wall time [s]")
+        ax.set_title(title, fontsize=9)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+        fig.tight_layout()
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+
+    print(f"sampling        : {samples_per_gpu_h:.4g} samples / {gpu_res}-hour", flush=True)
+    print(f"NF density eval : {density_per_gpu_h:.4g} evals / {gpu_res}-hour", flush=True)
+    print(f"sample+density  : {sample_plus_density_per_gpu_h:.4g} / {gpu_res}-hour", flush=True)
+
+    results = {
+        "training_folder": training_folder,
+        "epoch": int(latest_epoch),
+        "n_samples": N,
+        "n_cpus": n_cpus,
+        "n_gpus": int(n_gpus),
+        "device": str(cfg.device),
+        "gpu_resource": gpu_res,
+        "sample_time_s": float(t_sample),
+        "density_time_s": float(t_density),
+        "sample_warmup_s": float(sample_warmup_s),
+        "density_warmup_s": float(density_warmup_s),
+        "samples_per_gpu_hour": float(samples_per_gpu_h),
+        "nf_density_evals_per_gpu_hour": float(density_per_gpu_h),
+        "sample_plus_density_per_gpu_hour": float(sample_plus_density_per_gpu_h),
+        # LH fields filled in after the (slow) LH loop below
+        "n_lh_eval": None,
+        "lh_time_s": None,
+        "lh_init_warmup_s": None,
+        "lh_evals_per_cpu_hour": None,
+    }
+    # Write the NF (sampling+density) results NOW, before the slow LH loop.
+    _save(results,
+          ["NF sampling", "NF density\n(log q)"], [t_sample, t_density],
+          ["#2563eb", "#16a34a"],
+          f"NF epoch {latest_epoch}, N={N}  ({n_gpus} GPU, {n_cpus} CPU)\n"
+          f"sampling {samples_per_gpu_h:.3g} / density {density_per_gpu_h:.3g} "
+          f"samples·{gpu_res}-h$^{{-1}}$")
+    print(f"Wrote NF (sampling+density) results to {json_path} (LH still pending)", flush=True)
+
     # --- 3) likelihood (GUNDAM) evaluation (steady-state; init excluded) ------
     print("Evaluating the likelihood (GUNDAM) on the sampled points...", flush=True)
     pool_init_s = 0.0
@@ -283,76 +351,23 @@ def main(cfg: DictConfig) -> None:
     print(f"LH eval done: {t_lh:.2f} s for {n_lh} evals "
           f"(init/warm-up excluded: {pool_init_s:.2f} s)", flush=True)
 
-    # --- throughput -----------------------------------------------------------
-    # <resource>-hours = wall[h] * #units (allocated). GPU work (NF sampling and
-    # NF density eval) -> per GPU-hour; LH (GUNDAM, CPU pool) -> per CPU-hour.
-    N = int(samples_nf.shape[0])
-    n_gpus = (max(torch.cuda.device_count(), 1) if use_gpu else 0)
-    gpu_units = n_gpus if use_gpu else n_cpus          # fall back to CPU accounting if no GPU
-    gpu_res = "GPU" if use_gpu else "CPU"
-
-    def _per_hour(n, t, units):
-        h = (t / 3600.0) * units
-        return (n / h) if h > 0 else float("nan")
-
-    samples_per_gpu_h = _per_hour(N, t_sample, gpu_units)
-    density_per_gpu_h = _per_hour(N, t_density, gpu_units)
+    # --- update results with the LH metric ------------------------------------
     lh_per_cpu_h = _per_hour(n_lh, t_lh, n_cpus)
-    # NF "sample + evaluate density" (both on GPU) -- the user's combined metric
-    sample_plus_density_per_gpu_h = _per_hour(N, t_sample + t_density, gpu_units)
-
-    print(f"sampling          : {samples_per_gpu_h:.4g} samples / {gpu_res}-hour", flush=True)
-    print(f"NF density eval   : {density_per_gpu_h:.4g} evals / {gpu_res}-hour", flush=True)
-    print(f"sample+density    : {sample_plus_density_per_gpu_h:.4g} / {gpu_res}-hour", flush=True)
-    print(f"LH (GUNDAM) eval  : {lh_per_cpu_h:.4g} evals / CPU-hour", flush=True)
-
-    results = {
-        "training_folder": training_folder,
-        "epoch": int(latest_epoch),
-        "n_samples": N,
+    print(f"LH (GUNDAM) eval : {lh_per_cpu_h:.4g} evals / CPU-hour", flush=True)
+    results.update({
         "n_lh_eval": int(n_lh),
-        "n_cpus": n_cpus,
-        "n_gpus": int(n_gpus),
-        "device": str(cfg.device),
-        "gpu_resource": gpu_res,
-        # times (steady-state; warm-up / init excluded)
-        "sample_time_s": float(t_sample),
-        "density_time_s": float(t_density),
         "lh_time_s": float(t_lh),
-        # excluded overheads (reported for transparency)
-        "sample_warmup_s": float(sample_warmup_s),
-        "density_warmup_s": float(density_warmup_s),
         "lh_init_warmup_s": float(pool_init_s),
-        # throughput
-        "samples_per_gpu_hour": float(samples_per_gpu_h),
-        "nf_density_evals_per_gpu_hour": float(density_per_gpu_h),
-        "sample_plus_density_per_gpu_hour": float(sample_plus_density_per_gpu_h),
         "lh_evals_per_cpu_hour": float(lh_per_cpu_h),
-    }
-    json_path = out_dir / "sample_throughput.json"
-    with open(json_path, "w") as f:
-        json.dump(results, f, indent=4)
-    print(f"Wrote {json_path}", flush=True)
-
-    # --- bar plot of the timing ----------------------------------------------
-    fig, ax = plt.subplots(figsize=(8.0, 5.0))
-    labels = ["NF sampling", "NF density\n(log q)", "LH eval\n(GUNDAM)"]
-    vals = [t_sample, t_density, t_lh]
-    bars = ax.bar(labels, vals, color=["#2563eb", "#16a34a", "#ea580c"])
-    for b, v in zip(bars, vals):
-        ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.2g}s",
-                ha="center", va="bottom", fontsize=10)
-    ax.set_ylabel("wall time [s]")
-    ax.set_title(
-        f"NF epoch {latest_epoch}, N={N}  ({n_gpus} GPU, {n_cpus} CPU)\n"
-        f"sampling {samples_per_gpu_h:.3g} / density {density_per_gpu_h:.3g} samples·{gpu_res}-h$^{{-1}}$  |  "
-        f"LH {lh_per_cpu_h:.3g} /CPU-h",
-        fontsize=9)
-    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-    fig.tight_layout()
-    fig.savefig(out_dir / "sample_throughput.png", dpi=150)
-    plt.close(fig)
-    print(f"Wrote {out_dir / 'sample_throughput.png'}", flush=True)
+    })
+    _save(results,
+          ["NF sampling", "NF density\n(log q)", "LH eval\n(GUNDAM)"],
+          [t_sample, t_density, t_lh],
+          ["#2563eb", "#16a34a", "#ea580c"],
+          f"NF epoch {latest_epoch}, N={N}  ({n_gpus} GPU, {n_cpus} CPU)\n"
+          f"sampling {samples_per_gpu_h:.3g} / density {density_per_gpu_h:.3g} "
+          f"samples·{gpu_res}-h$^{{-1}}$  |  LH {lh_per_cpu_h:.3g} /CPU-h")
+    print(f"Updated results (incl. LH) in {json_path}", flush=True)
 
 
 if __name__ == "__main__":
