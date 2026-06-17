@@ -455,18 +455,24 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
              "location": 1.17, "formatter": _fmt_millions},
         ]
 
+        # combined modes: (suffix, log_x, log_y)
+        combo_modes = [("", False, True)]
+        if also_loglog:
+            combo_modes.append(("_loglog", True, True))
+        if also_liny_logx:
+            combo_modes.append(("_liny_logx", True, False))
         for suffix, yvals, color, plabel, tprefix in ess_variants:
             if yvals.size != epochs.size:
                 continue
-            for msuffix, log_x in ([("", False), ("_loglog", True)] if also_loglog else [("", False)]):
+            for msuffix, log_x, log_y in combo_modes:
                 out_path = out_dir / f"ess{suffix}_combined{msuffix}.{fmt}"
                 _plot_one(
                     epochs, yvals, gauss_mask,
-                    xlabel="Epoch", ylabel=ylabel,
+                    xlabel="Epoch", ylabel=(ylabel if log_y else ylabel_lin),
                     title=f"{tprefix}{ns}",
                     out_path=out_path, color=color, gauss_color=gauss_color,
                     point_label=plabel,
-                    y_percent=y_percent, log_x=log_x,
+                    y_percent=y_percent, log_x=log_x, log_y=log_y,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
                     secondary_xaxes=sec_specs, x_minor_ticks=log_x,
