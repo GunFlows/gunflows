@@ -416,6 +416,7 @@ def _run_histogram_loop(
     hist_num_workers: int = 1,
     llh_kw: dict | None = None,
     force: bool = False,
+    seed: int = 0,
 ) -> dict[str, dict[str, dict[str, list[np.ndarray]]]]:
     """Returns all_hists[source][var][stream] = [array(n_bins), ...]
     preloaded: optionally pre-populate from cache so only missing sources run.
@@ -505,28 +506,37 @@ def _run_histogram_loop(
         with ctx.Pool(hist_num_workers, initializer=_init_hist_worker,
                       initargs=(llh_kw, vbe_lists)) as pool:
             with torch.no_grad():
-                # NF
+                # NF — compute only the deficit (num_samples − already cached)
                 if not _done("NF"):
-                    z, lq = nf_model.sample(num_samples)
+                    prev = _count(all_hists["NF"])
+                    need = num_samples - prev
+                    z, lq = nf_model.sample(need)
                     lq    = lq.cpu().numpy().reshape(-1)
                     x_nf  = dataset.transform_eigen_space_to_data_space(z).cpu().numpy()
                     hs, nll, acc = _fill_source_parallel(pool, hist_num_workers, x_nf)
                     _absorb("NF", hs, nll, acc, x_params=x_nf, lq=lq)
-                    print(f"  NF: {_count(all_hists['NF'])}/{num_samples}", flush=True)
+                    print(f"  NF: {_count(all_hists['NF'])}/{num_samples} "
+                          f"(+{need} new)", flush=True)
                     _checkpoint()
-                # Gaussian
+                # Gaussian — deficit, distinct RNG stream (seed offset by prev)
                 if not _done("Gaussian"):
-                    x_g = rng.multivariate_normal(bestfit, cov, size=num_samples)
+                    prev = _count(all_hists["Gaussian"])
+                    need = num_samples - prev
+                    rng_g = np.random.default_rng(int(seed) + prev)
+                    x_g = rng_g.multivariate_normal(bestfit, cov, size=need)
                     hs, nll, acc = _fill_source_parallel(pool, hist_num_workers, x_g)
                     _absorb("Gaussian", hs, nll, acc, x_params=x_g)
-                    print(f"  Gaussian: {_count(all_hists['Gaussian'])}/{num_samples}", flush=True)
+                    print(f"  Gaussian: {_count(all_hists['Gaussian'])}/{num_samples} "
+                          f"(+{need} new)", flush=True)
                     _checkpoint()
-                # MCMC
+                # MCMC — deficit slice of the (num_samples-thinned) chain
                 if not _done("MCMC") and mcmc_throws is not None:
+                    prev = _count(all_hists["MCMC"])
                     hs, nll, acc = _fill_source_parallel(
-                        pool, hist_num_workers, mcmc_throws[:num_samples])
+                        pool, hist_num_workers, mcmc_throws[prev:num_samples])
                     _absorb("MCMC", hs, nll, acc)   # NLL not stored for MCMC
-                    print(f"  MCMC: {_count(all_hists['MCMC'])}/{num_samples}", flush=True)
+                    print(f"  MCMC: {_count(all_hists['MCMC'])}/{num_samples} "
+                          f"(+{num_samples - prev} new)", flush=True)
                     _checkpoint()
         _checkpoint()
         return all_hists
@@ -554,7 +564,9 @@ def _run_histogram_loop(
             if not _done("Gaussian"):
                 prev = _count(all_hists["Gaussian"])
                 need = min(batch_size, num_samples - prev)
-                x_g  = rng.multivariate_normal(bestfit, cov, size=need)
+                # distinct stream per offset → extension draws differ from cache
+                x_g  = np.random.default_rng(int(seed) + prev).multivariate_normal(
+                    bestfit, cov, size=need)
                 new_h, new_nll, acc = _inject_and_fill(sampler, x_g, var_caches, n_bins_map, "Gauss")
                 _extend(all_hists["Gaussian"], new_h)
                 all_nll["Gaussian"].extend(new_nll)
@@ -728,34 +740,101 @@ def _compute_nll_data(
 # Computation: MCMC chain reader
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── GUNDAM MCMC ROOT readers (ported from sample_mcmc_toy.py) ────────────────
+# The MCMC tree is no longer at a hard-coded path: we auto-discover the directory
+# that holds both 'parameterSets' and 'MCMC', take the latest cycle, and read the
+# 'Points' branch with uniform thinning across the (post-burn-in) chain.
+
+def _mcmc_walk_dirs(tfile) -> list[str]:
+    dirs: list[str] = []
+
+    def rec(d, path):
+        keys = d.GetListOfKeys()
+        if not keys:
+            return
+        for i in range(keys.GetSize()):
+            k = keys.At(i)
+            if str(k.GetClassName()).startswith("TDirectory"):
+                sub = d.Get(k.GetName())
+                if sub:
+                    subpath = f"{path}/{k.GetName()}" if path else str(k.GetName())
+                    dirs.append(subpath)
+                    rec(sub, subpath)
+
+    rec(tfile, "")
+    return dirs
+
+
+def _mcmc_dir_keys(d) -> list[tuple[str, int]]:
+    keys = d.GetListOfKeys()
+    out = []
+    if keys:
+        for i in range(keys.GetSize()):
+            k = keys.At(i)
+            out.append((str(k.GetName()), int(k.GetCycle())))
+    return out
+
+
+def _mcmc_infer_base_dir(tfile) -> str:
+    def dirs_with(obj):
+        res = []
+        for dp in _mcmc_walk_dirs(tfile):
+            d = tfile.GetDirectory(dp)
+            if d and any(n == obj for n, _ in _mcmc_dir_keys(d)):
+                res.append(dp)
+        return set(res)
+    inter = sorted(dirs_with("parameterSets") & dirs_with("MCMC"),
+                   key=lambda s: s.count("/"), reverse=True)
+    if not inter:
+        raise RuntimeError("No directory contains both 'parameterSets' and 'MCMC'.")
+    return inter[0]
+
+
+def _mcmc_latest(tfile, dirname: str, objname: str):
+    d = tfile.GetDirectory(dirname)
+    best = max((c for n, c in _mcmc_dir_keys(d) if n == objname), default=-1)
+    if best < 0:
+        raise RuntimeError(f"'{objname}' not found in '{dirname}'.")
+    return d.Get(f"{objname};{best}")
+
+
 def _load_mcmc(
     mcmc_chain: str,
     n_samples: int,
     burnin_frac: float = 0.0,
-    max_steps: int | None = None,
+    max_steps: int | None = None,   # unused; kept for call-site compatibility
     thin: int | None = None,
 ) -> np.ndarray:
+    """Uniform-thinned MCMC parameter throws across the post-burn-in chain."""
     import ROOT
     ROOT.gROOT.SetBatch(True)
-    f = ROOT.TFile(mcmc_chain, "READ")
+    f = ROOT.TFile.Open(mcmc_chain, "READ")
     if not f or f.IsZombie():
         raise FileNotFoundError(f"Cannot open MCMC file: {mcmc_chain}")
-    tree = f.Get("FitterEngine/fit/MCMC")
-    if not tree:
-        raise RuntimeError("TTree 'FitterEngine/fit/MCMC' not found")
-    n_total    = int(tree.GetEntries())
-    start      = int(n_total * burnin_frac)
-    stop       = min(n_total, start + max_steps) if max_steps else n_total
-    n_avail    = stop - start
-    m          = thin if thin else max(1, n_avail // n_samples)
-    indices    = list(range(start, stop, m))[:n_samples]
-    rows = []
-    for i in indices:
-        tree.GetEntry(i)
-        rows.append(np.array(list(tree.Points), dtype=np.float64))
+
+    base_dir = _mcmc_infer_base_dir(f)
+    tree = _mcmc_latest(f, base_dir, "MCMC")
+    if not tree or not tree.GetBranch("Points"):
+        raise RuntimeError("MCMC tree has no 'Points' branch.")
+
+    n_total = int(tree.GetEntries())
+    burn    = int(np.floor(float(burnin_frac) * n_total))
+    avail   = n_total - burn
+    stride  = int(thin) if thin else max(1, avail // max(1, n_samples))
+    indices = list(range(burn, n_total, stride))[:n_samples]
+
+    tree.GetEntry(indices[0])
+    d = int(tree.Points.size())
+    pts = np.empty((len(indices), d), dtype=np.float64)
+    for i, e in enumerate(indices):
+        tree.GetEntry(e)
+        v = tree.Points
+        for j in range(d):
+            pts[i, j] = float(v.at(j))
     f.Close()
-    print(f"  MCMC: {len(rows)} throws loaded (thin={m})", flush=True)
-    return np.stack(rows)
+    print(f"  MCMC: {len(indices)} throws from '{base_dir}/MCMC' "
+          f"(burn={burn}, stride={stride})", flush=True)
+    return pts
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -790,11 +869,20 @@ def plot_spectrum(
     legend_loc: str = "upper right",
     width_scale: float = 1.0,
     font_scale: float = 1.0,
+    sigma_mode: bool = False,
+    diff_legend_loc: str = "upper right",   # NF−Gaussian (Δσ) panel legend
+    drop_last: int = 0,                     # drop this many trailing bins
     fmt: str = "pdf",
 ) -> None:
-    """Main spectrum: log-yield panel + optional NF−Gaussian diff panels (no ratio panel)."""
+    """Spectrum: yield panel + two diff panels.
+    sigma_mode=False : Δ⟨N⟩(NF−Gauss) and Δσ(NF−Gauss).
+    sigma_mode=True  : Δσ(MCMC−NF) and Δσ(NF−Gauss).
+    drop_last        : remove the last N bins from the plot (edges + data)."""
     if not results:
         return
+    if drop_last > 0:
+        bin_edges = bin_edges[:-drop_last]
+        results = {k: v[:, :v.shape[1] - drop_last] for k, v in results.items()}
     centers   = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths    = bin_edges[1:] - bin_edges[:-1]
     has_nf    = "NF"       in results
@@ -846,14 +934,31 @@ def plot_spectrum(
     if show_diff:
         bar_kw  = dict(align="center", edgecolor="none", alpha=0.82)
         pct_fmt = plt.FuncFormatter(lambda v, _: f"{v:.2g}%")   # 2 sig-figs, no trailing zeros
-        mn, mg  = means_raw["NF"], gauss_raw
-        sn, sg  = stds_raw["NF"],  gauss_std
+        sn, sg  = stds_raw["NF"], gauss_std
 
-        d_m   = 0.5 * (mn + mg)
-        rel_m = np.where(d_m > 0, (mn - mg) / d_m * 100.0, 0.0)
-        ax_dm.bar(centers, rel_m, width=widths, color=COLORS["NF"], **bar_kw)
+        # ── Top diff panel ────────────────────────────────────────────────
+        if sigma_mode:
+            # Δσ between MCMC and NF
+            if "MCMC" in stds_raw:
+                sm = stds_raw["MCMC"]
+                d  = 0.5 * (sm + sn)
+                rel = np.where(d > 0, (sm - sn) / d * 100.0, 0.0)
+            else:
+                rel = np.zeros_like(sn)
+            ax_dm.bar(centers, rel, width=widths, color=COLORS["MCMC"],
+                      label=r"MCMC $-$ NF", **bar_kw)
+            ax_dm.set_ylabel(r"$\Delta\sigma / \bar{\sigma}$")
+            ax_dm.legend(loc="lower right")
+        else:
+            # Δ⟨N⟩ between NF and Gaussian
+            mn, mg = means_raw["NF"], gauss_raw
+            d_m   = 0.5 * (mn + mg)
+            rel = np.where(d_m > 0, (mn - mg) / d_m * 100.0, 0.0)
+            ax_dm.bar(centers, rel, width=widths, color=COLORS["NF"],
+                      label=r"NF $-$ Gaussian", **bar_kw)
+            ax_dm.set_ylabel(r"$\Delta\langle N \rangle$")
+            ax_dm.legend(loc="upper right")
         ax_dm.axhline(0, color="k", linewidth=1.0)
-        ax_dm.set_ylabel(r"$\Delta\langle N \rangle$")
         ax_dm.yaxis.set_major_formatter(pct_fmt)
         ax_dm.yaxis.set_major_locator(MaxNLocator(4, prune="both"))
         ax_dm.grid(True, alpha=0.2, axis="y")
@@ -861,12 +966,15 @@ def plot_spectrum(
         plt.setp(ax_dm.get_xticklabels(), visible=False)
         _ax_fontsize(ax_dm, FS)
 
+        # ── Bottom diff panel: Δσ between NF and Gaussian (both modes) ─────
         d_s   = 0.5 * (sn + sg)
         rel_s = np.where(d_s > 0, (sn - sg) / d_s * 100.0, 0.0)
-        ax_ds.bar(centers, rel_s, width=widths, color=COLORS["Gaussian"], **bar_kw)
+        ax_ds.bar(centers, rel_s, width=widths, color=COLORS["Gaussian"],
+                  label=r"NF $-$ Gaussian", **bar_kw)
         ax_ds.axhline(0, color="k", linewidth=1.0)
-        ax_ds.set_ylabel(r"$\Delta\sigma$")
+        ax_ds.set_ylabel(r"$\Delta\sigma / \bar{\sigma}$")
         ax_ds.set_xlabel(xlabel)
+        ax_ds.legend(loc=diff_legend_loc)
         ax_ds.yaxis.set_major_formatter(pct_fmt)
         ax_ds.yaxis.set_major_locator(MaxNLocator(4, prune="both"))
         ax_ds.grid(True, alpha=0.2, axis="y")
@@ -876,9 +984,10 @@ def plot_spectrum(
 
     fig.tight_layout(pad=1.5)
     # Apply font sizes AFTER tight_layout so they aren't overridden.
-    # Axis labels scale with FS; tick values stay fixed at 22.
+    # Labels scale with FS; tick values scale with font_scale too.
+    tick_fs = int(22 * font_scale)
     for _ax in fig.axes:
-        _ax_fontsize(_ax, FS, tick_fs=22)
+        _ax_fontsize(_ax, FS, tick_fs=tick_fs)
     _savefig(fig, save_path, fmt)
 
 
@@ -907,7 +1016,7 @@ def plot_violin(
     n_bins  = next(iter(results.values())).shape[1]
     mu_g    = results["Gaussian"].mean(axis=0)
     # Equal width for every bin: violins sit at integer positions 0..n-1
-    bin_labs = [_bin_label(bin_edges[i], bin_edges[i + 1]) for i in range(n_bins)]
+    bin_labs = [f"[{bin_edges[i]:.2f}, {bin_edges[i + 1]:.2f})" for i in range(n_bins)]
 
     fig, ax = plt.subplots(figsize=(max(14, n_bins * 1.4), 10 * height_scale))
     hw = 0.40   # fixed half-width per bin (slot is [i-0.5, i+0.5])
@@ -1411,6 +1520,78 @@ def plot_param_corner(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Plot 7b — marginal overlay (NF hist vs Gaussian curve vs MCMC hist)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def plot_marginal_overlay(
+    nf_samples: np.ndarray,
+    mcmc_samples: np.ndarray | None,
+    mean: np.ndarray,
+    cov: np.ndarray,
+    par_names: list[str],
+    sel: np.ndarray,
+    save_path: Path,
+    bins: int = 60,
+    fmt: str = "pdf",
+) -> None:
+    """3×2 grid of 1-D marginals for the 6 least-Gaussian parameters (NF):
+    NF histogram (filled+step), Gaussian analytic curve, MCMC histogram (step).
+    Styled to match the other paper plots, with large fonts."""
+    sel = np.asarray(sel)[:6]
+    n   = len(sel)
+    std = np.sqrt(np.clip(np.diag(cov), 1e-14, None))
+
+    LBL_FS, TICK_FS, LEG_FS = 32, 26, 30   # ≥2× the previous sizes
+
+    nrows, ncols = 3, 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(9 * ncols, 6 * nrows))
+    axes = np.asarray(axes).flatten()
+
+    for k, i in enumerate(sel):
+        ax = axes[k]
+        xnf = nf_samples[:, i]
+        # shared x-range covering NF, MCMC and ±4σ of the Gaussian
+        pool = [xnf] + ([mcmc_samples[:, i]] if mcmc_samples is not None else [])
+        alld = np.concatenate(pool)
+        lo, hi = np.quantile(alld, [0.005, 0.995])
+        lo = min(lo, mean[i] - 4 * std[i])
+        hi = max(hi, mean[i] + 4 * std[i])
+        rng = (float(lo), float(hi))
+
+        # NF: filled + step (same look as corner diagonals)
+        ax.hist(xnf, bins=bins, range=rng, density=True, histtype="stepfilled",
+                alpha=0.40, color=COLORS["NF"])
+        ax.hist(xnf, bins=bins, range=rng, density=True, histtype="step",
+                linewidth=2.4, color=COLORS["NF"], label="NF")
+        # MCMC: step
+        if mcmc_samples is not None:
+            ax.hist(mcmc_samples[:, i], bins=bins, range=rng, density=True,
+                    histtype="step", linewidth=2.4, color=COLORS["MCMC"], label="MCMC")
+        # Gaussian: dashed analytic curve
+        xs = np.linspace(rng[0], rng[1], 300)
+        ax.plot(xs, np.exp(-0.5 * ((xs - mean[i]) / std[i]) ** 2)
+                    / (std[i] * np.sqrt(2 * np.pi)),
+                color=COLORS["Gaussian"], linewidth=2.4, linestyle="--", label="Gaussian")
+
+        nm = _short_par_name(par_names[i]) if i < len(par_names) else f"par {i}"
+        ax.set_xlabel(nm)
+        ax.set_ylabel("Density")
+        ax.set_xlim(*rng)
+        ax.set_ylim(bottom=0)
+        ax.xaxis.set_major_locator(MaxNLocator(4))
+        ax.yaxis.set_major_locator(MaxNLocator(3, prune="both"))
+        ax.tick_params(top=False, right=False)
+        _ax_fontsize(ax, label_fs=LBL_FS, tick_fs=TICK_FS, legend_fs=LEG_FS)
+
+    for j in range(n, len(axes)):
+        axes[j].axis("off")
+    axes[0].legend(loc="upper right")
+    _ax_fontsize(axes[0], label_fs=LBL_FS, tick_fs=TICK_FS, legend_fs=LEG_FS)
+    fig.tight_layout(pad=1.5)
+    _savefig(fig, save_path, fmt)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Plot 8 — parameter pull distributions
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1499,7 +1680,8 @@ def main(cfg: DictConfig) -> None:
     n_bins_map = {v: len(e) - 1 for v, e in var_bin_edges.items()}
 
     # ── Check which cache files exist ───────────────────────────────────────
-    force    = bool(cfg.get("force_recompute", False))
+    force       = bool(cfg.get("force_recompute", False))
+    force_mcmc  = bool(cfg.get("force_recompute_mcmc", False))   # MCMC-only redo
     src_need = [l for l, u in [("nf", use_nf), ("gaussian", use_gaussian), ("mcmc", use_mcmc)] if u]
 
     def _hist_cached(src, var, stream):
@@ -1523,9 +1705,26 @@ def main(cfg: DictConfig) -> None:
                           flush=True)
                     hists_complete = False
                     break
-    nll_complete = (cache_dir / "nll_data.npz").exists() or not do_nll
 
-    need_compute = force or not hists_complete or not nll_complete
+    # Extend: if the cache has FEWER throws than requested, recompute (the loop
+    # reuses the cached throws and only computes the deficit).
+    extend_run = False
+    if hists_complete and not force:
+        primary = enu_var.lower()
+        for src in src_need:
+            p = cache_dir / f"histograms_{src}_{primary}_fhc.npy"
+            if p.exists():
+                n_cached = int(np.load(p, mmap_mode="r").shape[0])
+                if n_cached < int(cfg.num_samples):
+                    print(f"  [CACHE] {src} has {n_cached} < {int(cfg.num_samples)} "
+                          f"throws — will extend.", flush=True)
+                    hists_complete = False
+                    extend_run = True
+    nll_complete = (cache_dir / "nll_data.npz").exists() or not do_nll
+    if extend_run:
+        nll_complete = False   # rebuild nll_data with the extended throws
+
+    need_compute = force or force_mcmc or not hists_complete or not nll_complete
 
     # ════════════════════════════════════════════════════════════════════════
     # COMPUTE (first run or force_recompute)
@@ -1588,8 +1787,12 @@ def main(cfg: DictConfig) -> None:
 
         dataset  = _SamplingDataset(
             train_cfg.experiment.dataset.phase_space_dim, bestfit, cov)
-        nf_model = _load_nf(train_cfg, dataset, ckpt)
-        print("  NF model loaded.", flush=True)
+        if force_mcmc:
+            nf_model = None   # MCMC-only redo: NF not needed
+            print("  force_recompute_mcmc → skipping NF model load.", flush=True)
+        else:
+            nf_model = _load_nf(train_cfg, dataset, ckpt)
+            print("  NF model loaded.", flush=True)
 
         # ── MCMC ────────────────────────────────────────────────────────────
         mcmc_throws = None
@@ -1612,18 +1815,22 @@ def main(cfg: DictConfig) -> None:
         var_caches = _build_event_caches(sampler, var_bin_edges)
 
         # ── Histogram sampling loop ─────────────────────────────────────────
-        if not hists_complete or force:
-            # Pre-load any sources already cached so they are skipped in the loop
+        if not hists_complete or force or force_mcmc:
+            # Pre-load any sources already cached so they are skipped in the loop.
+            # With force_mcmc we deliberately do NOT preload MCMC, so only MCMC
+            # is recomputed while NF/Gaussian are reused.
             def _empty_hists():
                 return {v: {s: [] for s in STREAMS} for v in var_caches}
             preloaded: dict = {
                 "NF": _empty_hists(), "Gaussian": _empty_hists(), "MCMC": _empty_hists()
             }
             for lbl in SOURCE_ORDER:
+                if force or (force_mcmc and lbl == "MCMC"):
+                    continue   # recompute this source from scratch
                 for var in var_bin_edges:
                     for stream in STREAMS:
                         p = cache_dir / f"histograms_{lbl.lower()}_{var.lower()}_{stream.lower()}.npy"
-                        if p.exists() and not force:
+                        if p.exists():
                             arr = np.load(p)
                             preloaded[lbl][var][stream] = list(arr)
                             print(f"  Pre-loaded {len(arr)} throws: {lbl}/{var}/{stream}",
@@ -1652,12 +1859,13 @@ def main(cfg: DictConfig) -> None:
                 preloaded=preloaded,
                 hist_num_workers=hist_workers,
                 llh_kw=hist_llh_kw,
-                force=force,
+                force=force or force_mcmc,   # don't touch NF/Gaussian per-throw arrays
+                seed=int(cfg.get("seed", 0)),
             )
 
         # ── NLL comparison arrays — assembled from the SAME histogram-loop
-        #    throws (no resampling, no parallel pool). ──────────────────────
-        if do_nll:
+        #    throws. Skipped on an MCMC-only redo (nll_data.npz is kept as-is).
+        if do_nll and not force_mcmc:
             print("\nAssembling NLL comparison arrays from loop throws...", flush=True)
             bf_nll, _, _ = sampler.inject_params_and_compute_likelihood(
                 bestfit.tolist(), extend_continue=False)
@@ -1762,6 +1970,11 @@ def main(cfg: DictConfig) -> None:
             "font_scale_vio":   float(vc.get("violin_font_scale",   1.0)),
             "tick_scale_vio":   float(vc.get("violin_tick_scale",   1.0)),
             "height_scale_vio": float(vc.get("violin_height_scale", 1.0)),
+            # spectrum_sigma overrides
+            "sigma_legend_loc": str(vc.get("sigma_legend_loc", "upper right")),
+            "sigma_font_scale": float(vc.get("sigma_font_scale",
+                                             vc.get("spectrum_font_scale", 1.0))),
+            "sigma_drop_last":  int(vc.get("sigma_drop_last", 0)),
         }
 
     for var, edges in loaded_edges.items():
@@ -1788,6 +2001,18 @@ def main(cfg: DictConfig) -> None:
                           legend_loc=vs.get("legend_loc_spec", "upper right"),
                           width_scale=vs.get("width_scale", 1.0),
                           font_scale=vs.get("font_scale_spec", 1.0),
+                          fmt=fmt)
+
+            # spectrum_sigma: Δσ(MCMC−NF) replaces the Δ⟨N⟩ panel
+            plot_spectrum(results, edges,
+                          save_path=base / "spectrum_sigma",
+                          xlabel=xlabel, ci_levels=ci_levels,
+                          legend_loc=vs.get("legend_loc_spec", "upper right"),
+                          width_scale=vs.get("width_scale", 1.0),
+                          font_scale=vs.get("sigma_font_scale", 1.0),
+                          sigma_mode=True,
+                          diff_legend_loc=vs.get("sigma_legend_loc", "upper right"),
+                          drop_last=vs.get("sigma_drop_last", 0),
                           fmt=fmt)
 
             plot_violin(results, edges,
@@ -1962,6 +2187,14 @@ def main(cfg: DictConfig) -> None:
                 bestfit_cached, cov_cached,
                 save_path=par_dir / "pulls",
                 fmt=fmt,
+            )
+
+            # 3×2 marginal overlay: NF hist + Gaussian curve + MCMC hist for the
+            # 6 least-Gaussian parameters (selection from unweighted NF).
+            plot_marginal_overlay(
+                samples, mcmc_samples, bestfit_cached, cov_cached,
+                par_names_cached, sel_full[:6],
+                save_path=par_dir / "marginals_overlay", fmt=fmt,
             )
 
     print(f"\nAll plots saved to {plots_dir}", flush=True)
