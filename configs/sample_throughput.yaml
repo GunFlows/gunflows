@@ -1,0 +1,18 @@
+# Timing test: sample N events from the latest-epoch NF model of a training run,
+# evaluate the likelihood on them, and report CPU-hour throughput.
+training_folder: ???
+save_dir: ${training_folder}/sample_throughput
+
+num_samples: 100000
+batch_size: 4098
+llh_workers: 10   # CPUs used for the likelihood evaluation (0 = sequential)
+device: cuda
+seed: 0
+verbose: 0
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: false

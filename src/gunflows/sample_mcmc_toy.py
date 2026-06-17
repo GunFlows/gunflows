@@ -420,7 +420,7 @@ def _uniform_thin_indices(n_total, max_steps) -> list[int]:
     is kept. No deduplication: rejected/repeated MCMC steps are real posterior
     mass and are retained. Uniform thinning (rather than a contiguous tail)
     makes the selection represent the whole posterior instead of a short,
-    autocorrelated segment of the chain.
+    autocorrelated segment of the chain. 
     """
     n_total = int(n_total)
     if n_total <= 0:
@@ -1084,7 +1084,7 @@ def main(cfg: DictConfig) -> None:
         do_reweight_gauss = False  # the Gaussian path always evaluates GUNDAM; disable in sanity mode
     reweight_num_workers = int(getattr(cfg, "reweight_num_workers", 1))
     do_mcmc_step_lh_nf_eval = bool(getattr(cfg, "do_mcmc_step_lh_nf_eval", True))
-    mcmc_delta_lh_p_3sigma = float(getattr(cfg, "mcmc_delta_lh_p_3sigma", getattr(cfg, "mcmc_lh_keep_quantile", 0.95)))
+    mcmc_delta_lh_p_3sigma = float(getattr(cfg, "mcmc_delta_lh_p_3sigma", getattr(cfg, "mcmc_lh_keep_quantile", 0.9999)))
     mcmc_nf_eval_batch_size = int(getattr(cfg, "mcmc_nf_eval_batch_size", 2048))
 
     if do_plot_mcmc:
@@ -1464,8 +1464,31 @@ def main(cfg: DictConfig) -> None:
         nll_bestfit, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(
             bestfit_parameter_values, extend_continue=False
         )
-        nf_nll = eval_nll_on_physical_points(likelihood_sampler, samples_nf, batch_size=max(1, batch_size))
-        delta_nll_nf = np.asarray(nf_nll, dtype=np.float64) - float(nll_bestfit)
+        nf_nll = np.asarray(
+            eval_nll_on_physical_points(likelihood_sampler, samples_nf, batch_size=max(1, batch_size)),
+            dtype=np.float64,
+        )
+
+        # Apply the SAME DeltaNLL chi2 keep-cut to the NF throws as to the MCMC
+        # steps, so the two methods are compared on equal footing. MCMC was
+        # already cut above (mcmc_keep_mask: nll <= nll_bestfit + delta_nll_cut);
+        # here we cut NF with the identical threshold and propagate the mask to
+        # the NF samples / logq used in all downstream reweighting and marginals.
+        nf_keep_threshold = float(nll_bestfit) + float(delta_nll_cut)
+        nf_keep_mask = np.isfinite(nf_nll) & (nf_nll <= nf_keep_threshold)
+        n_nf_keep = int(nf_keep_mask.sum())
+        print(
+            f"Keeping {n_nf_keep}/{len(nf_keep_mask)} NF throws with NLL <= bestfit + "
+            f"{delta_nll_cut:.6g} ({nf_keep_threshold:.6g})",
+            flush=True,
+        )
+        nf_nll = nf_nll[nf_keep_mask]
+        samples_nf = samples_nf[nf_keep_mask]
+        samples_nf_c = samples_nf[:, :d]
+        if logq_nf is not None:
+            logq_nf = np.asarray(logq_nf).reshape(-1)[nf_keep_mask]
+
+        delta_nll_nf = nf_nll - float(nll_bestfit)
         delta_nll_mcmc = np.asarray(mcmc_nll, dtype=np.float64) - float(nll_bestfit)
 
         plot_delta_nll_overlay(
@@ -1480,6 +1503,11 @@ def main(cfg: DictConfig) -> None:
             delta_nll_nf=delta_nll_nf,
             delta_nll_mcmc=delta_nll_mcmc,
             nll_bestfit=float(nll_bestfit),
+            p_3sigma=float(mcmc_delta_lh_p_3sigma),
+            delta_nll_cut=float(delta_nll_cut),
+            nf_keep_threshold=float(nf_keep_threshold),
+            n_nf_keep=int(n_nf_keep),
+            n_nf_total=int(len(nf_keep_mask)),
         )
 
     if do_reweight_nf:

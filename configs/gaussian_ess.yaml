@@ -1,0 +1,18 @@
+# Compute the Gaussian-surrogate ESS from the original training dataset batches.
+# Reads <training_folder>/.hydra/config.yaml -> experiment.dataset.starting_folder,
+# loads batch*.npz (log_p = NLL, log_q = baseline/Gaussian NLL), computes the
+# importance-sampling ESS w ∝ exp(log_q - log_p), and writes a single-entry
+# ess_vs_epoch.json (epoch 0).
+training_folder: ???
+save_dir: ${training_folder}/ess_gaussian_dataset
+
+max_batches: null      # optional cap on number of batch files (null = all)
+quantile_lo: 0.001     # lower tail dropped for the "filtered" ESS
+quantile_hi: 0.999     # upper tail dropped for the "filtered" ESS
+
+hydra:
+  run:
+    dir: ${save_dir}
+  output_subdir: null
+  job:
+    chdir: false

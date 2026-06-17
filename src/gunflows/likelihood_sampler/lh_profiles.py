@@ -3,12 +3,53 @@ import ROOT
 import argparse
 import time
 import os
+import re
 import numpy as np
 import matplotlib.pyplot as plt
 import math
 
 from gunflows.likelihood_sampler import LikelihoodSampler
 from gunflows.likelihood_sampler import pygundam_utils
+
+
+# --- uniform "paper" plotting style (mirrors make_paper_plots.py) ------------
+plt.rcParams.update({
+    "mathtext.fontset": "cm",
+    "font.family":      "serif",
+    "font.size":        16,
+    "axes.labelsize":   16,
+    "xtick.labelsize":  14,
+    "ytick.labelsize":  14,
+    "legend.fontsize":  12,
+    "legend.frameon":   False,
+    "xtick.direction":  "in",
+    "ytick.direction":  "in",
+    "xtick.major.size": 7, "ytick.major.size": 7,
+    "xtick.major.width": 1.4, "ytick.major.width": 1.4,
+    "axes.linewidth":   1.4,
+    "axes.labelpad":    10,
+    "lines.linewidth":  2.0,
+    "figure.dpi":       150,
+    "savefig.dpi":      200,
+    "savefig.bbox":     "tight",
+})
+
+
+def _clean_name(name):
+    """Drop '_' and '#' from a systematic-parameter name for labels/legends."""
+    return re.sub(r"\s+", " ", str(name).replace("#", " ").replace("_", " ")).strip()
+
+
+def _param_label(name):
+    """Legend label: keep only the parameter name.
+
+    Drops the collection prefix ('Non-Linear Systematics/...'), the '#', and a
+    leading index number, e.g. 'Non-Linear Systematics/#8_Spline_Q2' -> 'Spline Q2'.
+    A bare linear dial ('Linear Systematics/#54') keeps its number ('54').
+    """
+    base = str(name).split("/")[-1].replace("#", "")   # '8_Spline_Q2' or '54'
+    base = re.sub(r"^\d+_", "", base)                   # strip 'N_' only if a name follows
+    return base.replace("_", " ").strip()
 
 # Start of the script
 # save current directory
@@ -112,8 +153,13 @@ for i, parameter_name in enumerate(parameter_names):
             points.append(point)
     # plot and save the profile
     stripped_parameter_name = parameter_name.split('#')[-1]
+    clean_name = _clean_name(parameter_name)
+    # For non-linear (spline) params: legend = bare parameter name, x-axis = eta.
+    # For the others (linear): keep the full cleaned name as before.
+    is_nonlinear = "Non-Linear" in parameter_name
+    legend_label = _param_label(parameter_name) if is_nonlinear else clean_name
     plt.figure()
-    plt.plot(points, nll_list, label=f"Profile {stripped_parameter_name}", marker='.')
+    plt.plot(points, nll_list, label=legend_label, marker='.')
     plt.axhline(y=likelihood_at_bestfit, color='r', linestyle='--', label='Best fit likelihood')
     plt.axvline(x=bf[i] - 1*math.sqrt(postfit_covariance[i][i]), color='g', linestyle='-', label=r"$\pm 1 \sigma$")
     plt.axvline(x=bf[i] + 1*math.sqrt(postfit_covariance[i][i]), color='g', linestyle='-')
@@ -129,9 +175,8 @@ for i, parameter_name in enumerate(parameter_names):
         plt.axvline(x=phys_range_max, color='black', linestyle=':', label='Physical limit')
         # shade the unphysical region
         plt.fill_betweenx([min(nll_list), max(nll_list)], phys_range_max, parameter_range[1], color='gray', alpha=0.3)
-    plt.xlabel(parameter_name)
-    plt.ylabel('nll')
-    plt.title(f'Profile of {parameter_name}')
+    plt.xlabel(r'$\eta$' if is_nonlinear else clean_name)
+    plt.ylabel(r'$-\log(\mathcal{L}_p)$')
     plt.legend()
     if "Flux" in parameter_name:
         plt.savefig(os.path.join(output_folder, "flux", f'{stripped_parameter_name}.png'))

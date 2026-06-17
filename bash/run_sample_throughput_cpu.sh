@@ -1,26 +1,25 @@
 #!/bin/bash
-#SBATCH --job-name=ess
-#SBATCH --partition=shared-gpu,private-dpnc-gpu
+# CPU-only variant of run_sample_throughput.sh: run NF sampling + NF density
+# evaluation + LH evaluation entirely on CPU (device=cpu), so every metric is in
+# CPU-hours. No GPU is requested. Threads = allocated CPUs.
+#SBATCH --job-name=sthr_cpu
+#SBATCH --partition=shared-cpu,public-cpu,private-dpnc-cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem-per-cpu=16G
-#SBATCH --time=11:59:00
-#SBATCH --gres=gpu:1,VramPerGpu:24G
-#SBATCH --constraint=COMPUTE_TYPE_AMPERE
-#SBATCH --output=logs/ess_%j.out
-#SBATCH --error=logs/ess_%j.err
+#SBATCH --time=04:00:00
+#SBATCH --output=logs/sthr_cpu_%j.out
+#SBATCH --error=logs/sthr_cpu_%j.err
 #SBATCH --mail-type=ALL
 
 #set -euo pipefail
 
 module load apptainer 2>/dev/null || true
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
-   
+
 HOST_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 MATHIAS_REPO="/home/shares/sanchezf/gundam_n_flow/GuNFlows"
-# GUNDAM install lives in HOST_REPO/software/install/gundam, but setup_nosubshell.sh
-# expects it at /workspace/gunflows_dev/... -> bind the repo there so `import GUNDAM` works.
 GUNDAM_DEV="/home/shares/sanchezf/gundam_n_flow/GuNFlows_dev"
 HOST_CONFIG="/home/shares/sanchezf/gundam_n_flow/common_gundam_workspace"
 HOST_DATA="/home/shares/sanchezf/gundam_n_flow/ToyNDFit/DATA"
@@ -36,7 +35,8 @@ fi
 
 echo "Job started at $(date)"
 
-srun --ntasks=1 apptainer exec --nv \
+# No --nv (CPU only); device=cpu forced at the end so it overrides any override.
+srun --ntasks=1 apptainer exec \
   --env PYTHONNOUSERSITE=1 \
   --env OMP_NUM_THREADS="${OMP_NUM_THREADS}" \
   --env PYTHONPATH="/workspace/work/GuNFlows/src:/workspace/work/GuNFlows/src/normalizing-flows" \
@@ -47,6 +47,6 @@ srun --ntasks=1 apptainer exec --nv \
   --bind "${HOST_DATA}:/workspace/data" \
   --pwd "${IN_CONTAINER_WORKDIR}" \
   "${SIF}" bash -lc "source '${IN_CONTAINER_SETUP}' && \
-                     HYDRA_FULL_ERROR=1 python -s -m gunflows.effective_sample_size ${EXTRA_ARGS}"
+                     HYDRA_FULL_ERROR=1 python -s -m gunflows.sample_throughput ${EXTRA_ARGS} device=cpu"
 
 echo "Job ended at $(date)"

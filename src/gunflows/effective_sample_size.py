@@ -29,6 +29,12 @@ from hydra.utils import instantiate
 from matplotlib.colors import LogNorm
 from sample_mcmc_toy import _abspath, _strip_common_prefixes
 from sample_mcmc import check_parameters_limits, sample_check_append
+from ess_plotting import (
+    make_ess_plots,
+    epoch_to_time_hours,
+    epoch_to_n_samplings,
+    sum_generated_from_progress,
+)
 
 
 NF_LOCAL = os.path.join(os.path.dirname(__file__), "..", "normalizing-flows")
@@ -306,7 +312,7 @@ def _plot_marginal_epoch_panel(
             gauss = np.exp(-0.5 * ((xgrid - mu) / sigma) ** 2) / (sigma * np.sqrt(2.0 * np.pi))
             ax.plot(xgrid, gauss, color="C4", linewidth=1.0, label="Gauss")
             ax.axvline(mu, color="C0", linestyle="--", linewidth=0.9, label="best fit")
-        ax.set_title(f"epoch {ep}k", fontsize=9)
+        ax.set_title(f"epoch {ep}", fontsize=9)
         ax.tick_params(axis="both", labelsize=8)
         ax.grid(True, alpha=0.2)
         if k == 0:
@@ -422,8 +428,10 @@ def main(cfg: DictConfig) -> None:
         pool = mp.Pool(processes=cfg.llh_workers, initializer=init_worker, initargs=(cfg, workers_log_dir))
 
     # start a loop where at each iteration you pickup a checkpoint, sample from it, compute ESS, make some plots, then store the results
+    # Checkpoint files are named `sampler_epoch<EPOCH>.pt` where <EPOCH> is the
+    # REAL (zero-padded) epoch number, e.g. sampler_epoch00500.pt -> epoch 500.
     ckpt_folder = os.path.join(training_folder, "checkpoints")
-    pattern = re.compile(r"sampler_epoch(\d+)000.pt")
+    pattern = re.compile(r"sampler_epoch(\d+)\.pt$")
     all_ckpts: list[tuple[int, str]] = []
     for fname in os.listdir(ckpt_folder):
         m = pattern.match(fname)
@@ -431,94 +439,147 @@ def main(cfg: DictConfig) -> None:
             all_ckpts.append((int(m.group(1)), fname))
     all_ckpts.sort(key=lambda t: t[0])
     print(f"Total NF checkpoints found: {len(all_ckpts)}", flush=True)
+    # Maximum available epoch -> used as the training span for the
+    # epoch -> #LH-samplings linear conversion (see below).
+    max_ckpt_epoch = max((e for e, _ in all_ckpts), default=0)
 
-    # Optionally ignore checkpoints beyond `max_epoch` (in real epoch units,
-    # e.g. max_epoch=20000 keeps sampler_epoch<=20000.pt). The stored epoch
-    # value is in thousands, so compare e*1000 against max_epoch.
-    max_epoch = getattr(cfg, "max_epoch", None)
-    if max_epoch is not None and int(max_epoch) > 0:
-        max_epoch = int(max_epoch)
-        kept = [(e, f) for e, f in all_ckpts if e * 1000 <= max_epoch]
-        if not kept:
-            raise RuntimeError(
-                f"max_epoch={max_epoch} excludes every checkpoint "
-                f"(available epochs x1000: {[e for e, _ in all_ckpts]})"
-            )
-        all_ckpts = kept
-        print(f"Applied max_epoch={max_epoch}: {len(all_ckpts)} checkpoints "
-              f"remain (epochs x1000: {[e for e, _ in all_ckpts]})", flush=True)
+    # --- Checkpoint selection -------------------------------------------------
+    # If `custom_epochs` is provided (a list of REAL epoch numbers), evaluate
+    # exactly those checkpoints (epoch 0 is the Gaussian point, handled above).
+    # Otherwise fall back to the previous behaviour: `n_checkpoints` roughly
+    # equally-spaced checkpoints within [0, max_epoch].
+    _custom_cfg = getattr(cfg, "custom_epochs", None)
+    custom_epochs = None
+    if _custom_cfg is not None:
+        custom_epochs = [int(e) for e in _custom_cfg]
 
-    # Sub-sample to `n_checkpoints` roughly equally-spaced (default 10).
-    # Always keep the lowest and highest available epoch.
-    n_pick = int(getattr(cfg, "n_checkpoints", 10))
-    if n_pick > 0 and len(all_ckpts) > n_pick:
-        idx = np.linspace(0, len(all_ckpts) - 1, n_pick).round().astype(int)
-        idx = sorted(set(int(i) for i in idx))
-        selected = [all_ckpts[i] for i in idx]
+    if custom_epochs is not None and len(custom_epochs) > 0:
+        avail = {e: f for e, f in all_ckpts}
+        selected = []
+        for e in sorted(set(custom_epochs)):
+            if e == 0:
+                continue  # epoch 0 == Gaussian baseline, no checkpoint file
+            if e in avail:
+                selected.append((e, avail[e]))
+            else:
+                print(f"  WARNING: requested custom epoch {e} has no checkpoint "
+                      f"sampler_epoch{e:05d}.pt -- skipping.", flush=True)
+        print(f"Selected {len(selected)} checkpoints from custom_epochs "
+              f"(epochs: {[e for e, _ in selected]})", flush=True)
     else:
-        selected = all_ckpts
-    print(f"Selected {len(selected)} checkpoints (epochs x1000): "
-          f"{[e for e, _ in selected]}", flush=True)
+        # Optionally ignore checkpoints beyond `max_epoch` (real epoch units).
+        max_epoch = getattr(cfg, "max_epoch", None)
+        if max_epoch is not None and int(max_epoch) > 0:
+            max_epoch = int(max_epoch)
+            kept = [(e, f) for e, f in all_ckpts if e <= max_epoch]
+            if not kept:
+                raise RuntimeError(
+                    f"max_epoch={max_epoch} excludes every checkpoint "
+                    f"(available epochs: {[e for e, _ in all_ckpts]})"
+                )
+            all_ckpts = kept
+            print(f"Applied max_epoch={max_epoch}: {len(all_ckpts)} checkpoints "
+                  f"remain (epochs: {[e for e, _ in all_ckpts]})", flush=True)
+
+        # Sub-sample to `n_checkpoints` roughly equally-spaced (default 10).
+        n_pick = int(getattr(cfg, "n_checkpoints", 10))
+        if n_pick > 0 and len(all_ckpts) > n_pick:
+            idx = np.linspace(0, len(all_ckpts) - 1, n_pick).round().astype(int)
+            idx = sorted(set(int(i) for i in idx))
+            selected = [all_ckpts[i] for i in idx]
+        else:
+            selected = all_ckpts
+        print(f"Selected {len(selected)} checkpoints (epochs): "
+              f"{[e for e, _ in selected]}", flush=True)
     tot_models = len(selected)
 
+    # --- Epoch -> time / #LH-samplings linear conversions ---------------------
+    # time(epoch)  = epoch * (time_ref_hours / time_ref_epochs)        [b = 0]
+    # nsamp(epoch) = samplings_base + (sum_generated/ref_epoch)*epoch  [b = base]
+    time_ref_epochs = float(getattr(cfg, "time_ref_epochs", 56000) or 0)
+    time_ref_hours = float(getattr(cfg, "time_ref_hours", 23.0 + 20.0 / 60.0))
+    samplings_base = float(getattr(cfg, "samplings_base", 2_500_000))
+    samplings_ref_epoch_cfg = getattr(cfg, "samplings_ref_epoch", None)
+    samplings_ref_epoch = (
+        float(samplings_ref_epoch_cfg)
+        if samplings_ref_epoch_cfg is not None and float(samplings_ref_epoch_cfg) > 0
+        else float(max_ckpt_epoch)
+    )
+    _prog_glob = getattr(cfg, "samplings_progress_glob", None)
+    if _prog_glob is None or str(_prog_glob).strip() == "":
+        _prog_glob = os.path.join(training_folder, "generated_samples", "progress_*.json")
+    else:
+        _prog_glob = _abspath(str(_prog_glob))
+    sum_generated = sum_generated_from_progress(_prog_glob)
+    print(f"Epoch->time: {time_ref_hours:.4f} h over {time_ref_epochs:.0f} epochs.", flush=True)
+    print(f"Epoch->#samplings: base={samplings_base:.0f} + "
+          f"(sum_generated={sum_generated:.0f} / ref_epoch={samplings_ref_epoch:.0f})*epoch "
+          f"(glob={_prog_glob}).", flush=True)
+
     # ── Gaussian approximation ESS (plotted at epoch 0) ──────────────────────
+    # Only evaluate the epoch-0 Gaussian baseline when custom_epochs is null
+    # (default behaviour) or when 0 is explicitly requested in custom_epochs.
     num_samples = int(cfg.num_samples)
     batch_size  = int(cfg.batch_size)
-    print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
-    _rng_g = np.random.default_rng(42)
-    _mu_g  = bestfit_parameter_values.copy()
-    _cov_g = postfit_covariance.copy()
-    _ndim  = len(_mu_g)
-    _L_g   = np.linalg.cholesky(_cov_g)
-    _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
-    _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
-    _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
+    include_gaussian = (custom_epochs is None) or (0 in custom_epochs)
+    if not include_gaussian:
+        print("Skipping Gaussian (epoch 0) ESS: custom_epochs given without 0.", flush=True)
+    if include_gaussian:
+        print("\nComputing Gaussian approximation ESS (epoch 0)...", flush=True)
+        _rng_g = np.random.default_rng(42)
+        _mu_g  = bestfit_parameter_values.copy()
+        _cov_g = postfit_covariance.copy()
+        _ndim  = len(_mu_g)
+        _L_g   = np.linalg.cholesky(_cov_g)
+        _logdet_g = 2.0 * np.sum(np.log(np.diag(_L_g)))
+        _log_norm_g = -0.5 * (_ndim * np.log(2.0 * np.pi) + _logdet_g)
+        _cov_inv_g  = np.linalg.solve(_cov_g, np.eye(_ndim))
 
-    _g_samples: list[np.ndarray] = []
-    _g_logqs:   list[float]      = []
-    while len(_g_samples) < num_samples:
-        take = min(batch_size, (num_samples - len(_g_samples)) * 3)
-        _z = _rng_g.standard_normal((take, _ndim))
-        _xs = _mu_g + _z @ _L_g.T
-        for _x in _xs:
-            if not check_parameters_limits(_x, parameter_limits):
-                continue
-            _diff = _x - _mu_g
-            _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
-            _g_samples.append(_x.copy())
-            if len(_g_samples) >= num_samples:
-                break
+        _g_samples: list[np.ndarray] = []
+        _g_logqs:   list[float]      = []
+        while len(_g_samples) < num_samples:
+            take = min(batch_size, (num_samples - len(_g_samples)) * 3)
+            _z = _rng_g.standard_normal((take, _ndim))
+            _xs = _mu_g + _z @ _L_g.T
+            for _x in _xs:
+                if not check_parameters_limits(_x, parameter_limits):
+                    continue
+                _diff = _x - _mu_g
+                _g_logqs.append(float(_log_norm_g - 0.5 * float(_diff @ _cov_inv_g @ _diff)))
+                _g_samples.append(_x.copy())
+                if len(_g_samples) >= num_samples:
+                    break
 
-    _g_samples = np.asarray(_g_samples[:num_samples])
-    _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
+        _g_samples = np.asarray(_g_samples[:num_samples])
+        _g_logqs   = np.asarray(_g_logqs[:num_samples], dtype=np.float64)
 
-    print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
-    _t0_g = time.time()
-    if cfg.llh_workers > 0:
-        _g_lh = pool.map(worker, _g_samples, chunksize=32)
-        _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
-    else:
-        _g_rw_list = []
-        for _gx, _glq in zip(_g_samples, _g_logqs):
-            _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
-            _g_rw_list.append(-_glq - _glp)
-        _g_rw = np.array(_g_rw_list)
-    print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
+        print(f"Computing LH for {len(_g_samples)} Gaussian samples...", flush=True)
+        _t0_g = time.time()
+        if cfg.llh_workers > 0:
+            _g_lh = pool.map(worker, _g_samples, chunksize=32)
+            _g_rw = np.array([-lq - lp for lp, lq in zip(_g_lh, _g_logqs)])
+        else:
+            _g_rw_list = []
+            for _gx, _glq in zip(_g_samples, _g_logqs):
+                _glp, _, _ = likelihood_sampler.inject_params_and_compute_likelihood(_gx, extend_continue=False)
+                _g_rw_list.append(-_glq - _glp)
+            _g_rw = np.array(_g_rw_list)
+        print(f"Gaussian LH done in {time.time()-_t0_g:.1f}s", flush=True)
 
-    _g_rw -= np.median(_g_rw)
-    _g_w   = np.exp(_g_rw)
-    _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
-    _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
-    _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
-    _g_fw    = np.exp(_g_rw[_g_fmask])
-    _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
-    print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
-          f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
+        _g_rw -= np.median(_g_rw)
+        _g_w   = np.exp(_g_rw)
+        _g_ess = float(np.sum(_g_w)**2 / np.sum(_g_w**2))
+        _g_lo, _g_hi = np.quantile(_g_rw, 0.001), np.quantile(_g_rw, 0.999)
+        _g_fmask = (_g_rw >= _g_lo) & (_g_rw <= _g_hi)
+        _g_fw    = np.exp(_g_rw[_g_fmask])
+        _g_ess_f = float(np.sum(_g_fw)**2 / np.sum(_g_fw**2))
+        print(f"Gaussian ESS: {_g_ess:.1f}/{num_samples}  "
+              f"filtered: {_g_ess_f:.1f}/{_g_fmask.sum()}", flush=True)
 
-    epoch_list.append(0)
-    ess_list.append(_g_ess / num_samples)
-    ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
-    tot_models += 1
+        epoch_list.append(0)
+        ess_list.append(_g_ess / num_samples)
+        ess_filtered_list.append(_g_ess_f / float(_g_fmask.sum()))
+        tot_models += 1
     # ── end Gaussian ESS ─────────────────────────────────────────────────────
 
     for ep, fname in selected:
@@ -695,51 +756,69 @@ def main(cfg: DictConfig) -> None:
         ess_list = [ess_list[i] for i in sorted_indices]
         ess_filtered_list = [ess_filtered_list[i] for i in sorted_indices]
 
-        # save intermediate results to json
+        # epoch -> time [hours] and epoch -> #LH-samplings (linear conversions)
+        _time_hours = epoch_to_time_hours(
+            epoch_list, time_ref_epochs, time_ref_hours).tolist()
+        _n_samplings = epoch_to_n_samplings(
+            epoch_list, samplings_base, sum_generated, samplings_ref_epoch).tolist()
+
+        # save intermediate results to json (includes everything needed to
+        # re-plot offline via plot_ess_from_json.py)
         results = {
             "epochs": epoch_list,
             "ess": ess_list,
             "ess_filtered": ess_filtered_list,
+            "time_hours": _time_hours,
+            "n_samplings": _n_samplings,
+            "num_samples": int(num_samples),
+            "conversion": {
+                "time_ref_epochs": time_ref_epochs,
+                "time_ref_hours": time_ref_hours,
+                "samplings_base": samplings_base,
+                "samplings_ref_epoch": samplings_ref_epoch,
+                "sum_generated": sum_generated,
+            },
         }
         json_path = out_dir / "ess_vs_epoch.json"
         with open(json_path, "w") as f:
             json.dump(results, f, indent=4)
 
-        # plot ESS vs epoch
-        _ep_arr   = np.array(epoch_list)
-        _ess_arr  = np.array(ess_list)
-        _essf_arr = np.array(ess_filtered_list)
-        _nf_mask_plt   = _ep_arr > 0
-        _gauss_mask_plt = _ep_arr == 0
-
-        plt.figure(figsize=(8, 6))
-        # NF points
-        if _nf_mask_plt.any():
-            plt.plot(_ep_arr[_nf_mask_plt], _ess_arr[_nf_mask_plt],
-                     marker='o', color='C0', label='ESS (NF)')
-            plt.plot(_ep_arr[_nf_mask_plt], _essf_arr[_nf_mask_plt],
-                     marker='o', color='C1', label='ESS filtered (NF)')
-        # Gaussian point at epoch 0
-        if _gauss_mask_plt.any():
-            plt.scatter(_ep_arr[_gauss_mask_plt], _ess_arr[_gauss_mask_plt],
-                        marker='*', s=200, color='C0', zorder=5, label='ESS (Gaussian)')
-            plt.scatter(_ep_arr[_gauss_mask_plt], _essf_arr[_gauss_mask_plt],
-                        marker='*', s=200, color='C1', zorder=5, label='ESS filtered (Gaussian)')
-            plt.axvline(0, color='grey', linestyle='--', linewidth=0.8)
-        plt.xlabel('Epoch (×1000)')
-        plt.ylabel('Effective Sample Size (fraction)')
-        plt.title(f'Effective Sample Size vs Training Epoch ({num_samples} samples)')
-        plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-        plt.legend()
-        plt_path = out_dir / "ess_vs_epoch.png"
-        plt.savefig(plt_path)
-        plt.close()
+        # 6 ESS plots: {non-filtered, filtered} x {epoch, time, #samplings}
+        make_ess_plots(results, out_dir, num_samples=num_samples)
 
         print(f"Completed {len(epoch_list)}/{tot_models} models", flush=True)
 
     
 
 
+
+    # If no checkpoints were evaluated (e.g. custom_epochs=[0], Gaussian only),
+    # the in-loop save never ran -> write the json + plots once here.
+    if not selected and epoch_list:
+        _time_hours = epoch_to_time_hours(
+            epoch_list, time_ref_epochs, time_ref_hours).tolist()
+        _n_samplings = epoch_to_n_samplings(
+            epoch_list, samplings_base, sum_generated, samplings_ref_epoch).tolist()
+        results = {
+            "epochs": epoch_list,
+            "ess": ess_list,
+            "ess_filtered": ess_filtered_list,
+            "time_hours": _time_hours,
+            "n_samplings": _n_samplings,
+            "num_samples": int(num_samples),
+            "conversion": {
+                "time_ref_epochs": time_ref_epochs,
+                "time_ref_hours": time_ref_hours,
+                "samplings_base": samplings_base,
+                "samplings_ref_epoch": samplings_ref_epoch,
+                "sum_generated": sum_generated,
+            },
+        }
+        json_path = out_dir / "ess_vs_epoch.json"
+        with open(json_path, "w") as f:
+            json.dump(results, f, indent=4)
+        make_ess_plots(results, out_dir, num_samples=num_samples)
+        print(f"Saved Gaussian-only results to {json_path}", flush=True)
 
     if cfg.llh_workers > 0:
         pool.close()
