@@ -148,10 +148,12 @@ def main(cfg: DictConfig) -> None:
     else:
         usetex = bool(_usetex_cfg)
     also_combined = bool(getattr(cfg, "also_combined", True))
+    also_liny_logx = bool(getattr(cfg, "also_liny_logx", True))
     written = make_ess_plots(
         results, out_dir, num_samples=num_samples, y_percent=y_percent,
         show_title=show_title, label_fontsize=label_fontsize, also_loglog=also_loglog,
         paper_style=paper_style, fmt=fmt, usetex=usetex, also_combined=also_combined,
+        also_liny_logx=also_liny_logx,
     )
     print(f"Wrote {len(written)} ESS plots to {out_dir}:", flush=True)
     for p in written:

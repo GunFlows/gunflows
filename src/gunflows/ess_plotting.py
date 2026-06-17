@@ -342,7 +342,7 @@ def _plot_one(x, y, gauss_mask, xlabel, ylabel, title, out_path,
 def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
                    show_title=True, label_fontsize=16, also_loglog=False,
                    paper_style=False, fmt="png", usetex=None,
-                   also_combined=False) -> list[Path]:
+                   also_combined=False, also_liny_logx=False) -> list[Path]:
     """Produce ESS plots from a results dict.
 
     results must contain "epochs", "ess", "ess_filtered"; optionally
@@ -375,6 +375,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
 
     ns = "" if num_samples is None else f" ({int(num_samples)} samples)"
     ylabel = "rESS [%] (log scale)" if y_percent else "rESS (log scale)"
+    ylabel_lin = "rESS [%]" if y_percent else "rESS"   # for the linear-y variant
 
     # Colors: paper palette (NF blue / Gaussian red; filtered uses MCMC green)
     # when paper_style, else the previous scheme.
@@ -403,19 +404,22 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
         if yvals.size != epochs.size:
             continue
         for xkey, xvals, xlabel, tnoun, xfmt in x_variants:
-            # linear-x, plus an optional log-x ("_loglog") counterpart
-            modes = [("", False)]
+            # (suffix, log_x, log_y): linear-x/log-y, optional log-x/log-y,
+            # optional linear-y/log-x.
+            modes = [("", False, True)]
             if also_loglog:
-                modes.append(("_loglog", True))
-            for msuffix, log_x in modes:
+                modes.append(("_loglog", True, True))
+            if also_liny_logx:
+                modes.append(("_liny_logx", True, False))
+            for msuffix, log_x, log_y in modes:
                 out_path = out_dir / f"ess{suffix}_vs_{xkey}{msuffix}.{fmt}"
                 _plot_one(
                     xvals, yvals, gauss_mask,
-                    xlabel=xlabel, ylabel=ylabel,
+                    xlabel=xlabel, ylabel=(ylabel if log_y else ylabel_lin),
                     title=f"{tprefix} vs {tnoun}{ns}",
                     out_path=out_path, color=color, gauss_color=gauss_color,
                     point_label=plabel,
-                    y_percent=y_percent, log_x=log_x,
+                    y_percent=y_percent, log_x=log_x, log_y=log_y,
                     show_title=show_title, label_fontsize=label_fontsize,
                     paper_style=paper_style, usetex=usetex,
                     x_major_formatter=xfmt,

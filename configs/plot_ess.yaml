@@ -9,6 +9,7 @@ show_title: false        # draw the main title above each plot
 label_fontsize: 16       # font size for the x/y axis labels
 also_loglog: true        # also emit a log-x ("_loglog") version of every plot
 also_combined: true      # also emit a combined plot with epoch+time+#samplings stacked x-axes
+also_liny_logx: true     # also emit a linear-y / log-x ("_liny_logx") version of every plot
 paper_style: true        # use make_paper_plots.py style (serif/CM fonts, in-ticks, palette)
 fmt: png                 # output image format/extension (e.g. png, pdf)
 usetex: false            # false (default, machine-independent) | true | auto (detect a latex binary)
