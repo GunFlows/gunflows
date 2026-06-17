@@ -1,0 +1,31 @@
+# Re-draw ESS plots from a saved ess_vs_epoch.json (no resampling).
+# Example:
+#   python -m gunflows.plot_ess_from_json json_path=/path/to/ess/ess_vs_epoch.json
+json_path: ???          # path to ess_vs_epoch.json
+out_dir: null           # null -> directory containing json_path
+num_samples: null       # null -> read from json ("num_samples"), used only for plot titles
+y_percent: true         # show rESS y-axis as a percentage (x100), keeping log scale
+show_title: false        # draw the main title above each plot
+label_fontsize: 16       # font size for the x/y axis labels
+also_loglog: true        # also emit a log-x ("_loglog") version of every plot
+also_combined: true      # also emit a combined plot with epoch+time+#samplings stacked x-axes
+paper_style: true        # use make_paper_plots.py style (serif/CM fonts, in-ticks, palette)
+fmt: png                 # output image format/extension (e.g. png, pdf)
+usetex: false            # false (default, machine-independent) | true | auto (detect a latex binary)
+
+# By default the time/samplings x-axes are taken straight from the json. Set
+# recompute_conversions=true to re-derive them from the stored epochs using the
+# constants below (any left null fall back to the values saved in the json).
+recompute_conversions: false
+time_ref_epochs: null
+time_ref_hours: null
+samplings_base: null
+samplings_ref_epoch: null
+samplings_progress_glob: null   # set to re-sum progress_*.json when recomputing
+
+hydra:
+  run:
+    dir: ${oc.env:PWD}
+  output_subdir: null
+  job:
+    chdir: false
