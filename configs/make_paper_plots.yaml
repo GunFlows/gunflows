@@ -90,6 +90,14 @@ n_corner_params:  10
 fig_format:       "pdf"    # "pdf" or "png"
 force_recompute:  false
 
+# spectrum_sigma_3: produced only when the run has MORE throws than
+# sigma3_subsample (e.g. a 200k run). Displays the first sigma3_subsample throws;
+# the Δσ ±68% CI is bootstrapped (with replacement, sigma3_n_boot draws) at that
+# size from the full pool. Δσ bar = point estimate on the displayed sample.
+do_sigma3:          true      # set false to skip the (slow) bootstrap spectrum_sigma_3
+sigma3_n_boot:      200
+sigma3_subsample:   100000
+
 # ── HEP label ─────────────────────────────────────────────────────────────────
 hep_label:    "T2K"
 hep_sublabel: "Preliminary"
