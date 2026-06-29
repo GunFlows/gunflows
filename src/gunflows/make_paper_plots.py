@@ -208,6 +208,51 @@ def _percentile_bands(
     ]
 
 
+_SIGMA_DROP = 0.001   # drop this fraction of throws farthest from the mean
+
+
+def _robust_std(X: np.ndarray, drop_frac: float = _SIGMA_DROP) -> np.ndarray:
+    """Per-bin std after removing, at the SAMPLE (throw) level, the `drop_frac`
+    of throws farthest from the mean. Distance is the standardized Euclidean
+    distance of each throw's bin vector from the mean, so the SAME outlier
+    throws are dropped for every bin. Returns per-bin std of the survivors."""
+    X = np.asarray(X, dtype=np.float64)
+    mu = X.mean(axis=0)
+    sc = X.std(axis=0)
+    sc = np.where(sc > 0, sc, 1.0)
+    z  = (X - mu) / sc
+    dist = np.sqrt((z * z).sum(axis=1))            # one distance per throw
+    keep = dist <= np.quantile(dist, 1.0 - drop_frac)
+    return X[keep].std(axis=0)
+
+
+def _std_maybe_robust(X: np.ndarray, robust: bool) -> np.ndarray:
+    return _robust_std(X) if robust else np.asarray(X, dtype=np.float64).std(axis=0)
+
+
+def _bootstrap_dsigma(A: np.ndarray, B: np.ndarray, sub_n: int,
+                      n_boot: int = 200, cl: float = 0.68, seed: int = 0,
+                      robust_a: bool = True, robust_b: bool = True):
+    """Bootstrap of the relative Δσ statistic (σ_A − σ_B) / mean(σ_A, σ_B) × 100
+    for a sample of size sub_n: each of n_boot iterations draws sub_n of BOTH A
+    and B WITH replacement from their pools (e.g. 100k from a 200k pool).
+    robust_a/robust_b: drop the farthest-from-mean throws before σ (NF/MCMC) or
+    use plain σ (Gaussian).
+    Returns (mean, lo, hi) per bin — the bootstrap mean and the ±cl percentile
+    bounds, all from the SAME distribution (so the mean sits inside the band)."""
+    rng    = np.random.default_rng(seed)
+    na, nb = len(A), len(B)
+    boots  = np.empty((n_boot, A.shape[1]), dtype=np.float64)
+    for k in range(n_boot):
+        sa = _std_maybe_robust(A[rng.integers(0, na, sub_n)], robust_a)
+        sb = _std_maybe_robust(B[rng.integers(0, nb, sub_n)], robust_b)
+        d  = 0.5 * (sa + sb)
+        boots[k] = np.where(d > 0, (sa - sb) / d * 100.0, 0.0)
+    return (boots.mean(axis=0),
+            np.percentile(boots, 100.0 * (1 - cl) / 2.0, axis=0),
+            np.percentile(boots, 100.0 * (1 + cl) / 2.0, axis=0))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Computation: NF model loader
 # ─────────────────────────────────────────────────────────────────────────────
@@ -805,7 +850,24 @@ def _load_mcmc(
     max_steps: int | None = None,   # unused; kept for call-site compatibility
     thin: int | None = None,
 ) -> np.ndarray:
-    """Uniform-thinned MCMC parameter throws across the post-burn-in chain."""
+    """Uniform-thinned MCMC parameter throws across the post-burn-in chain.
+
+    Accepts either a GUNDAM ROOT file or a .npz produced by run_mcmc_pygundam
+    (keys: ``chain`` (n_steps, dim), optionally ``nll`` / ``par_names``).
+    """
+    if mcmc_chain.endswith(".npz"):
+        data  = np.load(mcmc_chain, allow_pickle=True)
+        chain = data["chain"]           # (n_steps, dim)
+        n_total = len(chain)
+        burn    = int(np.floor(float(burnin_frac) * n_total))
+        avail   = n_total - burn
+        stride  = int(thin) if thin else max(1, avail // max(1, n_samples))
+        indices = list(range(burn, n_total, stride))[:n_samples]
+        pts     = chain[indices].astype(np.float64)
+        print(f"  MCMC (.npz): {len(pts)} throws from '{mcmc_chain}' "
+              f"(burn={burn}, stride={stride})", flush=True)
+        return pts
+
     import ROOT
     ROOT.gROOT.SetBatch(True)
     f = ROOT.TFile.Open(mcmc_chain, "READ")
@@ -872,17 +934,28 @@ def plot_spectrum(
     sigma_mode: bool = False,
     diff_legend_loc: str = "upper right",   # NF−Gaussian (Δσ) panel legend
     drop_last: int = 0,                     # drop this many trailing bins
+    errorbar_top: bool = False,             # top panel: displaced error bars vs filled bands
+    bootstrap_ci: int = 0,                  # >0: overlay ±68% CI dashed lines on Δσ panels (n_boot)
+    boot_subsample: int = 0,                # bootstrap sample size (e.g. 100k from a 200k pool);
+                                            # also the display size (first N rows)
     fmt: str = "pdf",
 ) -> None:
     """Spectrum: yield panel + two diff panels.
     sigma_mode=False : Δ⟨N⟩(NF−Gauss) and Δσ(NF−Gauss).
     sigma_mode=True  : Δσ(MCMC−NF) and Δσ(NF−Gauss).
-    drop_last        : remove the last N bins from the plot (edges + data)."""
+    drop_last        : remove the last N bins from the plot (edges + data).
+    errorbar_top     : top panel shows one 1σ error bar per method per bin,
+                       slightly x-displaced, instead of filled CI bands."""
     if not results:
         return
     if drop_last > 0:
         bin_edges = bin_edges[:-drop_last]
         results = {k: v[:, :v.shape[1] - drop_last] for k, v in results.items()}
+    # Bootstrap pool = the full sample; display data = first `boot_subsample`
+    # rows (e.g. show the first 100k, bootstrap the CI from the full 200k).
+    pool_results = results
+    if bootstrap_ci > 0 and boot_subsample > 0:
+        results = {k: v[:boot_subsample] for k, v in results.items()}
     centers   = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     widths    = bin_edges[1:] - bin_edges[:-1]
     has_nf    = "NF"       in results
@@ -901,26 +974,43 @@ def plot_spectrum(
     ax_dm = fig.add_subplot(gs[1], sharex=ax) if show_diff else None
     ax_ds = fig.add_subplot(gs[2], sharex=ax) if show_diff else None
 
-    gauss_raw = results["Gaussian"].mean(axis=0) if has_gauss else None
-    gauss_std = results["Gaussian"].std(axis=0)  if has_gauss else None
+    gauss_raw = results["Gaussian"].mean(axis=0)  if has_gauss else None
+    gauss_std = results["Gaussian"].std(axis=0)    if has_gauss else None  # plain (Gaussian)
     means_raw, stds_raw = {}, {}
 
-    for label in SOURCE_ORDER:
-        if label not in results:
-            continue
-        color = COLORS[label]
-        arr   = results[label]
-        means_raw[label] = arr.mean(axis=0)
-        stds_raw[label]  = arr.std(axis=0)
-        mean_d = means_raw[label] / widths
-        bands  = _percentile_bands(arr, ci_levels)
+    present = [l for l in SOURCE_ORDER if l in results]
+    for label in present:
+        means_raw[label] = results[label].mean(axis=0)
+        # outlier-robust σ only for NF / MCMC; plain σ for Gaussian
+        stds_raw[label]  = (_robust_std(results[label]) if label in ("NF", "MCMC")
+                            else results[label].std(axis=0))
 
-        for (lo_r, hi_r), alpha in zip(bands, alphas):
-            sx, sy_lo = _step_xy(bin_edges, np.maximum(lo_r, 1e-10) / widths)
-            _,  sy_hi = _step_xy(bin_edges, hi_r / widths)
-            ax.fill_between(sx, sy_lo, sy_hi, facecolor=color, alpha=alpha, linewidth=0)
-        sx, sy = _step_xy(bin_edges, mean_d)
-        ax.plot(sx, sy, color=color, linewidth=2.2, label=label)
+    if errorbar_top:
+        # One 1σ error bar per method per bin, x-displaced so they don't overlap.
+        n_src   = len(present)
+        spread  = 0.6                       # fraction of bin width used by the cluster
+        for j, label in enumerate(present):
+            arr     = results[label]
+            mean_d  = arr.mean(axis=0) / widths
+            lo_r, hi_r = _percentile_bands(arr, (ci_levels[0],))[0]   # 1σ band
+            yerr    = (hi_r - lo_r) / 2.0 / widths
+            frac    = (j - (n_src - 1) / 2.0) * (spread / max(n_src, 1))
+            x       = centers + frac * widths
+            ax.errorbar(x, mean_d, yerr=yerr, fmt="o", color=COLORS[label],
+                        markersize=5, elinewidth=1.8, capsize=3, capthick=1.8,
+                        linewidth=0, label=label)
+    else:
+        for label in present:
+            color  = COLORS[label]
+            arr    = results[label]
+            mean_d = means_raw[label] / widths
+            bands  = _percentile_bands(arr, ci_levels)
+            for (lo_r, hi_r), alpha in zip(bands, alphas):
+                sx, sy_lo = _step_xy(bin_edges, np.maximum(lo_r, 1e-10) / widths)
+                _,  sy_hi = _step_xy(bin_edges, hi_r / widths)
+                ax.fill_between(sx, sy_lo, sy_hi, facecolor=color, alpha=alpha, linewidth=0)
+            sx, sy = _step_xy(bin_edges, mean_d)
+            ax.plot(sx, sy, color=color, linewidth=2.2, label=label)
 
     ax.set_ylabel("Event yield / bin width")
     ax.legend(loc=legend_loc)
@@ -945,10 +1035,22 @@ def plot_spectrum(
                 rel = np.where(d > 0, (sm - sn) / d * 100.0, 0.0)
             else:
                 rel = np.zeros_like(sn)
+            # bar = point estimate (on the displayed sample); CI from subsampling
+            ci_dm = None
+            if bootstrap_ci > 0 and "MCMC" in pool_results:
+                sub = boot_subsample if boot_subsample > 0 else len(pool_results["MCMC"])
+                rel, lo_b, hi_b = _bootstrap_dsigma(pool_results["MCMC"], pool_results["NF"],
+                                                    sub, bootstrap_ci,
+                                                    robust_a=True, robust_b=True)  # bar = bootstrap mean
+                ci_dm = (lo_b, hi_b)
             ax_dm.bar(centers, rel, width=widths, color=COLORS["MCMC"],
                       label=r"MCMC $-$ NF", **bar_kw)
             ax_dm.set_ylabel(r"$\Delta\sigma / \bar{\sigma}$")
             ax_dm.legend(loc="lower right")
+            if ci_dm is not None:
+                for y in ci_dm:
+                    bx, by = _step_xy(bin_edges, y)
+                    ax_dm.plot(bx, by, color="k", ls="--", lw=1.5)
         else:
             # Δ⟨N⟩ between NF and Gaussian
             mn, mg = means_raw["NF"], gauss_raw
@@ -969,8 +1071,19 @@ def plot_spectrum(
         # ── Bottom diff panel: Δσ between NF and Gaussian (both modes) ─────
         d_s   = 0.5 * (sn + sg)
         rel_s = np.where(d_s > 0, (sn - sg) / d_s * 100.0, 0.0)
+        ci_ds = None
+        if bootstrap_ci > 0 and has_nf and has_gauss:
+            sub = boot_subsample if boot_subsample > 0 else len(pool_results["NF"])
+            rel_s, lo_b, hi_b = _bootstrap_dsigma(pool_results["NF"], pool_results["Gaussian"],
+                                                  sub, bootstrap_ci,
+                                                  robust_a=True, robust_b=False)  # Gaussian = plain σ
+            ci_ds = (lo_b, hi_b)
         ax_ds.bar(centers, rel_s, width=widths, color=COLORS["Gaussian"],
                   label=r"NF $-$ Gaussian", **bar_kw)
+        if ci_ds is not None:
+            for y in ci_ds:
+                bx, by = _step_xy(bin_edges, y)
+                ax_ds.plot(bx, by, color="k", ls="--", lw=1.5)
         ax_ds.axhline(0, color="k", linewidth=1.0)
         ax_ds.set_ylabel(r"$\Delta\sigma / \bar{\sigma}$")
         ax_ds.set_xlabel(xlabel)
@@ -1064,7 +1177,7 @@ def plot_violin(
     TFS  = int(22 * tick_scale * height_scale)
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     ax.set_xlabel(xlabel)
-    ax.set_ylabel(r"$(N - \mu_{\mathrm{Gauss}}) / \mu_{\mathrm{Gauss}}$")
+    ax.set_ylabel(r"$(N - \mu_{\mathrm{BF}}) / \mu_{\mathrm{BF}}$")
     ax.set_xlim(-0.5, n_bins - 0.5)
     ax.set_xticks(range(n_bins))
     ax.set_xticklabels(bin_labs, rotation=45, ha="right")
@@ -1122,6 +1235,7 @@ def _corner_ticks(
     n: int,
     labs: list[str],
     label_size: int = 14,
+    x_label_size: int | None = None,
     x_only: bool = False,
     rotate_x: bool = False,
 ) -> None:
@@ -1131,7 +1245,9 @@ def _corner_ticks(
     rotate_x=True:          rotate x labels (for long parameter names that
                             would otherwise overlap and hide one another).
     """
-    xlbl_kw = dict(fontsize=label_size + 3, labelpad=8)
+    if x_label_size is None:
+        x_label_size = label_size + 3
+    xlbl_kw = dict(fontsize=x_label_size, labelpad=8)
     if rotate_x:
         xlbl_kw.update(rotation=35, ha="right", rotation_mode="anchor")
 
@@ -1395,18 +1511,47 @@ def plot_rate_vs_nll(
 # Plot 7 — parameter corner (KS-ranked, IS-weighted or uniform)
 # ─────────────────────────────────────────────────────────────────────────────
 
+import re
+
 def _short_par_name(s: str, maxlen: int = 40) -> str:
-    """Strip common GUNDAM prefixes and shorten so the name fits as an
-    un-rotated x-axis label without overlapping its neighbours.
-    When too long, keep the END of the name (no ellipsis)."""
-    s = str(s).strip()
+    """Display-friendly parameter labels for parameter plots."""
+    raw = str(s).strip()
+
     for pre in ("Linear Systematics/", "Systematics/", "Parameters/"):
-        if s.startswith(pre):
-            s = s[len(pre):]
-    s = s.replace("_", " ")          # underscores → spaces (avoid mathtext issues, wrap nicer)
-    if len(s) > maxlen:
-        s = s[-maxlen:]              # keep the tail
-    return s
+        if raw.startswith(pre):
+            raw = raw[len(pre):]
+
+    # Only rewrite parameters that START with "Spline"
+    if raw.lower().startswith("spline"):
+        name = raw[len("Spline"):].strip()
+
+        # Normalize underscores → spaces FIRST so word boundaries are real,
+        # then drop the word "mirror".
+        name = name.replace("_", " ")
+        name = re.sub(r"\bmirror\b", "", name, flags=re.IGNORECASE)
+        name = " ".join(name.split())
+
+        # Special display cases
+        tex_map = {
+            "pmiss": r"$\eta_{\mathrm{pmiss}}$",
+            "p miss": r"$\eta_{\mathrm{pmiss}}$",
+            "q0": r"$\eta_{q0}$",
+            "q2": r"$\eta_{q2}$",
+            "q3": r"$\eta_{q3}$",
+        }
+
+        key = name.lower()
+        if key in tex_map:
+            return tex_map[key]
+
+        # Generic fallback for any other spline parameter
+        safe_name = re.sub(r"[^A-Za-z0-9]+", "", name)
+        return rf"$\eta_{{\mathrm{{{safe_name}}}}}$"
+
+    raw = raw.replace("_", " ")
+    if len(raw) > maxlen:
+        raw = raw[-maxlen:]
+    return raw
 
 
 def _ks_gauss(z: np.ndarray, w: np.ndarray) -> float:
@@ -1513,7 +1658,7 @@ def plot_param_corner(
                 ax.tick_params(labelbottom=False, labelleft=False,
                                top=False, right=False, length=4, width=1.0)
     else:
-        _corner_ticks(axes, n, ns, label_size=16, x_only=True)
+        _corner_ticks(axes, n, ns, label_size=16, x_label_size=32, x_only=True)
 
     fig.tight_layout(pad=0.4)
     _savefig(fig, save_path, fmt)
@@ -1534,17 +1679,17 @@ def plot_marginal_overlay(
     bins: int = 60,
     fmt: str = "pdf",
 ) -> None:
-    """3×2 grid of 1-D marginals for the 6 least-Gaussian parameters (NF):
-    NF histogram (filled+step), Gaussian analytic curve, MCMC histogram (step).
-    Styled to match the other paper plots, with large fonts."""
-    sel = np.asarray(sel)[:6]
+    """5×2 grid of 1-D marginals (up to 10 parameters): NF histogram
+    (filled+step), Gaussian analytic curve, MCMC histogram (step).
+    Big figure; the 'Density' y-label is shown on the first panel only."""
+    sel = np.asarray(sel)[:10]
     n   = len(sel)
     std = np.sqrt(np.clip(np.diag(cov), 1e-14, None))
 
-    LBL_FS, TICK_FS, LEG_FS = 32, 26, 30   # ≥2× the previous sizes
+    LBL_FS, TICK_FS, LEG_FS = 32, 26, 30
 
-    nrows, ncols = 3, 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(9 * ncols, 6 * nrows))
+    nrows, ncols = 2, 5
+    fig, axes = plt.subplots(nrows, ncols, figsize=(8 * ncols, 6.5 * nrows))
     axes = np.asarray(axes).flatten()
 
     for k, i in enumerate(sel):
@@ -1558,16 +1703,13 @@ def plot_marginal_overlay(
         hi = max(hi, mean[i] + 4 * std[i])
         rng = (float(lo), float(hi))
 
-        # NF: filled + step (same look as corner diagonals)
         ax.hist(xnf, bins=bins, range=rng, density=True, histtype="stepfilled",
                 alpha=0.40, color=COLORS["NF"])
         ax.hist(xnf, bins=bins, range=rng, density=True, histtype="step",
                 linewidth=2.4, color=COLORS["NF"], label="NF")
-        # MCMC: step
         if mcmc_samples is not None:
             ax.hist(mcmc_samples[:, i], bins=bins, range=rng, density=True,
                     histtype="step", linewidth=2.4, color=COLORS["MCMC"], label="MCMC")
-        # Gaussian: dashed analytic curve
         xs = np.linspace(rng[0], rng[1], 300)
         ax.plot(xs, np.exp(-0.5 * ((xs - mean[i]) / std[i]) ** 2)
                     / (std[i] * np.sqrt(2 * np.pi)),
@@ -1575,11 +1717,12 @@ def plot_marginal_overlay(
 
         nm = _short_par_name(par_names[i]) if i < len(par_names) else f"par {i}"
         ax.set_xlabel(nm)
-        ax.set_ylabel("Density")
+        if k == 0:
+            ax.set_ylabel("Density")
         ax.set_xlim(*rng)
         ax.set_ylim(bottom=0)
+        ax.set_yticks([])              # density scale not informative per panel
         ax.xaxis.set_major_locator(MaxNLocator(4))
-        ax.yaxis.set_major_locator(MaxNLocator(3, prune="both"))
         ax.tick_params(top=False, right=False)
         _ax_fontsize(ax, label_fs=LBL_FS, tick_fs=TICK_FS, legend_fs=LEG_FS)
 
@@ -1627,8 +1770,8 @@ def plot_pulls(
         ax.hist(z[ok], bins=40, weights=w, density=True,
                 histtype="step", linewidth=1.2, color=COLORS["NF"])
         ax.plot(xs_g, g_pdf, color=COLORS["Gaussian"], linewidth=1.2, linestyle="--")
-        nm = par_names[i] if i < len(par_names) else f"par_{i}"
-        ax.set_xlabel(nm, fontsize=9, labelpad=3)
+        nm = _short_par_name(par_names[i]) if i < len(par_names) else f"par_{i}"
+        ax.set_xlabel(nm, fontsize=18, labelpad=3)
         ax.set_xlim(-4, 4)
         ax.xaxis.set_major_locator(MaxNLocator(3, prune="both"))
         ax.yaxis.set_major_locator(MaxNLocator(3, prune="both"))
@@ -1977,6 +2120,13 @@ def main(cfg: DictConfig) -> None:
             "sigma_drop_last":  int(vc.get("sigma_drop_last", 0)),
         }
 
+    # spectrum_sigma_3: shown only when the run has MORE throws than the study
+    # size, so the first `sigma3_subsample` are displayed and the Δσ CI is
+    # bootstrapped (with replacement) from the full pool (e.g. 100k from 200k).
+    do_sigma3     = bool(cfg.get("do_sigma3", True))   # optional bootstrap plot
+    sigma3_n_boot = int(cfg.get("sigma3_n_boot", 200))
+    sigma3_sub    = int(cfg.get("sigma3_subsample", 0))
+
     for var, edges in loaded_edges.items():
         vs     = var_settings.get(var, {})
         xlabel = vs.get("xlabel", _VAR_LABELS.get(var, var))
@@ -2014,6 +2164,40 @@ def main(cfg: DictConfig) -> None:
                           diff_legend_loc=vs.get("sigma_legend_loc", "upper right"),
                           drop_last=vs.get("sigma_drop_last", 0),
                           fmt=fmt)
+
+            # spectrum_sigma_2: same as spectrum_sigma but the top panel uses
+            # displaced 1σ error bars (one per method) instead of filled bands
+            plot_spectrum(results, edges,
+                          save_path=base / "spectrum_sigma_2",
+                          xlabel=xlabel, ci_levels=ci_levels,
+                          legend_loc=vs.get("legend_loc_spec", "upper right"),
+                          width_scale=vs.get("width_scale", 1.0),
+                          font_scale=vs.get("sigma_font_scale", 1.0),
+                          sigma_mode=True, errorbar_top=True,
+                          diff_legend_loc=vs.get("sigma_legend_loc", "upper right"),
+                          drop_last=vs.get("sigma_drop_last", 0),
+                          fmt=fmt)
+
+            # spectrum_sigma_3: displays the first `sub` throws; Δσ bar = bootstrap
+            # mean and dashed lines = ±68% CI from `sigma3_n_boot` bootstraps of
+            # size `sub` (WITH replacement) of the full pool. When the run has a
+            # larger pool than the study (e.g. 200k → sub=100k) this estimates the
+            # study-size uncertainty from the bigger pool; when it equals the pool
+            # (100k → sub=100k) it is the standard self-bootstrap.
+            n_have = len(next(iter(results.values())))
+            if do_sigma3 and sigma3_sub > 0:
+                sub_use = min(sigma3_sub, n_have)
+                plot_spectrum(results, edges,
+                              save_path=base / "spectrum_sigma_3",
+                              xlabel=xlabel, ci_levels=ci_levels,
+                              legend_loc=vs.get("legend_loc_spec", "upper right"),
+                              width_scale=vs.get("width_scale", 1.0),
+                              font_scale=vs.get("sigma_font_scale", 1.0),
+                              sigma_mode=True, bootstrap_ci=sigma3_n_boot,
+                              boot_subsample=sub_use,
+                              diff_legend_loc=vs.get("sigma_legend_loc", "upper right"),
+                              drop_last=vs.get("sigma_drop_last", 0),
+                              fmt=fmt)
 
             plot_violin(results, edges,
                         save_path=base / "violin",
@@ -2189,11 +2373,13 @@ def main(cfg: DictConfig) -> None:
                 fmt=fmt,
             )
 
-            # 3×2 marginal overlay: NF hist + Gaussian curve + MCMC hist for the
-            # 6 least-Gaussian parameters (selection from unweighted NF).
+            # 5×2 marginal overlay (NF hist + Gaussian curve + MCMC hist) for the
+            # last 10 dimensions (cross-section / spline systematics).
+            D_par = samples.shape[1]
+            sel_last10 = np.arange(max(0, D_par - 10), D_par)
             plot_marginal_overlay(
                 samples, mcmc_samples, bestfit_cached, cov_cached,
-                par_names_cached, sel_full[:6],
+                par_names_cached, sel_last10,
                 save_path=par_dir / "marginals_overlay", fmt=fmt,
             )
 
