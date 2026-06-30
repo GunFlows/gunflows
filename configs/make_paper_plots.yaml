@@ -25,11 +25,19 @@ use_mcmc:     true
 
 mcmc_chain: /workspace/trained_models/DemoMCMC_configToyOA_100plus10_noDet_8185923.root
 mcmc_burnin_frac: 0.0   # fraction of the chain dropped from the start before thinning
+mcmc_burnin: null       # absolute burn-in steps dropped from the FRONT (overrides
+                        # mcmc_burnin_frac when set). e.g. 200000
 # mcmc_thin: 1          # stride; default = uniform thinning to num_samples across the chain
 
 # Recompute ONLY the MCMC part (spectra + mcmc_samples), reusing the cached
 # NF/Gaussian throws. Useful after changing the MCMC chain.
+# WARNING: re-propagates all num_samples MCMC throws through GUNDAM (slow).
 force_recompute_mcmc: false
+
+# Fast MCMC refresh: reload the chain → mcmc_samples.npy (corners + 5×2
+# marginals_overlay) WITHOUT any GUNDAM propagation. Kinematic MCMC spectra stay
+# as cached. Runs in seconds. Use force_recompute_mcmc to also redo the spectra.
+mcmc_params_only: false
 
 # ── GUNDAM threading ─────────────────────────────────────────────────────────
 threads:             24      # threads for the main (histogram-loop) sampler
@@ -87,6 +95,10 @@ variables:
 # ── Plot options ──────────────────────────────────────────────────────────────
 ci_levels:        [0.6827, 0.9545, 0.9973]
 n_corner_params:  10
+# MCMC points kept for the corner / marginal plots (parameter-space only, no
+# GUNDAM propagation). Thinned uniformly across the WHOLE post-burn-in chain, so
+# many more than num_samples gives smooth, representative marginals.
+n_corner_mcmc:    200000
 fig_format:       "pdf"    # "pdf" or "png"
 force_recompute:  false
 
@@ -94,7 +106,7 @@ force_recompute:  false
 # sigma3_subsample (e.g. a 200k run). Displays the first sigma3_subsample throws;
 # the Δσ ±68% CI is bootstrapped (with replacement, sigma3_n_boot draws) at that
 # size from the full pool. Δσ bar = point estimate on the displayed sample.
-do_sigma3:          true      # set false to skip the (slow) bootstrap spectrum_sigma_3
+do_sigma3:          false     # set true to also produce the (slow) bootstrap spectrum_sigma_3
 sigma3_n_boot:      200
 sigma3_subsample:   100000
 
