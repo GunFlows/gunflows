@@ -1,0 +1,16 @@
+_target_: gunflows.flows.systematic_flow
+total_dim: 60
+dim_spline: ${len:${experiment.dataset.phase_space_dim}}
+
+nflows: 8
+hidden: 128
+nlayers: 1
+nbins: 12
+tail_bound: 6.0
+
+freeze_covflow: false
+
+context_transform: true
+n_context_flows: 6
+n_hidden_layers: 2
+hidden_dim: 128

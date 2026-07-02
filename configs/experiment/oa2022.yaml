@@ -1,8 +1,0 @@
-defaults:
-  - /dataset: systematic_dataset_oa2022
-  - /model: model_OA2022
-  - /optim: adam
-  - /scheduler: exponential
-  - /trainer: oa2022
-  - _self_
-

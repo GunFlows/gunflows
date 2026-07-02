@@ -1,4 +1,4 @@
-_target_: gunflows.trainer.trainer_OA2022_pygundam.OA2022TrainerPyGundam
+_target_: gunflows.trainer.streaming_trainer.StreamingTrainer
 
 epochs: 200000
 batch_size: 20000

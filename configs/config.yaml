@@ -2,6 +2,9 @@ defaults:
   - experiment: oa2022_pygundam_data
   - _self_
 
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}-${oc.env:SLURM_JOB_ID,${oc.env:USER}}
 
 paths:
   checkpoints_dir: ${hydra:run.dir}/checkpoints

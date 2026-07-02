@@ -10,8 +10,10 @@ Description
 - Spawns a background process that generates parameter samples either from:
   * a Normalizing Flow checkpoint ("NF" mode), or
   * a reference Gaussian N(mean, cov) defined by the likelihood ("COV" mode).
-- Evaluates the negative log-likelihood (NLL) for each sample via the provided
-  likelihood interface and writes batches as compressed NPZ files:
+- Evaluates the negative log-likelihood (NLL) for each sample via a likelihood
+  backend resolved at runtime from `sampler_target` (a dotted class path, see
+  base.py for the required interface -- this module never imports a concrete
+  backend by name) and writes batches as compressed NPZ files:
     {data, log_p, log_q, cov, mean, par_names, bestfit_nll, from_cov, mode}
 - Feeds the dataset process with file notifications via a multiprocessing Queue.
 
@@ -30,24 +32,29 @@ Description
   is the log-density in the model space; we negate if needed to get log q(x).
 """
 
-import multiprocessing as mp, queue as _q, os, sys, importlib, traceback, tempfile
-from contextlib import contextmanager
+from __future__ import annotations
+
+import multiprocessing as mp, queue as _q, os, sys, importlib, traceback, tempfile, glob
 import numpy as np
 import torch
 import logging, time, json
 
-@contextmanager
-def pushd(path: str):
-    prev = os.getcwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(prev)
+from .base import pushd, resolve_target
+
+
+def _mcmc_propose(L: np.ndarray, current: np.ndarray, scale: float, rng: np.random.Generator) -> np.ndarray:
+    return current + scale * (L @ rng.standard_normal(len(current)))
+
+
+def _mcmc_rm_update(log_s: float, step: int, accepted: bool, target: float,
+                     rate: float, lag: float, exp_: float) -> float:
+    gamma = rate / (step + lag) ** exp_
+    return log_s + gamma * (float(accepted) - target)
+
 
 class NFSamplerProcess(mp.Process):
     def __init__(self, nf_ckpt, n_points, llh_config, llh_overrides,
-                 phase_space_dim, data_q, cmd_q, stop_evt, seed=123,
+                 phase_space_dim, data_q, cmd_q, stop_evt, sampler_target: str, seed=123,
                  llh_cwd: str | None = None,
                  threads: int = 6,
                  data_is_asimov: bool = False,
@@ -58,7 +65,15 @@ class NFSamplerProcess(mp.Process):
                  write_every: int | None = None,
                  log_every: int = 100,
                  rethrow: bool = True,
-                 worker_id: int = 0):
+                 worker_id: int = 0,
+                 sampler_mode: str = "auto",
+                 mcmc_burn_in: int = 1000,
+                 mcmc_initial_scale: float = 1.0,
+                 mcmc_target_acceptance: float = 0.234,
+                 mcmc_adapt_rate: float = 1.0,
+                 mcmc_adapt_lag: float = 100.0,
+                 mcmc_adapt_exponent: float = 0.6,
+                 keep_last_n_batches: int = 5):
         print("Raw data_is_asimov:", repr(data_is_asimov), type(data_is_asimov))
         super().__init__(daemon=True)
         self.nf_ckpt = nf_ckpt
@@ -69,6 +84,7 @@ class NFSamplerProcess(mp.Process):
         self.data_q = data_q
         self.cmd_q = cmd_q
         self.stop_evt = stop_evt
+        self.sampler_target = sampler_target
         self.seed = seed
         base_cwd = (llh_cwd or os.path.dirname(os.path.abspath(llh_config))) if llh_config else (llh_cwd or ".")
         self.llh_cwd = base_cwd
@@ -88,6 +104,17 @@ class NFSamplerProcess(mp.Process):
         self._mean_ref = None
         self.rethrow = bool(rethrow)
         self.worker_id = int(worker_id)
+
+        self.sampler_mode = str(sampler_mode)
+        if self.sampler_mode not in ("auto", "mcmc"):
+            raise ValueError(f"sampler_mode must be 'auto' or 'mcmc', got {self.sampler_mode!r}")
+        self.mcmc_burn_in = int(mcmc_burn_in)
+        self.mcmc_initial_scale = float(mcmc_initial_scale)
+        self.mcmc_target_acceptance = float(mcmc_target_acceptance)
+        self.mcmc_adapt_rate = float(mcmc_adapt_rate)
+        self.mcmc_adapt_lag = float(mcmc_adapt_lag)
+        self.mcmc_adapt_exponent = float(mcmc_adapt_exponent)
+        self.keep_last_n_batches = int(keep_last_n_batches)
 
         print(f"NFSamplerProcess[{self.worker_id}] initialized: nf_ckpt={self.nf_ckpt} n_points={self.n_points} llh_config={self.llh_config} llh_cwd={self.llh_cwd} threads={self.threads} asimov={self.data_is_asimov} device={self.device} save_dir={self.save_dir} write_every={self.write_every} log_every={self.log_every} rethrow={self.rethrow}")
 
@@ -145,10 +172,21 @@ class NFSamplerProcess(mp.Process):
             self.data_q.put({"from_file": final_path}, timeout=0.01)
         except Exception:
             pass
+        self._prune_own_old_batches(sd)
+
+    def _prune_own_old_batches(self, sd: str) -> None:
+        if self.keep_last_n_batches <= 0:
+            return
+        own = sorted(glob.glob(os.path.join(sd, f"batch*_s{self.worker_id:02d}.npz")))
+        for old in own[:-self.keep_last_n_batches]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
 
     def _load_llh(self):
-        from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
-        if self._logger: self._logger.info(f"Loading likelihood interface... data_is_asimov: {self.data_is_asimov}")
+        LikelihoodSampler = resolve_target(self.sampler_target)
+        if self._logger: self._logger.info(f"Loading likelihood interface ({self.sampler_target})... data_is_asimov: {self.data_is_asimov}")
         with pushd(self.llh_cwd):
             return LikelihoodSampler(
                 self.llh_config,
@@ -256,6 +294,61 @@ class NFSamplerProcess(mp.Process):
             raise RuntimeError("Cannot reconstruct NF: provide build hyperparameters in JSON or a valid _target_.")
         raise TypeError(f"Unsupported checkpoint object type: {type(obj)}")
 
+    def _run_mcmc_mode(self, llh, cov_ref, mean_ref, par_names, bestfit):
+        """Persistent single-chain Metropolis-Hastings candidate generation.
+        """
+        rng = np.random.default_rng(self.seed + self.worker_id)
+        L = np.linalg.cholesky(cov_ref.astype(np.float64))
+        current = mean_ref.astype(np.float64).copy()
+
+        with pushd(self.llh_cwd if self.llh_config else "."):
+            current_nll, _, _ = llh.inject_params_and_compute_likelihood(
+                current.tolist(), extend_continue=False)
+        if current_nll == -1:
+            raise RuntimeError(f"[worker {self.worker_id}] MCMC start point (postfit) outside domain.")
+
+        log_scale = np.log(self.mcmc_initial_scale)
+        step = 0
+        generated_total = 0
+        bsz = max(1, int(self.write_every or self.n_points))
+        self._write_progress(0, "MCMC", status="running")
+        if self._logger: self._logger.info(f"MCMC mode: burn_in={self.mcmc_burn_in} initial_scale={self.mcmc_initial_scale}")
+
+        with pushd(self.llh_cwd if self.llh_config else "."):
+            while not self.stop_evt.is_set():
+                acc_x, acc_nll = [], []
+                while len(acc_x) < bsz and not self.stop_evt.is_set():
+                    proposal = _mcmc_propose(L, current, np.exp(log_scale), rng)
+                    nll_p, _, _ = llh.inject_params_and_compute_likelihood(
+                        proposal.tolist(), extend_continue=False)
+                    accepted = False
+                    if nll_p != -1 and rng.random() < np.exp(min(0.0, current_nll - nll_p)):
+                        current, current_nll, accepted = proposal, nll_p, True
+                    if step < self.mcmc_burn_in:
+                        log_scale = _mcmc_rm_update(
+                            log_scale, step, accepted, self.mcmc_target_acceptance,
+                            self.mcmc_adapt_rate, self.mcmc_adapt_lag, self.mcmc_adapt_exponent)
+                    step += 1
+                    acc_x.append(current.copy())
+                    acc_nll.append(current_nll)
+                    if step % self.log_every == 0:
+                        print(f"[worker {self.worker_id}] MCMC step {step} "
+                              f"NLL={current_nll:.4f} scale={np.exp(log_scale):.4f}")
+
+                if not acc_x:
+                    continue
+                x_np = np.asarray(acc_x, dtype=np.float32)
+                nll_np = np.asarray(acc_nll, dtype=np.float32)
+                self._save_batch_npz(
+                    x_np, nll_np, nll_np.copy(),
+                    cov_ref, mean_ref, par_names, bestfit, mode="MCMC",
+                )
+                generated_total += x_np.shape[0]
+                self._write_progress(generated_total, "MCMC", status="running")
+                if self._logger: self._logger.info(f"Batch complete total={generated_total} mode=MCMC")
+
+        self._write_progress(generated_total, "MCMC", status="finished")
+
     @torch.no_grad()
     def run(self):
         try:
@@ -279,6 +372,11 @@ class NFSamplerProcess(mp.Process):
                 raise RuntimeError("No likelihood configuration provided, cannot sample from COV.")
             self._cov_ref = cov_ref
             self._mean_ref = mean_ref
+
+            if self.sampler_mode == "mcmc":
+                self._run_mcmc_mode(llh, cov_ref, mean_ref, par_names, bestfit)
+                if self._logger: self._logger.info("Sampler stopping")
+                return
 
             cov_t  = torch.as_tensor(cov_ref)
             mean_t = torch.as_tensor(mean_ref)
@@ -311,15 +409,10 @@ class NFSamplerProcess(mp.Process):
                 else:
                     z = torch.randn(k, mean_t.numel(), generator=rng)
                     x_phys = z @ L_phys.T + mean_t
-                    std = torch.sqrt(torch.diag(cov_t))
-                    Dinv = torch.diag(1.0 / std)
-                    cov_std = Dinv @ cov_t @ Dinv
-                    L_std = torch.linalg.cholesky(cov_std)
-                    logdet_covstd = 2.0 * torch.log(torch.diag(L_std)).sum()
                     diff = (x_phys - mean_t).T
                     y = torch.linalg.solve_triangular(L_phys, diff, upper=False)
                     quad = (y * y).sum(dim=0)
-                    log_q = (0.5 * (quad + const + logdet_covstd)).cpu().numpy().astype(np.float32)
+                    log_q = (0.5 * (quad + const + logdet_cov)).cpu().numpy().astype(np.float32)
                     return x_phys, log_q
 
             while not self.stop_evt.is_set():

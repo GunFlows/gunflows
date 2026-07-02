@@ -1,4 +1,4 @@
-_target_: gunflows.dataset.systematic_dataset_oa2022.SystematicDatasetOA2022
+_target_: gunflows.dataset.streaming_dataset.StreamingDataset
 
 phase_space_dim:
   [652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666,
@@ -10,6 +10,7 @@ starting_folder: /workspace/config/GundamInputOA2021/oa2022_data
 # batch_index: null
 
 with_sampler: true
+sampler_target: apps.gundam.likelihoodSampler.LikelihoodSampler
 nf_ckpt: null
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000

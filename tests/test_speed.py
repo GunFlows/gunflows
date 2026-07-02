@@ -8,8 +8,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-from gunflows.likelihood_sampler import LikelihoodSampler
-from gunflows.likelihood_sampler import pygundam_utils
+from apps.gundam.likelihoodSampler import LikelihoodSampler
+from apps.gundam import pygundam_utils
 
 os.chdir(os.environ.get("CONFIG_FOLDER") )
 

@@ -3,22 +3,39 @@ defaults:
   - _self_
 
 likelihood:
-  config: /workspace/config/GundamInputOA2021/output/gundamFitter_configOa2021_With_allowEigenDecompWithBounds_Asimov.root
+  sampler_target: apps.gundam.likelihoodSampler.LikelihoodSampler
+  config: /workspace/config/Config100p10_noDet/gundamFitter_configToyOA_100plus10_noDet.root
   overrides: []
-  cwd: /workspace/config/GundamInputOA2021
-  threads: 6
-  asimov: true
+  threads_per_chain: 4
+  asimov: false
 
-seed: 42
-n_steps: 20000
-burn_in: 1000  # discard this many initial steps
-proposal_scale: 0.01
-initial_point: null # if null, use the postfit best fit point
-out_file: chain.npz
-save_dir: null
+mode: parallel_tempering
 
-plot:
-  dims: [652, 653, 654, 655, 656, 657, 658, 659, 660,
-                  661, 662, 663, 664, 665, 666, 667, 668, 669]
-  every: 10000
+n_chains: 4
+beta_min:  0.05
 
+seed:    42
+n_steps: 100000
+burn_in:  10000
+
+swap_interval: 50
+
+initial_scale:     1.0
+target_acceptance: 0.234
+adapt_rate:      1.0
+adapt_lag:     100.0
+adapt_exponent:  0.6
+
+plot_every:      50000
+n_corner_params: 10
+xsec_only:       true
+
+out_file: mcmc.npz
+save_dir: /workspace/output
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
+  output_subdir: null
+  job:
+    chdir: true

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gunflows"
+version = "0.1.0"
+description = "Train and sample conditional normalizing flows for high-dimensional likelihoods"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "hydra-core",
+    "omegaconf",
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "tqdm",
+    "normflows>=1.7.3",
+]
+
+[project.optional-dependencies]
+gundam = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["gunflows*"]

@@ -1,4 +1,4 @@
-_target_: gunflows.dataset.systematic_dataset_oa2022.SystematicDatasetOA2022
+_target_: gunflows.dataset.streaming_dataset.StreamingDataset
 
 phase_space_dim: 
     [100,101,102,103,104,105,106,107,108,109]
@@ -6,6 +6,7 @@ phase_space_dim:
   # starting_folder is where the initial samples are saved
 starting_folder: /workspace/config/Config100p10_noDet/datasets_sb_configToyOA_100plus10_noDet
 with_sampler: true
+sampler_target: apps.gundam.likelihoodSampler.LikelihoodSampler
 nf_ckpt: null                     # path to NF checkpoint if available
 data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 10000

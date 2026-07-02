@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
-from gunflows.dataset.systematic_dataset_oa2022 import SystematicDatasetOA2022 as SystematicDataset
+from gunflows.dataset.streaming_dataset import StreamingDataset as SystematicDataset
 
 
 def _plot_grid(samples, names, out_dir, start_dim=0, ndim=8):

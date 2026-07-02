@@ -12,14 +12,17 @@ Description:
     - Covariance matrix & mean of the data 
 """
 
+from __future__ import annotations
+
 import glob
 import os
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from matplotlib.colors import LogNorm
-from torch.utils.data import Dataset
 from pathlib import Path
+
+from .base import BaseSystematicDataset
 
 __all__ = ["SystematicDatasetFile"]
 
@@ -64,7 +67,7 @@ def _plot_grid(samples, mean, weights, cov, names, n, out_dir, phase_dims, rewei
     plt.savefig(out_dir / "grid_reweighted.png" if reweight else out_dir / "grid.png", dpi=150)
     plt.close(fig)
 
-class SystematicDatasetFile(Dataset):
+class SystematicDatasetFile(BaseSystematicDataset):
     def __init__(
         self,
         data_dir: str,
@@ -182,14 +185,6 @@ class SystematicDatasetFile(Dataset):
     def __len__(self) -> int:
         return self.nsample
 
-    def __getitem__(self, idx: int):
-        return (
-            self.data_spline[idx, :],
-            self.data_cond[idx, :],
-            -self.log_q[idx],
-            -self.log_p[idx],
-        )
-
     def log_prob(self, idx):
         return (
             self.data_spline[idx, :],
@@ -197,18 +192,3 @@ class SystematicDatasetFile(Dataset):
             -self.log_q[idx],
             -self.log_p[idx],
         )
-
-    def get_cov(self) -> torch.Tensor:
-        return self.cov
-
-    def get_true_cov(self) -> torch.Tensor:
-        return self.true_cov
-
-    def get_cov_sub(self, dims: list[int]) -> torch.Tensor:
-        return self.cov[np.ix_(dims, dims)]
-
-    def get_mean(self) -> torch.Tensor:
-        return self.mean
-
-    def transform_eigen_space_to_data_space(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.std_per_dim + self.mean
