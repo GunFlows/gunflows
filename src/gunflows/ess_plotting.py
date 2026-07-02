@@ -396,8 +396,8 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
     if time_hours is not None and time_hours.size == epochs.size and np.isfinite(time_hours).any():
         x_variants.append(("time", time_hours, "Training time", "training time", _HM_FMT))
     if n_samp is not None and n_samp.size == epochs.size and np.isfinite(n_samp).any():
-        x_variants.append(("samplings", n_samp, "Number of LH samplings",
-                           "number of LH samplings", _MILLIONS_FMT))
+        x_variants.append(("samplings", n_samp, "Number of likelihood samplings",
+                           "number of likelihood samplings", _MILLIONS_FMT))
 
     written: list[Path] = []
     for suffix, yvals, color, plabel, tprefix in ess_variants:
@@ -451,7 +451,7 @@ def make_ess_plots(results: dict, out_dir, num_samples=None, y_percent=False,
         sec_specs = [
             {"label": "Training time", "forward": ft, "inverse": it,
              "location": 1.0, "formatter": _fmt_hm},
-            {"label": "Number of LH samplings", "forward": fs, "inverse": isf,
+            {"label": "Number of likelihood samplings", "forward": fs, "inverse": isf,
              "location": 1.17, "formatter": _fmt_millions},
         ]
 
