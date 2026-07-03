@@ -25,7 +25,7 @@ Date  : 2025-08-14
 - num_samplers > 1 launches several parallel NFSamplerProcess workers
 """
 
-import glob, os, json, numpy as np, torch, logging, multiprocessing as mp, queue as _q
+import glob, os, numpy as np, torch, logging, multiprocessing as mp, queue as _q
 from pathlib import Path
 from collections import deque
 from matplotlib import pyplot as plt

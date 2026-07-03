@@ -15,6 +15,7 @@ analysis/
 hparam_tuning/
 demonstrator_scripts/
 .vscode/
+.idea/
 *top*
 
 configs/dataset/*
@@ -39,3 +40,4 @@ configs/model/*
 
 src/gunflows.egg-info/
 build/
+dist/
