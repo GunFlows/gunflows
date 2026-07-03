@@ -1,78 +1,106 @@
-# GunFlows
+# gunflows
 
-GunFlows provides a small framework for training conditional normalizing flows. The code relies on `hydra` for configuration and uses the `normflows` library to build the flow layers.
+Train and sample conditional normalizing flows for high-dimensional likelihoods.
 
-## Features
+`gunflows` is `pip install`-able and has **no dependency on GUNDAM or ROOT**. The
+likelihood a flow is trained against is resolved at runtime from a dotted path
+(`sampler_target`, e.g. `apps.gundam.likelihoodSampler.LikelihoodSampler`), so the
+core library never imports a concrete backend. GUNDAM/ROOT is one such backend,
+used for the physics analyses this repo was built for; `apps/toyllh` is a second,
+GUNDAM-free backend that exists purely to demonstrate (and test) that gunflows
+works against any likelihood implementing the same small interface.
 
-- **SystematicDataset** for loading training data stored in `.npz` files.
-- Flow components `CovFlow`, `ContextFlow` and `SystematicFlow` implemented with PyTorch.
-- Several importance–weighted losses available in `gunflows.losses`.
-- Hydra powered configuration under `configs/` with an example experiment `oa2022`.
+## Install
 
-## Quick start
-
-1. Install dependencies (PyTorch, hydra-core, omegaconf, matplotlib, normflows):
-   ```bash
-   pip install torch hydra-core omegaconf matplotlib normflows
-   ```
-2. Export the path to the dataset:
-   ```bash
-   export DATA_DIR=/path/to/npz/files
-   ```
-3. Launch training with the default configuration:
-   ```bash
-   python -m gunflows.train
-   ```
-   Model checkpoints are stored in `outputs/<run>/checkpoints`.
-
-Configuration files can be overridden from the command line, e.g.:
 ```bash
-python -m gunflows.train trainer.device=cpu optim.lr=1e-4
+pip install .          # from a checkout of this repo
 ```
 
-## Project structure
+Requires Python >= 3.9. Pulls in `torch`, `hydra-core`, `omegaconf`, `numpy`,
+`scipy`, `matplotlib`, `normflows`. No GUNDAM, no ROOT, no container needed for
+the core library or the toy-likelihood demo.
 
-- `configs/` – Hydra configuration tree
-- `src/gunflows/` – library code
-  - `dataset/` – dataset loaders
-  - `flows/` – flow components
-  - `losses/` – importance-based loss functions
-  - `trainer/` – training loops
-  - `utils/` – helpers to build the model
+To run against GUNDAM instead, you additionally need a GUNDAM/ROOT environment
+(see `env/` for the Apptainer image used on the cluster, and `setup_scripts/`
+for baobab-specific install helpers) — `apps/gundam` is the only place in the
+codebase that imports GUNDAM/ROOT directly.
 
----
+## Quickstart
 
-## Hyperparameter tuning (Optuna + Slurm)
+See `examples/toy_llh_walkthrough.ipynb` for a runnable, step-by-step notebook
+(dataset → model → train → sample) using the GUNDAM-free `ToyLLH` backend.
 
-There is an Optuna-based hyperparameter tuning pipeline under `hparam_tuning/` that launches many training runs on the cluster via Slurm and collects them into a single Optuna study.
+Minimal shape of the API:
 
-### Layout
+```python
+from gunflows.dataset import StreamingDataset
+from gunflows.utils.build_flow import build_base, build_flow_layers, build_model
+from gunflows.losses.importance_losses import kl_symmetric
 
-Inside `hparam_tuning/` you will find:
+dataset = StreamingDataset(
+    phase_space_dim=list(range(50, 60)),
+    with_sampler=True,
+    sampler_target="apps.toyllh.likelihood.ToyLLH",
+    llh_config="toy",
+)
+base = build_base(dataset.ndim)
+flows = build_flow_layers(nflows=8, dim_spline=10, hidden=128, nlayers=1, nbins=12,
+                           tail_bounds=..., n_context=dataset.ndim - 10)
+model = build_model(base, flows, dataset, device="cpu")
+```
 
-- `launch_tuning.sh` – top-level Slurm job that drives the whole tuning campaign (CPU node).
-- `run_array.sh` – GPU Slurm array job; each task runs one Optuna worker (one trial per task).
-- `worker.py` – Python worker that:
-  - samples hyperparameters from `search_space.yaml` via Optuna,
-  - launches training inside the Apptainer container (calling `gunflows.train`),
-  - parses the validation loss from the logs and reports it back to Optuna.
-- `search_space.yaml` – definition of the hyperparameter search space (keys like `experiment.optim.lr`, `experiment.model.nflows`, etc.).
-- `merge_stage.py` – merges per-job SQLite databases into a single master Optuna database, deduplicating trials and running diagnostics.
-- `diagnostics.py` – generates diagnostic plots (contour plots + manual importance scores) from the merged study.
-- `databases/<STUDY>/` – per-study data:
-  - `databases/<STUDY>/<STUDY>.db` – master Optuna SQLite DB.
-  - `databases/<STUDY>/tmp_dbs/` – temporary DBs and flag files for each stage and worker.
-  - `databases/<STUDY>/figs/` – diagnostic plots for that study.
+Or use the Hydra CLI entry points directly from a repo checkout:
 
-### Dependencies for tuning
+```bash
+python -m apps.train experiment=toy_llh                 # train
+python -m apps.sample experiment=toy_llh ...             # sample from a checkpoint
+python -m apps.mcmc likelihood.sampler_target=apps.toyllh.likelihood.ToyLLH ...
+```
 
-In addition to the dependencies needed for training, the tuning pipeline requires:
+`apps/` (the CLI entry points, Hydra configs, and the two likelihood backends)
+is not part of the pip package — it's meant to be run from a repo checkout,
+importing the installed `gunflows` library. This mirrors how you'd plug in your
+own likelihood: write a class matching
+`gunflows.likelihood_sampler.base.LikelihoodSamplerProtocol` and point
+`sampler_target` at it.
 
-- Python packages (installed in the environment where you run `python worker.py` / `python diagnostics.py`):
-  ```bash
-  pip install --user optuna pyyaml matplotlib scipy numpy
+## Repo layout
 
+```
+src/gunflows/           the pip-installable library
+  dataset/              StreamingDataset (background sampler workers + on-disk batches)
+  flows/                SystematicFlow: CovFlow (fixed Gaussian base) + ContextFlow + spline flows
+  losses/                importance-weighted forward/reverse/symmetric KL losses
+  trainer/               StreamingTrainer: epoch loop, dataset refresh/re-split, NF-bootstrap staging
+  likelihood_sampler/    NFSamplerProcess (background worker), MCMC engine, backend protocol
+  utils/                 flow-building helpers
 
-## License
+apps/                    Hydra CLI entry points + likelihood backends (not pip-installed)
+  train.py, sample.py, mcmc.py
+  gundam/                GUNDAM/ROOT-backed LikelihoodSampler (the only GUNDAM import site)
+  toyllh/                GUNDAM-free demo likelihood (60 iid dims: 50 Gaussian + 10 skew-normal)
 
-This project is distributed without a specific license file.
+configs/                 Hydra config groups (dataset/model/trainer/experiment/...)
+examples/                toy_llh_walkthrough.ipynb — quickstart notebook
+tests/                   pytest suite
+bash/                    SLURM submit scripts for cluster training runs
+```
+
+## Pluggable likelihood interface
+
+Any object with this shape can be used as `sampler_target`, without `src/gunflows`
+importing it by name (see `gunflows.likelihood_sampler.base`):
+
+- `get_parameter_names() -> list[str]`
+- `inject_params_and_compute_likelihood(params, extend_continue=False) -> (nll, _, _)`
+- `postfit_parameter_values`, `postfit_covariance_matrix` — used as the reference
+  point/covariance for the initial Gaussian proposal and for standardization
+
+`apps/toyllh/likelihood.py` is the minimal reference implementation of this
+interface; `apps/gundam/likelihoodSampler.py` is the GUNDAM/ROOT one.
+
+## Tests
+
+```bash
+pytest tests/
+```

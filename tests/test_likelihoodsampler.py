@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 import os
 import ROOT, GUNDAM
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-sys.path.append(str(SRC))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(REPO_ROOT / "src"))
+sys.path.append(str(REPO_ROOT))
 
-from gunflows.likelihood_sampler.likelihoodSampler import LikelihoodSampler
+from apps.gundam.likelihoodSampler import LikelihoodSampler
 
 
 def parse_cli() -> argparse.Namespace:

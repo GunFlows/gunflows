@@ -1,0 +1,22 @@
+# hp_fakedata_paper study — rank 1, trial #11, val_loss=0.033016
+defaults:
+  - /dataset: systematic_dataset_100plus10_paper_fakedata
+  - /sampler: llhsampler
+  - /model: model_toyOA_100p10
+  - /optim: adam
+  - /scheduler: exponential
+  - /trainer: oa2022_pygundam
+  - _self_
+
+seed: 42
+
+paths:
+  checkpoints_dir: ${hydra:runtime.output_dir}/checkpoints
+
+model:
+  nflows: 12
+  nbins: 9
+  tail_bound: 6.1446
+
+optim:
+  lr: 1.1355e-05

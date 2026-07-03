@@ -1,0 +1,22 @@
+defaults:
+  - /dataset: systematic_dataset_toy_llh
+  - /sampler: llhsampler
+  - /model: model_toy_llh
+  - /optim: adam
+  - /scheduler: exponential
+  - /trainer: oa2022_pygundam
+  - _self_
+
+seed: 42
+
+trainer:
+  epochs: 20000
+  batch_size: 4000
+  num_val: 2000
+  val_every: 100
+  warmup_k: 500
+  stage_len: 500
+  refresh_every: 20
+
+paths:
+  checkpoints_dir: ${hydra:runtime.output_dir}/checkpoints

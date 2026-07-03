@@ -1,0 +1,26 @@
+_target_: gunflows.dataset.streaming_dataset.StreamingDataset
+
+phase_space_dim:
+  [50,51,52,53,54,55,56,57,58,59]
+
+with_sampler: true
+sampler_target: apps.toyllh.likelihood.ToyLLH
+nf_ckpt: null
+data_dir: ${hydra:runtime.output_dir}/generated_samples
+gen_batch_size: 50000
+max_batches: 10
+num_samplers: 10
+sampler_modes: [auto]
+keep_last_n_batches_per_worker: 3
+
+llh_config: toy
+llh_overrides: []
+llh_cwd: null
+data_is_asimov: false
+
+seed: 42
+queue_size: 20
+timeout: 300.0
+plot_grid: true
+plot_every: 5
+out_dir: ${hydra:runtime.output_dir}/plots

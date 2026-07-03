@@ -1,0 +1,3 @@
+[submodule "src/normalizing-flows"]
+	path = src/normalizing-flows
+	url = https://github.com/Mathiaselbaz/normalizing-flows.git
