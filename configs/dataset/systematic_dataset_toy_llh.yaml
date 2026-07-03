@@ -10,7 +10,7 @@ data_dir: ${hydra:runtime.output_dir}/generated_samples
 gen_batch_size: 50000
 max_batches: 10
 num_samplers: 10
-sampler_modes: [auto, mcmc]
+sampler_modes: [auto]
 keep_last_n_batches_per_worker: 3
 
 llh_config: toy

@@ -57,6 +57,7 @@ def main(cfg: DictConfig) -> None:
         cfg.model.n_context_flows,
         cfg.model.n_hidden_layers,
         cfg.model.hidden_dim,
+        device=cfg.trainer.device,
     ).to(cfg.trainer.device)
     print(f"Model built with {len(flows)} flow layers.")
 
