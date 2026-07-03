@@ -61,11 +61,7 @@ def main():
     os.chdir("/workspace/config/GundamInputOA2021")
 
     lh = LikelihoodSampler(
-<<<<<<< HEAD
-        args.cfg,
-=======
         args.config,
->>>>>>> 650826f (test files)
         override_files=args.override,
         threads=args.threads,
         data_is_asimov=args.asimov,

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,21 @@ version = "0.1.0"
 description = "Train and sample conditional normalizing flows for high-dimensional likelihoods"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "LGPL-2.1-or-later"
+license-files = ["LICENCE.txt"]
+keywords = ["normalizing-flows", "likelihood", "sampling", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "torch",
     "hydra-core",
@@ -20,7 +35,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+    "build",
+    "pytest",
+    "ruff",
+    "twine",
+]
 gundam = []
+
+[project.urls]
+Homepage = "https://github.com/GunFlows/gunflows"
+Repository = "https://github.com/GunFlows/gunflows"
+Issues = "https://github.com/GunFlows/gunflows/issues"
+
+[tool.ruff]
+extend-exclude = ["apps/gundam", "manual_tests"]
+
+[tool.ruff.lint]
+extend-ignore = ["E401", "E402", "E701", "E702"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
