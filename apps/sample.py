@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 # =============================================================================
 #  Title: sample.py
-#  Author: Mathias El Baz
 #  Date: 28/01/2025
 #  Description:
 #    Sample from a Normalizing Flow model and save the samples.

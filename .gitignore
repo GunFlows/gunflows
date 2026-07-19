@@ -17,6 +17,7 @@ demonstrator_scripts/
 .vscode/
 .idea/
 *top*
+*venv*
 
 configs/dataset/*
 !configs/dataset/systematic_dataset_pygundam_data_oa2022.yaml

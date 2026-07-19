@@ -14,11 +14,16 @@ Date  : 2025-08-14
     * shift_mode="per_batch" : shift each batch before concatenation
     * shift_mode="global"    : shift once after concatenation
     * shift_mode="none"      : no alignment
-  The alignment is two-step: median shift, then an additional mean-weight shift:
-      extra = log( mean( exp(log_q - log_p) ) ) after trimming the top 0.5%.
+  The alignment is two-step: a median shift, then an additional shift whose
+  statistic is selected by `shift_stat`:
+    * "mean"          : extra = log( mean( exp(log_q - log_p) ) ), trimmed tails
+    * "median"        : extra = median(log_q - log_p)   (robust, trim-free)
+    * "filtered_mean" : extra = mean(log_q - log_p) over the trimmed region
+    * "none"          : no second shift
+  Tail trimming for the mean-type statistics is controlled by `shift_trim`.
 - Provides a PyTorch Dataset interface plus a small plotting helper.
 
-- StreamingDataset(..., shift_mode="per_batch", mean_shift=True)
+- StreamingDataset(..., shift_mode="per_batch", mean_shift=True, shift_stat="median")
 - refresh_if_ready(): merge newly produced batches (from sampler queue)
 - request_switch_to_nf(path): tell sampler to switch NF checkpoint
 - sampler_status(), close(), getters, __len__, __getitem__
@@ -125,9 +130,13 @@ class StreamingDataset(BaseSystematicDataset):
         model_cfg=None,
         max_batches=10,
         shift_mode="per_batch",            # "per_batch", "global", or "none"
-        mean_shift=True,                   # include the second (mean-weight) shift
+        mean_shift=True,                   # include the second alignment shift (on top of the median shift)
+        shift_stat="mean",                 # statistic for the second shift: "mean" | "median" | "filtered_mean" | "none"
+        shift_trim=(0.0, 0.998),           # (lower_q, upper_q) tail trimming used by "mean" and "filtered_mean"
         plot_every=10,                      # only render grid plots every Nth refresh (rendering is the slow part, not the merge)
         keep_last_n_batches_per_worker=5,   # each worker deletes its own older batch npz files beyond this, regardless of whether the dataset ever consumed them
+        out_of_domain="discard",            # sampler policy for out-of-physical-bounds proposals: "discard" (reject/redraw) | "penalty" (keep with a large NLL barrier so the flow learns the boundary)
+        out_of_domain_nll=1e5,              # barrier NLL used by out_of_domain="penalty"
     ):
         super().__init__()
         self.phase_space_dim = list(phase_space_dim)
@@ -138,6 +147,10 @@ class StreamingDataset(BaseSystematicDataset):
         self.shift_mode = str(shift_mode).lower()
         assert self.shift_mode in {"per_batch", "global", "none"}
         self.mean_shift = bool(mean_shift)
+        self.shift_stat = str(shift_stat).lower()
+        assert self.shift_stat in {"mean", "median", "filtered_mean", "none"}
+        lo_q, hi_q = shift_trim
+        self.shift_trim = (float(lo_q), float(hi_q))
         self.num_samplers = int(max(1, num_samplers))
         self.plot_every = int(max(1, plot_every))
 
@@ -190,6 +203,8 @@ class StreamingDataset(BaseSystematicDataset):
                 num_samplers=self.num_samplers,
                 sampler_modes=list(sampler_modes) if sampler_modes else ["auto"],
                 keep_last_n_batches=keep_last_n_batches_per_worker,
+                out_of_domain=out_of_domain,
+                out_of_domain_nll=out_of_domain_nll,
             )
             if not starting_folder:
                 if self.save_dir is not None:
@@ -209,6 +224,16 @@ class StreamingDataset(BaseSystematicDataset):
 
     def is_mcmc_at(self, idx):
         return self.is_mcmc[idx] if hasattr(self, "is_mcmc") else None
+
+    def latest_idx(self, n_batches=10):
+        """Row indices of the last `n_batches` merged batches (the newest samples).
+        Used by the validation diagnostics to plot only the most recent batches."""
+        n = int(self.nsample)
+        lens = getattr(self, "_batch_lens", None)
+        if not lens:
+            return torch.arange(n)
+        k = int(sum(lens[-int(n_batches):]))
+        return torch.arange(max(0, n - k), n)
 
     def refresh_if_ready(self, plot_grid=True):
         updated = False
@@ -291,6 +316,37 @@ class StreamingDataset(BaseSystematicDataset):
             self._append_batch_path(p, tag=tag)
         self._rebuild_merged(plot_grid=plot_grid)
 
+    def _mean_weight_shift(self, log_w):
+        """Second alignment shift `s` (applied on top of the median shift).
+
+        Returned scalar is added to log_p, so the new weights are
+        log_w_new = log_w - s. The statistic is chosen by self.shift_stat:
+          * "mean"          : s = log( mean( exp(log_w) ) ) over the kept region
+                              -> trimmed *arithmetic mean of weights* set to 1
+          * "median"        : s = median(log_w)   (robust, no trimming)
+                              -> median weight set to 1
+          * "filtered_mean" : s = mean(log_w) over the trimmed region
+                              -> robust mean of *log*-weights
+          * "none"          : s = 0
+        Tail trimming for the mean-type statistics uses self.shift_trim
+        = (lower_q, upper_q).
+        """
+        if not self.mean_shift or self.shift_stat == "none" or log_w.numel() == 0:
+            return log_w.new_zeros(())
+        if self.shift_stat == "median":
+            return torch.median(log_w)
+        lower_q, upper_q = self.shift_trim
+        kept = log_w
+        if upper_q < 1.0:
+            kept = kept[kept <= torch.quantile(log_w, upper_q)]
+        if lower_q > 0.0:
+            kept = kept[kept >= torch.quantile(log_w, lower_q)]
+        if kept.numel() == 0:
+            return log_w.new_zeros(())
+        if self.shift_stat == "filtered_mean":
+            return kept.mean()
+        return torch.logsumexp(kept, dim=0) - float(np.log(kept.numel()))
+
     def _rebuild_merged(self, plot_grid=True):
         if not self._batches:
             raise FileNotFoundError("No batches available to merge.")
@@ -362,20 +418,12 @@ class StreamingDataset(BaseSystematicDataset):
                 if self.shift_mode == "per_batch":
                     med = torch.median(log_q_anchor - log_p_adj)
                     log_p_adj = log_p_adj + med
-                    if self.mean_shift:
-                        w = torch.exp(log_q_anchor - log_p_adj)
-                        q = torch.quantile(w, 0.995)
-                        w = w[w <= q].clamp_min(1e-40)
-                        log_p_adj = log_p_adj + torch.log(w.mean())
+                    log_p_adj = log_p_adj + self._mean_weight_shift(log_q_anchor - log_p_adj)
                 log_q_adj = log_p_adj
             elif self.shift_mode == "per_batch":
                 med = torch.median(log_q_adj - log_p_adj)
                 log_p_adj = log_p_adj + med
-                if self.mean_shift:
-                    w = torch.exp(log_q_adj - log_p_adj)
-                    q = torch.quantile(w, 0.995)
-                    w = w[w <= q].clamp_min(1e-40)
-                    log_p_adj = log_p_adj + torch.log(w.mean())
+                log_p_adj = log_p_adj + self._mean_weight_shift(log_q_adj - log_p_adj)
 
             data_std_list.append(data_std)
             log_q_list.append(log_q_adj)
@@ -406,15 +454,12 @@ class StreamingDataset(BaseSystematicDataset):
         self.log_q = torch.cat(log_q_list,  dim=0)
         self.log_p = torch.cat(log_p_list,  dim=0)
         self.is_mcmc = torch.cat(is_mcmc_list, dim=0)
+        self._batch_lens = [int(d.shape[0]) for d in data_std_list]
 
         if self.shift_mode == "global":
             shift = torch.median(self.log_q - self.log_p)
             self.log_p = self.log_p + shift
-            if self.mean_shift:
-                w = torch.exp(self.log_q - self.log_p)
-                q = torch.quantile(w, 0.995)
-                w = w[w <= q].clamp_min(1e-40)
-                self.log_p = self.log_p + torch.log(w.mean())
+            self.log_p = self.log_p + self._mean_weight_shift(self.log_q - self.log_p)
 
         self.cov = meta_last["cov"]; self.true_cov = meta_last["true_cov"]
         self.mean = meta_last["mean"]; self.titles = meta_last["titles"]
@@ -475,7 +520,11 @@ class StreamingDataset(BaseSystematicDataset):
                     latest_titles, min(10,len(self.phase_space_dim)), self.out_dir, self.phase_space_dim, "latest_unweighted", self.stage,
                 )
 
-    def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, sampler_target, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None, num_samplers=1, sampler_modes=("auto",), keep_last_n_batches=5):
+    def _start_sampler(self, nf_ckpt, n_points, llh_config, llh_overrides, llh_cwd, sampler_target, seed, queue_size, save_dir=None, write_every=None, threads=6, data_is_asimov=True, model_cfg=None, num_samplers=1, sampler_modes=("auto",), keep_last_n_batches=5, out_of_domain="discard", out_of_domain_nll=1e5):
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
         self._data_q = mp.Queue(maxsize=queue_size)
         self._stop_evt = mp.Event()
         self._gen_procs = []
@@ -503,6 +552,8 @@ class StreamingDataset(BaseSystematicDataset):
                 worker_id=i,
                 sampler_mode=worker_mode,
                 keep_last_n_batches=keep_last_n_batches,
+                out_of_domain=out_of_domain,
+                out_of_domain_nll=out_of_domain_nll,
             )
             p.start()
             self._gen_procs.append(p)

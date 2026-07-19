@@ -27,7 +27,8 @@ def pushd(path: str):
         os.chdir(prev)
 
 class LikelihoodSampler:
-    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None, llh_cwd=None, light_mode=False):
+    def __init__(self, config_file, override_files=None, threads=1, data_is_asimov=False, seed=None, llh_cwd=None, light_mode=False,
+                 out_of_domain="discard", out_of_domain_nll=1e5):
         """
         Initialize the LikelihoodSampler with the given configuration.
         Parameters:
@@ -37,7 +38,17 @@ class LikelihoodSampler:
         - data_is_asimov: Boolean indicating if the data is Asimov (True) or real data (False).
         - seed: Random seed for reproducibility. If None, uses current time.
         - llh_cwd: Directory to change to before loading the config file. If None, uses current directory.
+        - out_of_domain: policy for params outside their physical bounds in
+          inject_params_and_compute_likelihood(extend_continue=False):
+            "discard" -> return the NLL=-1 sentinel (caller re-throws/skips the sample);
+            "penalty" -> return a large fixed NLL barrier (out_of_domain_nll) so the
+                         sample is KEPT with near-zero probability (teaches the flow the
+                         boundary) and the GUNDAM eval is skipped (faster).
+        - out_of_domain_nll: the barrier NLL used by the "penalty" policy.
         """
+        self.out_of_domain = str(out_of_domain).lower()
+        assert self.out_of_domain in {"discard", "penalty"}
+        self.out_of_domain_nll = float(out_of_domain_nll)
         self.likelihood_interface = None
         self.cb = None
         self.cr = None
@@ -275,10 +286,12 @@ class LikelihoodSampler:
                             par.setParameterValue(float(values[n]), False)
                         else:
                             if not extend_continue:
+                                self.inject_parameter_values(current)  
+                                if self.out_of_domain == "penalty":
+                                    return self.out_of_domain_nll, self.out_of_domain_nll, 0.0
                                 print(f"ERROR| inject_params_and_compute_likelihood: physical value out of domain for {par.getFullTitle()}: "
                                       f"value={values[n]:.6g} not in [{min:.6g},{max:.6g}]. Returning NLL=-1.", flush=True)
-                                self.inject_parameter_values(current)
-                                return -1,-1,0  # extend_continue=False: caller must re-throw
+                                return -1,-1,0  # "discard": caller must re-throw
                             if values[n] < min:
                                 out_of_domain_penalty += math.exp((min - values[n])**2) - 1
                                 par.setParameterValue(min, False)
@@ -297,6 +310,8 @@ class LikelihoodSampler:
                 for par in par_set.getParameterList():
                     if par.isEnabled():
                         if not par.isValueWithinBounds():
+                            if self.out_of_domain == "penalty":
+                                return self.out_of_domain_nll, self.out_of_domain_nll, 0.0
                             print(f"ERROR| inject_params_and_compute_likelihood: parameter {par.getFullTitle()} out of bounds AFTER eigen-decomposition. "
                                   f"physical value={par.getParameterValue():.6g}. Returning NLL=-1.", flush=True)
                             return -1,-1,0
@@ -385,6 +400,12 @@ class LikelihoodSampler:
         postfit_covariance_matrix = self.fitter_root_file.Get("FitterEngine/postFit/Hesse/hessian/postfitCovarianceOriginal_TH2D")
         if not postfit_covariance_matrix:
             raise RuntimeError("Postfit covariance matrix not found in the root file [searched in \"FitterEngine/postFit/Hesse/hessian/postfitCovarianceOriginal_TH2D\"].")
+        # Free (fitted) parameter names, in covariance order = the TH2D X-axis labels.
+        # Enabled-but-fixed params are absent from the covariance, so this is a subset
+        # of get_parameter_names(); it defines the free space to sample in (see
+        # get_postfit_free_parameter_values / expand_free_to_full).
+        xax = postfit_covariance_matrix.GetXaxis()
+        self.covariance_parameter_names = [str(xax.GetBinLabel(i + 1)) for i in range(postfit_covariance_matrix.GetNbinsX())]
         tmatrix = convert_TH2D_to_TMatrix(postfit_covariance_matrix)
         self.propagator.getParametersManager().setGlobalCovarianceMatrix(tmatrix)
         # convert the covariance matrix to a list of lists
@@ -424,6 +445,31 @@ class LikelihoodSampler:
                     continue
                 parameter_names.append(par.getFullTitle())
         return parameter_names
+
+    def get_covariance_parameter_names(self):
+        names = getattr(self, "covariance_parameter_names", None)
+        return list(names) if names else self.get_parameter_names()
+
+    def get_free_parameter_indices(self):
+        all_names = self.get_parameter_names()
+        cov_names = self.get_covariance_parameter_names()
+        if cov_names == all_names:
+            return list(range(len(all_names)))
+        name_to_idx = {n: i for i, n in enumerate(all_names)}
+        try:
+            return [name_to_idx[n] for n in cov_names]
+        except KeyError as e:
+            raise RuntimeError(f"covariance parameter {e} not found among enabled parameters") from e
+
+    def get_postfit_free_parameter_values(self):
+        vals = self.postfit_parameter_values
+        return [vals[i] for i in self.get_free_parameter_indices()]
+
+    def expand_free_to_full(self, x_free):
+        full = list(self.postfit_parameter_values)
+        for i, gi in enumerate(self.get_free_parameter_indices()):
+            full[gi] = x_free[i]
+        return full
 
     def _load_bestfit_parameter_values_(self):
         """

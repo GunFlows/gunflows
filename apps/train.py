@@ -10,6 +10,12 @@
 # =============================================================================
 from __future__ import annotations
 
+try:
+    import ROOT  
+    ROOT.gROOT.SetBatch(True)
+except Exception:
+    pass
+
 import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf

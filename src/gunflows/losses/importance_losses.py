@@ -19,6 +19,22 @@ __all__ = [
     "kl_symmetric", "absolute_kl_symmetric",
 ]
 
+
+def _update_log_norm(model, log_p, log_ref, momentum: float = 0.99):
+    # log_ref MUST be the PROPOSAL log-density log_g (model-independent), NOT the
+    # model log_q. log_norm estimates the target's log-evidence; calibrating it to
+    # the untrained model underflows the importance weights (w_f, w_r -> 0) so the
+    # loss and gradient collapse to 0. Using log_g centers w_f ~ O(1).
+    with torch.no_grad():
+        est = torch.median(log_p - log_ref)
+        if not torch.isfinite(est):
+            return
+        if bool(model.log_norm_ready):
+            model.log_norm.mul_(momentum).add_((1.0 - momentum) * est)
+        else:
+            model.log_norm.copy_(est)
+            model.log_norm_ready.fill_(True)
+
 def _cap_logw(log_w: torch.Tensor, cap: float) -> torch.Tensor:
     return torch.exp(torch.clamp(log_w, max=float(np.log(cap))))
 
@@ -67,6 +83,7 @@ def _diag_plot(
     tag: str,
     stage: int = 0,
     mcmc_mask: torch.Tensor | None = None,
+    log_norm=0.0,
 ):
     if mcmc_mask is not None:
         keep = ~mcmc_mask.reshape(-1)
@@ -82,6 +99,14 @@ def _diag_plot(
     y1 = -log_nf.squeeze(1).detach().cpu().numpy()
     if np.isnan(y1).all():
         y1 = x1
+    finite = np.isfinite(x1) & np.isfinite(y1)
+    if not finite.any():
+        print(f"Warning: no finite (-log(p), -log(NF)) pairs at stage {stage}; skipping diagnostic plot.")
+        return
+    if not finite.all():
+        print(f"Warning: {int((~finite).sum())} non-finite (-log(p), -log(NF)) pairs at stage {stage}; excluded from diagnostic plot.")
+    x1 = x1[finite]
+    y1 = y1[finite]
     med = np.median(x1)
     spread = max(np.quantile(np.abs(x1 - med), 0.99), np.quantile(np.abs(y1 - med), 0.99))
     spread = max(spread, 1e-6)
@@ -106,10 +131,12 @@ def _diag_plot(
     fig.savefig(save_dir / f"NLLH_comparison_{tag}.png")
     plt.close(fig)
 
-    log_pq = (log_p.squeeze(1) - log_nf.squeeze(1)).detach().cpu().numpy()
-    if np.isnan(log_pq).any():
-        print(f"Warning: NaN values found in log_pq at stage {stage}. Replacing with 0.")
-    log_pq[np.isnan(log_pq)] = 0
+    ln = float(log_norm) if not torch.is_tensor(log_norm) else float(log_norm.detach())
+    log_pq = (log_p.squeeze(1) - ln - log_nf.squeeze(1)).detach().cpu().numpy()
+    bad = ~np.isfinite(log_pq)
+    if bad.any():
+        print(f"Warning: {int(bad.sum())} non-finite values found in log_pq at stage {stage}. Replacing with 0.")
+    log_pq[bad] = 0
     w_spread = max(np.quantile(np.abs(log_pq), 0.99), 1e-6)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.hist(log_pq, bins=50, density=True, alpha=0.7, range=(-w_spread, w_spread), label="log(p) - log(NF)")
@@ -229,6 +256,7 @@ def kl_symmetric(
 ):
     _, _, log_g , log_p, log_q = _common(model, dataset, idx)
 
+    _update_log_norm(model, log_p, log_g)  # calibrate against the PROPOSAL, not the model
     log_pq = log_p - model.log_norm - log_q
 
     log_w_f = log_p - model.log_norm - log_g
@@ -240,8 +268,10 @@ def kl_symmetric(
     loss = torch.mean(a * w_f * log_pq - b * w_r * log_pq)
 
     if validation:
-        mcmc_mask = dataset.is_mcmc_at(idx) if hasattr(dataset, "is_mcmc_at") else None
-        _diag_plot(log_p, log_q, save_dir, "kl_sym", stage, mcmc_mask=mcmc_mask)
+        plot_idx = dataset.latest_idx() if hasattr(dataset, "latest_idx") else idx
+        _, _, _, log_p_l, log_q_l = _common(model, dataset, plot_idx)
+        mcmc_mask = dataset.is_mcmc_at(plot_idx) if hasattr(dataset, "is_mcmc_at") else None
+        _diag_plot(log_p_l, log_q_l, save_dir, "kl_sym", stage, mcmc_mask=mcmc_mask, log_norm=model.log_norm)
         _print_symmetric_diag(
             "KL", torch.mean(w_f * log_pq), -torch.mean(w_r * log_pq), log_pq, w_f, w_r
         )

@@ -20,14 +20,12 @@ class SystematicFlow(NormalizingFlow):
                  n_hidden_layers=2, hidden_dim=64, freeze_covflow=False, device=None):
         super().__init__(base, flows, target)
         self.context_transform = context_transform
-        # Allow caller to force the construction device to avoid temporary GPU
-        # allocations. If device is provided, use it; otherwise fall back to the
-        # usual auto-detection.
         self.device = torch.device(device) if device is not None else torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         d_ctx = len(target.list_dim_conditionnal)
-        self.log_norm = nn.Parameter(torch.tensor(0.0))
+        self.register_buffer("log_norm", torch.tensor(0.0))
+        self.register_buffer("log_norm_ready", torch.tensor(False))
         self.CovFlow = CovFlow(target, self.device)
         if freeze_covflow:
             print("Freezing CovFlow parameters")

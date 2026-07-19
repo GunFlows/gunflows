@@ -73,7 +73,9 @@ class NFSamplerProcess(mp.Process):
                  mcmc_adapt_rate: float = 1.0,
                  mcmc_adapt_lag: float = 100.0,
                  mcmc_adapt_exponent: float = 0.6,
-                 keep_last_n_batches: int = 5):
+                 keep_last_n_batches: int = 5,
+                 out_of_domain: str = "discard",
+                 out_of_domain_nll: float = 1e5):
         print("Raw data_is_asimov:", repr(data_is_asimov), type(data_is_asimov))
         super().__init__(daemon=True)
         self.nf_ckpt = nf_ckpt
@@ -115,8 +117,10 @@ class NFSamplerProcess(mp.Process):
         self.mcmc_adapt_lag = float(mcmc_adapt_lag)
         self.mcmc_adapt_exponent = float(mcmc_adapt_exponent)
         self.keep_last_n_batches = int(keep_last_n_batches)
+        self.out_of_domain = str(out_of_domain).lower()
+        self.out_of_domain_nll = float(out_of_domain_nll)
 
-        print(f"NFSamplerProcess[{self.worker_id}] initialized: nf_ckpt={self.nf_ckpt} n_points={self.n_points} llh_config={self.llh_config} llh_cwd={self.llh_cwd} threads={self.threads} asimov={self.data_is_asimov} device={self.device} save_dir={self.save_dir} write_every={self.write_every} log_every={self.log_every} rethrow={self.rethrow}")
+        print(f"NFSamplerProcess[{self.worker_id}] initialized: nf_ckpt={self.nf_ckpt} n_points={self.n_points} llh_config={self.llh_config} llh_cwd={self.llh_cwd} threads={self.threads} asimov={self.data_is_asimov} device={self.device} save_dir={self.save_dir} write_every={self.write_every} log_every={self.log_every} rethrow={self.rethrow} out_of_domain={self.out_of_domain} out_of_domain_nll={self.out_of_domain_nll}")
 
     def _sd(self):
         sd = self.save_dir if self.save_dir else os.environ.get("TMPDIR", "/tmp")
@@ -194,6 +198,8 @@ class NFSamplerProcess(mp.Process):
                 threads=self.threads,
                 data_is_asimov=self.data_is_asimov,
                 seed=self.seed,
+                out_of_domain=self.out_of_domain,
+                out_of_domain_nll=self.out_of_domain_nll,
             )
 
     def _build_model_from_meta(self, meta: dict):
@@ -303,7 +309,7 @@ class NFSamplerProcess(mp.Process):
 
         with pushd(self.llh_cwd if self.llh_config else "."):
             current_nll, _, _ = llh.inject_params_and_compute_likelihood(
-                current.tolist(), extend_continue=False)
+                llh.expand_free_to_full(current.tolist()), extend_continue=False)
         if current_nll == -1:
             raise RuntimeError(f"[worker {self.worker_id}] MCMC start point (postfit) outside domain.")
 
@@ -320,7 +326,7 @@ class NFSamplerProcess(mp.Process):
                 while len(acc_x) < bsz and not self.stop_evt.is_set():
                     proposal = _mcmc_propose(L, current, np.exp(log_scale), rng)
                     nll_p, _, _ = llh.inject_params_and_compute_likelihood(
-                        proposal.tolist(), extend_continue=False)
+                        llh.expand_free_to_full(proposal.tolist()), extend_continue=False)
                     accepted = False
                     if nll_p != -1 and rng.random() < np.exp(min(0.0, current_nll - nll_p)):
                         current, current_nll, accepted = proposal, nll_p, True
@@ -365,8 +371,8 @@ class NFSamplerProcess(mp.Process):
             llh = self._load_llh() if self.llh_config else None
             if llh is not None:
                 cov_ref = np.asarray(llh.postfit_covariance_matrix, dtype=np.float32)
-                mean_ref = np.asarray(llh.postfit_parameter_values, dtype=np.float32)
-                par_names = llh.get_parameter_names()
+                mean_ref = np.asarray(llh.get_postfit_free_parameter_values(), dtype=np.float32)
+                par_names = llh.get_covariance_parameter_names()
                 bestfit = float(getattr(llh, "likelihood_at_bestfit", 0.0))
             else:
                 raise RuntimeError("No likelihood configuration provided, cannot sample from COV.")
@@ -455,7 +461,8 @@ class NFSamplerProcess(mp.Process):
                         for i in range(x_np.shape[0]):
                             if self.stop_evt.is_set(): break
                             if self.llh_config:
-                                nll, _, _ = llh.inject_params_and_compute_likelihood(x_np[i].tolist(), extend_continue=False)
+                                full = llh.expand_free_to_full(x_np[i].tolist())
+                                nll, _, _ = llh.inject_params_and_compute_likelihood(full, extend_continue=False)
                             else:
                                 raise NotImplementedError("Likelihood computation not implemented")
                             if nll == -1:

@@ -18,7 +18,7 @@ class ContextFlow(nn.Module):
         super().__init__()
         flows = []
         for _ in range(num_flows):
-            mlp_structure = [context_dim // 2] + [hidden_dim] * num_hidden_layers + [2 * (context_dim - context_dim // 2)]
+            mlp_structure = [context_dim - context_dim // 2] + [hidden_dim] * num_hidden_layers + [2 * (context_dim // 2)]
             param_map = MLP(mlp_structure, init_zeros=True)
             flows.append(nf.flows.AffineCouplingBlock(param_map))
             flows.append(nf.flows.Permute(context_dim, mode='swap'))
